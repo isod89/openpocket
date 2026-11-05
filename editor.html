@@ -1,0 +1,615 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only
+     OpenPocket web editor: the pedal's presets and its current sound, live, over USB-MIDI (Chrome / Edge).
+     Protocol: EDITOR-PROTOCOL.md; transport: pxedit.js. One file, no library. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OpenPocket Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&display=swap">
+<style>
+/* The pedal's own screen, bigger: its colours (RGB565 from firmware/ui.h), its font (Inter SemiBold / Bold),
+   its layout (header, 6 x 2 tiles, block page, footer). One dark look, on purpose: it is the pedal's. */
+:root{
+  --room:#111211;        /* around the screen */
+  --bezel:#1b1d1b;
+  --bg:#080808;          /* UI_BG 0x0841 */
+  --panel:#181c18;       /* UI_PANEL 0x18E3 */
+  --off:#202420;         /* C_OFF 0x2124 */
+  --line:#282828;        /* C_LINE 0x2945 */
+  --txt:#efefef;         /* UI_TXT */
+  --dim:#848284;         /* UI_DIM */
+  --acc:#ffa600;         /* UI_ACC 0xFD20 */
+  --red:#ff4040; --grn:#4ccf5a;
+  --blk:#ffa600;         /* the focused block's colour (set by script) */
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+a.btn{color:var(--txt)}
+body{margin:0;background:var(--room);color:var(--txt);font:500 15px/1.4 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:18px 40px}
+button,select,input{font:inherit;color:inherit}
+button{cursor:pointer}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+
+/* top bar */
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px}
+.brand{font-weight:800;font-size:22px;letter-spacing:-.01em}
+.brand b{color:var(--acc)}
+.brand small{font-weight:600;font-size:12px;letter-spacing:.12em;color:var(--dim);margin-left:8px;text-transform:uppercase}
+.status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);min-width:0}
+.dot{width:9px;height:9px;border-radius:50%;background:#444;flex:none}
+.dot.on{background:var(--grn);box-shadow:0 0 0 3px #4ccf5a22}
+.status span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.spacer{flex:1}
+.btn{border:1px solid #333;background:#1c1f1c;border-radius:9px;padding:9px 14px;font-weight:600;font-size:14px;line-height:1;white-space:nowrap}
+.btn:hover:not(:disabled){border-color:#555}
+.btn.go{background:var(--acc);border-color:var(--acc);color:#1a1000}
+.btn:disabled{opacity:.4;cursor:default}
+.btn.small{padding:7px 10px;font-size:13px;border-radius:8px}
+
+.msg{min-height:20px;font-size:13.5px;color:var(--dim)}
+.msg.err{color:var(--red)} .msg.ok{color:var(--grn)}
+.prog{height:4px;background:#222;border-radius:4px;overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:var(--acc);transition:width .15s}
+
+.layout{display:grid;grid-template-columns:330px minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr)}.list{max-height:420px}}
+
+/* ---- the preset list ---- */
+.side{background:var(--bezel);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.side h2,.card h2{margin:0;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.tools{display:flex;flex-wrap:wrap;gap:6px}
+.list{background:var(--bg);border-radius:10px;overflow:auto;max-height:640px;padding:4px}
+.row{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;
+  font-weight:600;font-size:14px;letter-spacing:.01em}
+.row:hover{background:#161816}
+.row .n{color:var(--dim);font-variant-numeric:tabular-nums}
+.row .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .tag{font-size:10.5px;letter-spacing:.08em;color:var(--dim);font-weight:700}
+.row.user .tag{color:var(--acc)}
+.row.cur{background:var(--panel);box-shadow:inset 3px 0 0 var(--acc)}
+.row.cur .n{color:var(--acc)}
+.slotbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.slotbar .lbl{font-size:12.5px;color:var(--dim);margin-right:auto}
+
+/* ---- the screen ---- */
+.device{background:var(--bezel);border-radius:22px;padding:16px;min-width:0}
+.screen{background:var(--bg);border-radius:8px;overflow:hidden;display:flex;flex-direction:column}
+.hdr{display:flex;align-items:center;gap:10px;padding:12px 16px 8px}
+.hdr .num{font-weight:800;font-size:30px;color:var(--acc);font-variant-numeric:tabular-nums;line-height:1}
+.hdr input{flex:1;min-width:0;background:transparent;border:0;border-bottom:1px dashed transparent;font-weight:800;font-size:30px;
+  line-height:1.1;letter-spacing:-.005em;padding:0;text-transform:none;outline:none}
+.hdr input:hover{border-bottom-color:#444}
+.hdr input:focus{border-bottom-color:var(--acc)}
+.hdr .star{font-weight:800;font-size:30px;color:var(--acc);width:18px}
+.hdr .vol{font-size:13px;color:var(--dim);font-weight:600;white-space:nowrap}
+
+.tiles{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px 8px;padding:8px 14px 14px;touch-action:none}
+.tile{position:relative;height:50px;border-radius:3px;background:var(--off);color:var(--dim);display:grid;place-items:center;
+  font-weight:700;font-size:16px;letter-spacing:.02em;user-select:none;cursor:grab;outline:1px solid transparent;outline-offset:1px}
+.tile.on{color:#000}
+.tile.sel{outline-color:#fff}
+.tile.sel::after{content:"";position:absolute;left:0;right:0;bottom:-6px;height:3px;background:#fff;border-radius:2px}
+.tile.drag{opacity:.35}
+.tile.ghost{position:fixed;z-index:20;pointer-events:none;box-shadow:0 10px 30px #000a;width:var(--w);transform:translate(-50%,-50%) scale(1.06);cursor:grabbing}
+.tile .pw{position:absolute;top:4px;right:4px;width:14px;height:14px;border-radius:50%;border:2px solid currentColor;opacity:.55;background:transparent;padding:0}
+.tile .pw:hover{opacity:1}
+.tile:focus-visible{outline:2px solid var(--acc)}
+
+.page{border-top:1px solid var(--line);padding:12px 16px 16px;display:flex;flex-direction:column;gap:10px}
+.bl{display:flex;align-items:center;gap:10px;font-weight:600;font-size:14px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
+.bl .mv{display:flex;gap:4px;margin-left:auto}
+.onoff{border:0;background:transparent;font-weight:800;font-size:15px;letter-spacing:.06em;color:var(--dim);padding:4px 2px}
+.onoff.on{color:var(--blk)}
+.type{display:grid;grid-template-columns:44px minmax(0,1fr) 44px;align-items:center;background:var(--panel);border-radius:4px}
+.type button{border:0;background:transparent;color:var(--acc);font-weight:800;font-size:26px;height:48px}
+.type select{appearance:none;-webkit-appearance:none;border:0;background:transparent;text-align:center;text-align-last:center;font-weight:800;
+  font-size:26px;letter-spacing:.01em;height:48px;cursor:pointer;min-width:0;outline:none}
+.type select option{background:#111;font-size:15px;font-weight:600}
+.params{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.prm{display:grid;grid-template-columns:120px minmax(0,1fr) 72px;align-items:center;gap:12px;font-weight:600;font-size:16px;padding:4px 0}
+.prm label{letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prm .val{text-align:right;font-variant-numeric:tabular-nums}
+.prm .val.tx{color:var(--acc)}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:28px;background:transparent;cursor:pointer;margin:0;
+  --p:50%;outline:none}
+input[type=range]::-webkit-slider-runnable-track{height:12px;background:linear-gradient(90deg,var(--blk) var(--p),#2a2d2a var(--p));border-radius:1px}
+input[type=range]::-moz-range-track{height:12px;background:#2a2d2a;border-radius:1px}
+input[type=range]::-moz-range-progress{height:12px;background:var(--blk)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:6px;height:22px;margin-top:-5px;background:#fff;border-radius:1px}
+input[type=range]::-moz-range-thumb{width:6px;height:22px;background:#fff;border:0;border-radius:1px}
+input[type=range]:focus-visible::-webkit-slider-thumb{outline:2px solid var(--acc)}
+.ftr{display:flex;align-items:center;gap:10px;background:var(--panel);padding:8px 14px;font-weight:600;font-size:13px;color:var(--dim)}
+.ftr .load{margin-left:auto;font-variant-numeric:tabular-nums}
+.ftr .load.byp{color:var(--red)}
+.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px}
+.actions select{background:#1c1f1c;border:1px solid #333;border-radius:9px;padding:8px 10px;font-weight:600;font-size:14px;max-width:100%}
+.ask{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#2a2112;border:1px solid #6b4b0f;border-radius:10px;padding:10px 12px;font-size:14px}
+.ask[hidden]{display:none}
+.ask span{margin-right:auto;min-width:0}
+.idle{padding:60px 20px;text-align:center;color:var(--dim);display:flex;flex-direction:column;gap:12px;align-items:center}
+.idle h3{margin:0;color:var(--txt);font-size:20px;font-weight:800}
+.idle p{margin:0;max-width:52ch}
+.idle a{color:var(--acc)}
+@media (max-width:560px){
+  .hdr .num,.hdr input,.hdr .star{font-size:22px}
+  .tile{height:44px;font-size:12.5px;padding-top:8px}
+  .tile .pw{top:3px;right:3px;width:9px;height:9px;border-width:1.5px}
+  .tiles{gap:9px 5px;padding-inline:10px}
+  #hint{display:none}
+  .type select{font-size:19px}
+  .prm{grid-template-columns:86px minmax(0,1fr) 56px;font-size:14px;gap:8px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand">OPEN<b>POCKET</b><small>editor</small></div>
+    <div class="status"><i class="dot" id="dot"></i><span id="status">not connected</span></div>
+    <div class="spacer"></div>
+    <a class="btn" href="./" style="text-decoration:none">Installer</a>
+    <button class="btn go" id="connect">Connect</button>
+  </div>
+  <div class="prog" id="prog" hidden><i id="progi"></i></div>
+  <div class="msg" id="msg"></div>
+  <div class="ask" id="ask" hidden><span id="asktext"></span><button class="btn small go" id="askyes">OK</button><button class="btn small" id="askno">Cancel</button></div>
+
+  <div class="layout">
+    <aside class="side">
+      <h2>Presets</h2>
+      <div class="tools">
+        <button class="btn small" id="expall" disabled>Export all</button>
+        <button class="btn small" id="imp" disabled>Import file…</button>
+        <input type="file" id="file" accept=".json,application/json" hidden>
+      </div>
+      <div class="list" id="list" role="listbox" aria-label="Presets"></div>
+      <div class="slotbar">
+        <span class="lbl" id="slotlbl">Slot —</span>
+        <button class="btn small" id="up" disabled title="Move this preset up one slot">↑</button>
+        <button class="btn small" id="down" disabled title="Move this preset down one slot">↓</button>
+        <button class="btn small" id="factory" disabled title="Put this slot back to its factory preset">Factory</button>
+      </div>
+    </aside>
+
+    <main class="device">
+      <div class="screen" id="screen">
+        <div class="idle" id="idle">
+          <h3>Connect your pedal</h3>
+          <p>Plug the Pocket X or BlackBox in with USB, then press <b>Connect</b> and allow MIDI devices. The pedal needs
+          OpenPocket v32 or newer: older versions can be updated from the <a href="./">installer</a>.</p>
+          <p>Everything you change here plays at once on the pedal, and what you change on the pedal shows here.</p>
+        </div>
+        <div id="ui" hidden>
+          <div class="hdr">
+            <span class="num" id="num">01</span>
+            <input id="name" maxlength="13" spellcheck="false" autocomplete="off" aria-label="Preset name">
+            <span class="star" id="star"></span>
+            <span class="vol">LIVE</span>
+          </div>
+          <div class="tiles" id="tiles" aria-label="Signal chain: drag a tile to move the block"></div>
+          <div class="page">
+            <div class="bl"><span id="bname">AMP</span><button class="onoff" id="onoff">ON</button>
+              <span class="mv"><button class="btn small" id="mvl" title="Move this block earlier in the chain">◀</button><button class="btn small" id="mvr" title="Move this block later in the chain">▶</button></span></div>
+            <div class="type"><button id="tprev" aria-label="Previous type">&lt;</button><select id="type" aria-label="Type"></select><button id="tnext" aria-label="Next type">&gt;</button></div>
+            <div class="params" id="params"></div>
+          </div>
+          <div class="ftr"><span id="hint">DRAG A TILE: MOVE THE BLOCK · ⏻ ON A TILE: ON/OFF</span><span class="load" id="load">C1 —%</span></div>
+        </div>
+      </div>
+      <div class="actions" id="actions" hidden>
+        <button class="btn go" id="save">Save</button>
+        <button class="btn" id="revert">Revert</button>
+        <span style="flex:1"></span>
+        <label for="saveto" style="font-size:13px;color:var(--dim)">Save to</label>
+        <select id="saveto"></select>
+        <button class="btn" id="saveas">Save as</button>
+        <button class="btn" id="export1">Export preset</button>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script type="module">
+import { Editor, presetToJSON, presetFromJSON, filePresets, parsePresetFile, clonePreset } from "./pxedit.js";
+
+const $ = (id) => document.getElementById(id);
+let access = null, ed = null, cat = null, info = null;
+let st = null;            // { slot, dirty, saved, focus, preset }
+let slots = [];           // [{ slot, saved, name }]
+let focus = 5, busy = false, dragging = null, pingTimer = null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const pad2 = (n) => String(n).padStart(2, "0");
+
+function say(t, kind = "") { const m = $("msg"); m.textContent = t; m.className = "msg" + (kind ? " " + kind : ""); }
+function progress(f) { $("prog").hidden = f === null; $("progi").style.width = `${Math.round((f || 0) * 100)}%`; }
+let askFn = null;
+function ask(text, yes = "OK") {
+  return new Promise((res) => {
+    $("asktext").textContent = text; $("askyes").textContent = yes; $("ask").hidden = false;
+    askFn = (v) => { $("ask").hidden = true; askFn = null; res(v); };
+  });
+}
+$("askyes").onclick = () => askFn && askFn(true);
+$("askno").onclick = () => askFn && askFn(false);
+
+// ---- connection ----
+async function connect() {
+  if (!navigator.requestMIDIAccess) { say("This browser has no Web MIDI: use Chrome or Edge on a computer.", "err"); return; }
+  try { access = access || await navigator.requestMIDIAccess({ sysex: true }); }
+  catch (e) { say("MIDI access was refused. Allow MIDI devices for this page and try again.", "err"); return; }
+  access.onstatechange = () => { if (!ed && !busy) connect(); };
+  busy = true; $("connect").disabled = true;
+  try {
+    say("Looking for the pedal…");
+    const e = new Editor(access);
+    info = await e.connect();
+    if (!info) {
+      say("No pedal with the editor found. Is it plugged in and running OpenPocket v32 or newer? (Update it from the installer.)", "err");
+      return;
+    }
+    ed = e;
+    ed.onLost = lost;
+    $("status").textContent = `${info.identity.replace("_9", " · OpenPocket v").replace(/v(\d+)$/, "v$1")}`;
+    $("dot").classList.add("on");
+    say("Reading the pedal's catalogue…"); progress(0);
+    cat = await ed.catalog(progress);
+    progress(null);
+    st = await ed.state();
+    focus = st.focus;
+    slots = await ed.list();
+    ed.onState = onPush;
+    await ed.watch(true);
+    $("idle").hidden = true; $("ui").hidden = false; $("actions").hidden = false;
+    ["expall", "imp", "up", "down", "factory"].forEach((id) => { $(id).disabled = false; });
+    $("connect").textContent = "Reconnect";
+    renderAll();
+    say(`Connected to ${info.identity} on ${info.port}.`, "ok");
+    clearInterval(pingTimer);
+    pingTimer = setInterval(ping, 1000);
+  } catch (e) {
+    progress(null);
+    say(`The pedal stopped answering (${e.message}). Check the cable and press Connect.`, "err");
+    ed = null;
+  } finally { busy = false; $("connect").disabled = false; }
+}
+function lost() {
+  clearInterval(pingTimer);
+  if (ed) ed.close();
+  ed = null;
+  $("dot").classList.remove("on");
+  $("status").textContent = "disconnected";
+  say("The pedal is not answering any more. Plug it back in and press Connect.", "err");
+}
+async function ping() {
+  if (!ed) return;
+  try {
+    const p = await ed.ping();
+    const l = $("load");
+    l.textContent = `${p.bypass ? "BYP" : p.c1 ? "C1" : "C0"} ${p.load}%`;
+    l.classList.toggle("byp", p.bypass);
+  } catch (_) { }
+}
+$("connect").onclick = connect;
+
+// ---- pushes from the pedal ----
+function onPush(s) {
+  const slotChanged = !st || s.slot !== st.slot;
+  st = s;
+  focus = s.focus;
+  if (slotChanged) refreshList();
+  renderAll(true);
+}
+async function refreshList() { if (ed) { slots = await ed.list(); renderList(); } }
+
+// ---- rendering ----
+const blk = (b) => cat.blocks[b];
+const typ = (b) => blk(b).types[st.preset.type[b]] || blk(b).types[0];
+function renderAll(fromPush = false) {
+  renderHeader(); renderTiles(); renderPage(fromPush); renderList(); renderSaveTo();
+}
+function renderHeader() {
+  $("num").textContent = pad2(st.slot + 1);
+  if (document.activeElement !== $("name")) $("name").value = st.preset.name;
+  $("star").textContent = st.dirty ? "*" : "";
+  $("save").disabled = !st.dirty;
+  $("revert").disabled = !st.dirty;
+}
+function renderTiles() {
+  const box = $("tiles");
+  box.textContent = "";
+  st.preset.order.forEach((b, i) => {
+    const t = document.createElement("div");
+    const on = st.preset.on[b];
+    t.className = "tile" + (on ? " on" : "") + (b === focus ? " sel" : "") + (dragging && dragging.b === b ? " drag" : "");
+    t.style.background = on ? blk(b).color : "";
+    t.textContent = blk(b).label;
+    t.dataset.b = b; t.dataset.i = i;
+    t.tabIndex = 0;
+    t.setAttribute("role", "button");
+    t.setAttribute("aria-label", `${blk(b).name}, ${on ? "on" : "off"}, position ${i + 1}`);
+    const pw = document.createElement("button");
+    pw.className = "pw"; pw.title = on ? "Switch off" : "Switch on"; pw.setAttribute("aria-label", pw.title);
+    pw.onpointerdown = (e) => e.stopPropagation();
+    pw.onclick = (e) => { e.stopPropagation(); toggle(b); };
+    t.appendChild(pw);
+    t.onpointerdown = (e) => startDrag(e, t, b);
+    t.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFocus(b); }
+      else if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.preventDefault(); moveBlock(b, e.key === "ArrowLeft" ? -1 : 1, true); }
+    };
+    box.appendChild(t);
+  });
+}
+function renderPage(fromPush) {
+  const b = focus, B = blk(b), T = typ(b);
+  document.documentElement.style.setProperty("--blk", B.color);
+  $("bname").textContent = B.name;
+  const on = st.preset.on[b];
+  $("onoff").textContent = on ? "ON" : "OFF";
+  $("onoff").classList.toggle("on", !!on);
+  const sel = $("type");
+  if (sel.dataset.b !== String(b) || sel.options.length !== B.types.length) {
+    sel.textContent = "";
+    B.types.forEach((t, i) => { const o = document.createElement("option"); o.value = i; o.textContent = t.name; sel.appendChild(o); });
+    sel.dataset.b = b;
+  }
+  sel.value = st.preset.type[b];
+  const box = $("params");
+  const sig = `${b}:${st.preset.type[b]}`;
+  if (box.dataset.sig !== sig) {
+    box.textContent = "";
+    T.params.forEach((p, k) => {
+      const row = document.createElement("div");
+      row.className = "prm";
+      const id = `p${k}`;
+      row.innerHTML = `<label for="${id}"></label><input type="range" id="${id}" min="0" max="100" step="1"><span class="val"></span>`;
+      row.querySelector("label").textContent = p.name;
+      const r = row.querySelector("input");
+      r.oninput = () => { showVal(k); sendParam(b, k, +r.value); };
+      r.onpointerdown = () => { r.dataset.held = "1"; };
+      r.onpointerup = r.onpointercancel = () => { delete r.dataset.held; };
+      box.appendChild(row);
+    });
+    box.dataset.sig = sig;
+  }
+  T.params.forEach((p, k) => {
+    const r = $(`p${k}`);
+    if (!(fromPush && (r.dataset.held || document.activeElement === r && pendingParam))) r.value = st.preset.p[b][k];
+    showVal(k);
+  });
+  const pos = st.preset.order.indexOf(b);
+  $("mvl").disabled = pos <= 0; $("mvr").disabled = pos >= st.preset.order.length - 1;
+}
+function showVal(k) {
+  const r = $(`p${k}`), v = +r.value, p = typ(focus).params[k];
+  const t = p && p.texts && p.texts[v];
+  const el = r.parentElement.querySelector(".val");
+  el.textContent = t || String(v);
+  el.classList.toggle("tx", !!t);
+  r.style.setProperty("--p", `${v}%`);
+}
+function renderList() {
+  const box = $("list");
+  box.textContent = "";
+  for (const s of slots) {
+    const row = document.createElement("div");
+    row.className = "row" + (s.saved ? " user" : "") + (st && s.slot === st.slot ? " cur" : "");
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", st && s.slot === st.slot ? "true" : "false");
+    row.tabIndex = 0;
+    row.innerHTML = `<span class="n">${pad2(s.slot + 1)}</span><span class="nm"></span><span class="tag">${s.saved ? "USER" : ""}</span>`;
+    row.querySelector(".nm").textContent = s.name;
+    row.onclick = () => pickSlot(s.slot);
+    row.onkeydown = (e) => { if (e.key === "Enter") pickSlot(s.slot); };
+    box.appendChild(row);
+  }
+  if (st) {
+    $("slotlbl").textContent = `Slot ${pad2(st.slot + 1)}${slots[st.slot] && slots[st.slot].saved ? " · your preset" : " · factory preset"}`;
+    $("up").disabled = st.slot === 0; $("down").disabled = st.slot === slots.length - 1;
+    $("factory").disabled = !(slots[st.slot] && slots[st.slot].saved);
+  }
+}
+function renderSaveTo() {
+  const sel = $("saveto"), keep = sel.value;
+  sel.textContent = "";
+  for (const s of slots) { const o = document.createElement("option"); o.value = s.slot; o.textContent = `${pad2(s.slot + 1)} ${s.name}`; sel.appendChild(o); }
+  sel.value = keep !== "" && keep !== undefined && sel.querySelector(`option[value="${keep}"]`) ? keep : String(st.slot);
+}
+
+// ---- live editing ----
+let pendingParam = null, sendingParam = false;
+function sendParam(b, k, v) {
+  st.preset.p[b][k] = v;
+  pendingParam = { b, k, v };
+  if (!sendingParam) flushParam();
+}
+async function flushParam() {
+  sendingParam = true;
+  try {
+    for (;;) {
+      while (pendingParam) {
+        const q = pendingParam; pendingParam = null;
+        await ed.setParam(q.b, q.k, q.v);
+      }
+      await syncState();
+      if (!pendingParam) break;                     // a value that came in meanwhile goes out too
+    }
+  } catch (_) { } finally { sendingParam = false; }
+}
+async function syncState() { st = await ed.state(); renderHeader(); }
+async function act(fn) {
+  if (!ed) return;
+  try { await fn(); } catch (e) { say(`The pedal did not answer (${e.message}).`, "err"); }
+}
+function setFocus(b) {
+  focus = b; renderTiles(); renderPage();
+  act(() => ed.focus(b));
+}
+function toggle(b) {
+  act(async () => { st.preset.on[b] = await ed.setOn(b, !st.preset.on[b]); await syncState(); renderTiles(); renderPage(); });
+}
+$("onoff").onclick = () => toggle(focus);
+function setType(t) {
+  const n = blk(focus).types.length;
+  t = (t + n) % n;
+  act(async () => { st.preset.type[focus] = await ed.setType(focus, t); await syncState(); renderPage(); });
+}
+$("type").onchange = () => setType(+$("type").value);
+$("tprev").onclick = () => setType(st.preset.type[focus] - 1);
+$("tnext").onclick = () => setType(st.preset.type[focus] + 1);
+$("name").onchange = () => act(async () => { st.preset.name = await ed.name($("name").value); $("name").value = st.preset.name; await syncState(); renderHeader(); });
+$("name").onkeydown = (e) => { if (e.key === "Enter") $("name").blur(); };
+
+// block order: drag a tile, or the ◀ ▶ buttons, or Alt + arrows on a tile
+async function sendOrder(order) {
+  await act(async () => { if (await ed.order(order) === 0) st.preset.order = order; await syncState(); renderTiles(); renderPage(); });
+}
+function moveBlock(b, d, keepFocus) {
+  const o = [...st.preset.order], i = o.indexOf(b), j = i + d;
+  if (j < 0 || j >= o.length) return;
+  [o[i], o[j]] = [o[j], o[i]];
+  sendOrder(o).then(() => { if (keepFocus) document.querySelector(`.tile[data-b="${b}"]`)?.focus(); });
+}
+$("mvl").onclick = () => moveBlock(focus, -1);
+$("mvr").onclick = () => moveBlock(focus, 1);
+function startDrag(e, el, b) {
+  if (e.button !== 0) return;
+  const x0 = e.clientX, y0 = e.clientY, w = el.getBoundingClientRect().width;
+  let ghost = null, order = null;
+  e.preventDefault();                                 // (the tiles are rebuilt while dragging: listen on the window)
+  const move = (ev) => {
+    if (!ghost && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+    if (!ghost) {
+      dragging = { b }; order = [...st.preset.order];
+      ghost = el.cloneNode(true); ghost.classList.add("ghost"); ghost.style.setProperty("--w", `${w}px`);
+      document.body.appendChild(ghost); renderTiles();
+    }
+    ghost.style.left = `${ev.clientX}px`; ghost.style.top = `${ev.clientY}px`;
+    // the tile under the pointer: the dragged block takes its place
+    const tiles = [...$("tiles").children];
+    let best = -1, bd = 1e9;
+    tiles.forEach((t, i) => { const r = t.getBoundingClientRect(); const d = Math.hypot(ev.clientX - (r.left + r.width / 2), ev.clientY - (r.top + r.height / 2)); if (d < bd) { bd = d; best = i; } });
+    const cur = order.indexOf(b);
+    if (best >= 0 && best !== cur) { order.splice(cur, 1); order.splice(best, 0, b); st.preset.order = [...order]; renderTiles(); }
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up);
+    if (ghost) { ghost.remove(); dragging = null; renderTiles(); sendOrder(order); }
+    else setFocus(b);
+  };
+  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
+}
+
+// ---- slots ----
+async function pickSlot(slot) {
+  if (!ed || slot === st.slot) return;
+  if (st.dirty && !(await ask(`"${st.preset.name}" has unsaved changes. Load ${pad2(slot + 1)} ${slots[slot].name} anyway?`, "Load"))) return;
+  act(async () => { await ed.select(slot); st = await ed.state(); renderAll(); });
+}
+$("save").onclick = () => act(async () => {
+  const rc = await ed.save(st.slot);
+  if (rc) { say(`Saving failed (error ${rc}).`, "err"); return; }
+  st = await ed.state(); slots = await ed.list(); renderAll(); say(`Saved in slot ${pad2(st.slot + 1)}.`, "ok");
+});
+$("revert").onclick = () => act(async () => { await ed.select(st.slot); st = await ed.state(); renderAll(); say("Back to the saved sound.", "ok"); });
+$("saveas").onclick = async () => {
+  const to = +$("saveto").value;
+  if (to !== st.slot && !(await ask(`Save "${st.preset.name}" into slot ${pad2(to + 1)}, replacing ${slots[to].name}?`, "Save"))) return;
+  act(async () => {
+    const rc = await ed.save(to);
+    if (rc) { say(`Saving failed (error ${rc}).`, "err"); return; }
+    st = await ed.state(); slots = await ed.list(); renderAll(); say(`Saved in slot ${pad2(to + 1)}.`, "ok");
+  });
+};
+async function swapWith(d) {
+  const a = st.slot, b = a + d;
+  if (b < 0 || b >= slots.length) return;
+  await act(async () => {
+    const A = await ed.slotGet(a), B = await ed.slotGet(b);
+    await ed.slotPut(a, B.saved ? B.preset : B.preset, false);
+    await ed.slotPut(b, A.saved ? A.preset : A.preset, false);
+    const rc = await ed.commit();
+    if (rc) { say(`Moving failed (error ${rc}).`, "err"); return; }
+    const dirty = st.dirty, cur = clonePreset(st.preset);
+    await ed.select(b);
+    if (dirty) await ed.put(cur);                 // the unsaved changes follow the preset
+    st = await ed.state(); slots = await ed.list(); renderAll();
+    say(`Moved to slot ${pad2(b + 1)}.`, "ok");
+  });
+}
+$("up").onclick = () => swapWith(-1);
+$("down").onclick = () => swapWith(1);
+$("factory").onclick = async () => {
+  if (!(await ask(`Put slot ${pad2(st.slot + 1)} back to its factory preset? "${slots[st.slot].name}" will be lost.`, "Restore"))) return;
+  act(async () => {
+    const rc = await ed.slotPut(st.slot, null, true);
+    if (rc) { say(`Failed (error ${rc}).`, "err"); return; }
+    await ed.select(st.slot); st = await ed.state(); slots = await ed.list(); renderAll(); say("Factory preset restored.", "ok");
+  });
+};
+
+// ---- files ----
+function download(name, obj) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 1)], { type: "application/json" }));
+  const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+const fileSafe = (s) => (s || "preset").trim().replace(/[^A-Za-z0-9 _-]+/g, "").replace(/\s+/g, "-").toLowerCase() || "preset";
+$("export1").onclick = () => { download(`${fileSafe(st.preset.name)}.json`, filePresets([presetToJSON(st.preset, cat, st.slot)])); say("Preset exported.", "ok"); };
+$("expall").onclick = () => act(async () => {
+  const all = [];
+  for (let s = 0; s < slots.length; s++) { progress(s / slots.length); const g = await ed.slotGet(s); all.push({ ...presetToJSON(g.preset, cat, s), factory: !g.saved }); }
+  progress(null);
+  const d = new Date();
+  download(`openpocket-presets-${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}.json`, filePresets(all));
+  say(`All ${slots.length} presets exported.`, "ok");
+});
+$("imp").onclick = () => $("file").click();
+$("file").onchange = async () => {
+  const f = $("file").files[0];
+  $("file").value = "";
+  if (!f || !ed) return;
+  let list;
+  try { list = parsePresetFile(await f.text()); } catch (e) { say(`${f.name}: not an OpenPocket preset file.`, "err"); return; }
+  if (!list.length) { say(`${f.name} holds no preset.`, "err"); return; }
+  if (list.length === 1) {
+    // one preset: it becomes the current sound (listen, then Save or Save as)
+    const r = presetFromJSON(list[0], cat, st.preset);
+    await act(async () => {
+      if (await ed.put(r.preset)) { say("The pedal refused this preset.", "err"); return; }
+      st = await ed.state(); renderAll();
+      say(`"${r.preset.name}" loaded as the current sound: Save or Save as to keep it.${r.warn.length ? " Note: " + r.warn.join("; ") : ""}`, r.warn.length ? "" : "ok");
+    });
+    return;
+  }
+  const withSlot = list.filter((o) => Number.isInteger(o.slot) && o.slot >= 1 && o.slot <= slots.length);
+  const users = list.filter((o) => !o.factory).length;
+  if (!(await ask(`${f.name}: ${list.length} presets. Write them into their slots (${withSlot.length} with a slot number)? The presets now in those slots will be replaced.`, "Import"))) return;
+  await act(async () => {
+    const warn = [];
+    let i = 0;
+    for (const o of withSlot) {
+      progress(i++ / withSlot.length);
+      const s = o.slot - 1;
+      if (o.factory) { await ed.slotPut(s, null, false); continue; }
+      const base = (await ed.slotGet(s)).preset;
+      const r = presetFromJSON(o, cat, base);
+      warn.push(...r.warn.map((w) => `${pad2(o.slot)}: ${w}`));
+      if (await ed.slotPut(s, r.preset, false)) warn.push(`${pad2(o.slot)}: refused`);
+    }
+    const rc = await ed.commit();
+    progress(null);
+    if (rc) { say(`Writing the presets failed (error ${rc}).`, "err"); return; }
+    await ed.select(st.slot);
+    st = await ed.state(); slots = await ed.list(); renderAll();
+    say(`${withSlot.length} presets imported (${users} of yours).${warn.length ? " Notes: " + warn.slice(0, 4).join("; ") : ""}`, warn.length ? "" : "ok");
+  });
+};
+</script>
+</body>
+</html>
