@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * OpenPocket X — Milestone 1 (boot + screen) — Donner Pocket X.
  * SCREEN (reverse-engineered from the stock firmware): SOFTWARE SPI on PORT B
- *   CS = PB1, D/C = PB5, CLK = PB6, DO = PB7   (+ PC7 driven, reset/backlight?)
+ *   CS = PB1, D/C = PB5, CLK = PB6, DO = PB7   (PC7 is not the screen's: the button lights' enable, px_leds.h)
  * (the FM-1 used port C: that was the cause of the black screen.)
  * Init sequence + 40-line offset: taken verbatim from the Pocket X firmware.
  * Safety net: 2 failed boots -> UBOOT (re-flashable), + backup fm1-1.bin.
@@ -144,7 +144,7 @@ static void lcd_init(void)
     PB_DIR &= ~(CS | DC | CLK | DO);   /* outputs */
     PC_DIR &= ~PC7;
     PB_OUT |= CS; PB_OUT &= ~CLK;      /* CS high, CLK low */
-    PC_OUT |= PC7;                     /* PC7 high (reset released / backlight?) */
+    PC_OUT |= PC7;                     /* PC7 high: the button lights off (their enable, low = on: px_leds.h) */
 #if LCD_HW
     lspi_init();
 #endif
@@ -306,6 +306,7 @@ static void fm1_fault(const fm1_crash_t *c)
 #define OP_VERSION "v" OP_VERSION_NUM   /* shown at boot: changes with every released build */
 #define PROBE 0            /* 1 = GPIO diagnostic: shows the pins that change at the bottom */
 #define ADC_PROBE 0        /* 1 = ADC diagnostic: shows the channels that move at the bottom (C2:512) */
+#define LED_PROBE 0        /* 1 = LED map (issue #8, led_probe.h): the knob picks a bit of the lights' 595, it blinks; no sound */
 #define PA_PD   (*(volatile uint32_t *)0x50014u)
 
 /* ---- Controls mapped on the real pedal (diagnostic) ----
@@ -335,7 +336,7 @@ static void input_init(void)
     PH_DIE |= 0xFFFFu; PH_PU |= 0xFFFFu;
     PB_DIE |= 0xFF1Du; PB_PU |= 0xFF1Du;                       /* except PB1/5/6/7 (screen) */
 #endif
-    PC_DIR &= ~PC7; PC_OUT |= PC7;      /* PC7 drives the screen: always an output at 1 */
+    PC_DIR &= ~PC7; PC_OUT |= PC7;      /* PC7, the button lights' enable: high = off until px_leds.h turns them on */
 }
 static void input_baseline(void)
 {
@@ -536,6 +537,8 @@ static const int8_t QDEC[16] = {0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0};
 
 #if !AUDIO_PROBE
 #include "ui.h"
+#include "px_lights.h"      /* the button lights follow the blocks (issue #8; px_leds.h drives them) */
+#define PX_LIGHTS_OFF() lights_off()
 #include "px_usb.h"         /* USB-MIDI + update entry (web installer) */
 #include "px_store.h"       /* the user's presets in flash */
 #if !AUDIO_PROBE
@@ -543,6 +546,12 @@ static uint32_t ed_load(void) { return a_bypass ? a_peak : a_load; }   /* PING: 
 static uint32_t ed_flags(void) { return (a_bypass ? 1u : 0u) | (a_c1 ? 2u : 0u); }
 #include "px_editor.h"      /* the web editor (docs/EDITOR-PROTOCOL.md) */
 #endif
+#endif
+#if LED_PROBE
+#if AUDIO_PROBE
+#error "LED_PROBE needs the normal build: USB (the web installer) is the way back"
+#endif
+#include "led_probe.h"      /* the LED map (issue #8) */
 #endif
 
 /* P3_RST_SRC as read at boot: why the chip last reset (fm1_sys.h) */
@@ -641,6 +650,12 @@ static void app_main(void)
     keys_capture_idle();
     op_stage(ST_PRESET, "PRESET...");
     load_preset(cur_preset);
+#if LED_PROBE
+    px_usb_start();                      /* USB-MIDI + update entry: the web installer is the way back */
+    px_store_boot();
+    fm1_irq_enable_all();                /* audio_start does it in the normal build; here no audio is started */
+    led_probe_run();                     /* never returns */
+#endif
 #if AUDIO_PROBE
     audio_probe_run();
 #else
@@ -648,6 +663,7 @@ static void app_main(void)
     px_usb_start();                      /* USB-MIDI device + update entry (web installer) */
     px_store_boot();                     /* the saved presets; start on the last one saved */
     audio_start();                       /* guitar -> DSP engine -> output, amp enabled */
+    leds_init();                         /* the button lights: all off loaded, then on (PC7 low), as stock */
     op_stage(ST_UI, "SCREEN...");
     lcd_rect(0, 0, 240, 240, UI_BG);
     ui_invalidate();
@@ -661,6 +677,7 @@ static void app_main(void)
 #if !AUDIO_PROBE
         px_usb_service(now);             /* web installer: handshake, update, UBOOT soft key */
         audio_poll(now);                 /* the sound follows the UI (preset, settings, volume) */
+        lights_update(&PRESET, ui_mode == M_TUNER, now);   /* the button lights follow the blocks */
         if (ui_mode != M_TUNER) {        /* DSP load at the bottom right: "C1 42%" (2nd core), "C0" or BYP */
             static uint32_t t_cpu;
             if (now - t_cpu >= 500u) {
