@@ -108,6 +108,7 @@ footer a,.note a{color:inherit}
     <details>
       <summary data-t="rescue"></summary>
       <p class="note" data-t="rescuenote"></p>
+      <p class="note" data-t="rescuemac"></p>
       <div class="row"><button class="alt" id="uboot" disabled data-t="uboot"></button></div>
     </details>
     <details>
@@ -144,6 +145,7 @@ const T = {
     unknownok: "I understand: this file has not been tested with this page. Install it anyway.",
     rescue: "Rescue and advanced options",
     rescuenote: "If the pedal stays in update mode, reconnect it: the Resume button appears. The button below puts a pedal running OpenPocket into the chip's UBOOT mode, for a recovery from the SD card (fm1buddy).",
+    rescuemac: "A pedal that restarts in a loop and cannot be reached by this page can be restored from a Mac, with no extra hardware: download the official BlackBox file (M-VAVE), then run `make rescue` in the OpenPocket folder (read-only check), and `make rescue-write` to restore it. The steps are in docs/RESCUE.md; the SD-card route (fm1buddy, flash/) is the second choice.",
     uboot: "Enter UBOOT mode", logt: "Log",
     foot1: "OpenPocket is an independent project, not affiliated with Donner or M-VAVE. Install at your own risk. Source code: GPL-3.0.",
     foot2: "Update protocol and loader from Felucca and felucca-bsp (Hügelton Instruments, GPL-3.0 / MPL-2.0). JieLi AC79 SDK files: Apache-2.0. Inter typeface: SIL OFL 1.1.",

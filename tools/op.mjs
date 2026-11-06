@@ -4,6 +4,8 @@
 // .bat files only call this. Every Docker command line lives here.
 //   node tools/op.mjs doctor | build | test | package | clean | shell | image | serve [editor|build]
 //   node tools/op.mjs render in.wav [out.wav] [preset]   |   node tools/op.mjs appimage [fm1-1.bin]
+//   node tools/op.mjs rescue [--write] [options]   (restore a looping BlackBox from its UBOOT state; read-only without --write; docs/RESCUE.md)
+//   node tools/op.mjs rescue-check   (the UBOOT rescue tool against a simulated pedal: Python 3 only, no Docker)
 // NATIVE=1 runs the commands on this machine (toolchain from firmware/setup.sh) instead of in the container.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
@@ -13,6 +15,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const IMAGE = "openpocket-build";
 const native = Boolean(process.env.NATIVE || process.env.OP_IN_CONTAINER);
+const python = process.platform === "win32" ? ["py", "-3"] : ["python3"];
 const OUTS = "firmware/openpocket.bin docs/firmware/*.fwsc docs/firmware/manifest.json";
 
 function fail(message) {
@@ -67,6 +70,9 @@ const commands = {
       const img = spawnSync("docker", ["image", "inspect", IMAGE], { stdio: "ignore" });
       console.log(img.status === 0 ? `ok   image ${IMAGE} is built` : `note image ${IMAGE} is not built yet: the first build or \`image\` makes it (about 1 minute)`);
     }
+    const rescue = spawnSync(python[0], [...python.slice(1), "tools/uboot_rescue.py", "--check"], { cwd: root, encoding: "utf8" });
+    if (rescue.error) console.log("note rescue (looping pedal): Python 3 not found, `make rescue` is unavailable");
+    else for (const l of rescue.stdout.split("\n").filter(Boolean)) console.log(l.startsWith("FAIL") ? `note rescue: ${l.slice(5)}` : `${l.slice(0, 4)} rescue: ${l.slice(5)}`);
     if (process.arch === "arm64") console.log("note ARM machine: the linux/amd64 toolchain runs under emulation (a `test` takes about 1 minute)");
     return bad;
   },
@@ -88,10 +94,22 @@ const commands = {
       const built = commands.build();
       if (built !== 0) return built;
     }
-    const py = process.platform === "win32" ? ["py", "-3"] : ["python3"];
+    const py = python;
     const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", arg === "editor" ? "editor.html" : "index.html"], { stdio: "inherit", cwd: root });
     if (r.error) fail("Python 3 is needed to serve the installer offline (python.org).");
     return r.status ?? 0;
+  },
+  rescue(args) {                               // read-only unless --write; macOS needs root to take the pedal from its own driver
+    if (process.platform === "win32") fail("the rescue runs on macOS or Linux (it needs libusb and root). See docs/RESCUE.md.");
+    const root_ = typeof process.getuid === "function" && process.getuid() === 0;
+    const cmd = root_ || args.includes("--check") ? python : ["sudo", ...python];
+    if (cmd[0] === "sudo") console.log(`rescue: ${args.includes("--write") ? "WRITE" : "read-only"} run; sudo asks for your password, then the tool waits for the pedal in its UBOOT state`);
+    return exec(cmd[0], [...cmd.slice(1), "tools/uboot_rescue.py", ...args]);
+  },
+  "rescue-check"() {
+    const r = spawnSync(python[0], [...python.slice(1), "tests/test_uboot_rescue.py"], { stdio: "inherit", cwd: root });
+    if (r.error) fail("Python 3 is needed for the rescue tool tests (python.org).");
+    return r.status ?? 1;
   },
   render([input, output, preset]) {
     if (!input) fail("usage: render in.wav [out.wav] [preset 1..52]");

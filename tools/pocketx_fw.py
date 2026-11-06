@@ -155,30 +155,40 @@ def load(path):
     return raw, L, tag, u
 
 
+def package_checks(L, u):
+    """Every CRC of a package (UFW header and list, flash.bin and its JLFS entries, ota.bin, tail.bin) as {name: ok}."""
+    ok = ufw_checks(L, u)
+    for e in u["ents"]:
+        d = L[e["off"]:e["off"] + e["len"]]
+        if e["name"] == "flash.bin":
+            ok["flash.bin crc"] = crc16(d) == e["crc"]
+            dec = flash_decrypt(d)
+            ok.update(flash_checks(dec, flash_parse(dec)))
+        if e["name"] in ("ota.bin", "tail.bin"):
+            ok[f"{e['name']} crc"] = crc16(d) == e["crc"]
+    return ok
+
+
 def cmd_info(a):
     raw, L, tag, u = load(a.pkg)
     print(f"{a.pkg}: {len(raw)} B, identity {tag!r}, sha256 {hashlib.sha256(raw).hexdigest()[:16]}")
     print(f"UFW: chip {u['hdr'][16:22].decode()}, total {u['total']:#x}, {u['count']} entries")
-    ok = ufw_checks(L, u)
     for e in u["ents"]:
         d = L[e["off"]:e["off"] + e["len"]]
         print(f"  {e['name']:15s} type {e['type']:#06x} off {e['off']:#08x} len {e['len']:#08x} crc {e['crc']:04x}")
         if e["name"] == "flash.bin":
-            ok["flash.bin crc"] = crc16(d) == e["crc"]
             dec = flash_decrypt(d)
             fe = flash_parse(dec)
             for f in fe:
                 print(f"      {f['name']:15s} addr {f['addr']:#010x} len {f['len']:#08x} attr {f['attr']:#04x}")
-            ok.update(flash_checks(dec, fe))
             app = fe[1]
             a_ = dec[0x4000 + app["addr"]:0x4000 + app["addr"] + app["len"]]
             import re
             ver = [m.group().decode() for m in re.finditer(rb"[A-Za-z]+X?_\d{3}\b", a_)][:3]
             print(f"      app version strings: {ver}")
-        if e["name"] in ("ota.bin", "tail.bin"):
-            ok[f"{e['name']} crc"] = crc16(d) == e["crc"]
         if e["name"] == "script.ver":
             print(f"      -> {sfc(d, e['off']).decode('latin1')!r}")
+    ok = package_checks(L, u)
     bad = [k for k, v in ok.items() if not v]
     for k, v in ok.items():
         print(f"  [{'OK' if v else 'FAIL'}] {k}")

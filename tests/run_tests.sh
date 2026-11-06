@@ -6,6 +6,7 @@
 #  - preset store: save / reload / power cut at every step of a save (firmware/px_store.h on a simulated flash)
 #  - packages: tools/pxpkg.py rebuilds the official PocketX_016 app area byte for byte (needs the official file)
 #  - installer: docs/pxota.js + docs/pxpkg.js against a simulated pedal running the real update code (ota.c, ldr_core.c)
+#  - rescue: tools/uboot_rescue.py (protocol, guards, resume) against a simulated UBOOT pedal, tests/uboot_sim.py
 #  - page: docs/index.html in headless Chromium (needs Playwright: npm i playwright && npx playwright install chromium)
 set -e
 cd "$(dirname "$0")/.."
@@ -25,6 +26,8 @@ echo "== installer"
 node tests/test_installer.mjs "$1"
 echo "== build entry point (tools/op.mjs)"
 node tests/test_op.mjs
+echo "== rescue tool (tools/uboot_rescue.py on a simulated UBOOT pedal)"
+python3 tests/test_uboot_rescue.py $1
 echo "== editor"
 $CC -O1 -Wall -Wno-unused-function -o build/edsim tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 node tests/test_editor.mjs

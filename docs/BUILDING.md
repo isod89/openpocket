@@ -35,6 +35,8 @@ Apple silicon and other ARM machines Docker emulates it (Rosetta or QEMU); you c
 | `make serve` | the installer and editor on `http://localhost:8765/` (offline install; needs Python 3 on the host) |
 | `make render IN=guitar.wav [OUT=..] [PRESET=1]` | a DI recording through the engine |
 | `make appimage DUMP=fm1-1.bin` | `fm1-300.bin` for the SD-card recovery |
+| `make rescue` / `make rescue-write` | restore a looping BlackBox from its UBOOT state from a Mac (read-only first; asks for sudo; `ARGS="--package FILE"` for options): `docs/RESCUE.md` |
+| `make rescue-check` | the UBOOT rescue tool (`tools/uboot_rescue.py`, see `docs/RESCUE.md`) against a simulated pedal; needs only Python 3 |
 
 `make NATIVE=1 build` skips Docker and uses a toolchain installed on the machine (`sh firmware/setup.sh` installs it in
 `~/.jieli`; Linux x86-64 only). `tests/run_tests.sh` also runs directly on macOS and Linux with only a C compiler, Node and

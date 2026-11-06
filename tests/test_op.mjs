@@ -107,6 +107,30 @@ for (const p of ["build", "firmware/build", "firmware/openpocket.bin", "docs/fir
 }
 for (const p of ["docs/firmware/README.md", "engine/px_dsp.c", "guitar.wav"]) assert.ok(existsSync(join(root, p)), `${p} kept`);
 
+// rescue: sudo + python3 tools/uboot_rescue.py, read-only unless --write (fake sudo and python3 record their argv)
+const rescuebin = join(tmp, "rescuebin");
+mkdirSync(rescuebin);
+const rlog = join(tmp, "rescue.log");
+for (const name of ["sudo", "python3"]) writeFileSync(join(rescuebin, name), `#!/bin/sh\n{ printf '${name}'; for a in "$@"; do printf '\\t%s' "$a"; done; printf '\\n'; } >> "${rlog}"\nexit 0\n`, { mode: 0o755 });
+const rescueCalls = (args, env = {}) => {
+  rmSync(rlog, { force: true });
+  const r = op(args, { env, path: rescuebin });
+  return { status: r.status, calls: existsSync(rlog) ? readFileSync(rlog, "utf8").trim().split("\n").map((l) => l.split("\t")) : [] };
+};
+const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
+const viaSudo = asRoot ? [] : ["sudo"];
+let rc = rescueCalls(["rescue"]);
+assert.equal(rc.status, 0);
+assert.deepEqual(rc.calls.at(-1), [...viaSudo, "python3", "tools/uboot_rescue.py"], "rescue is read-only by default and runs as root via sudo");
+rc = rescueCalls(["rescue", "--write", "--package", "x.fwsc"]);
+assert.deepEqual(rc.calls.at(-1).slice(-4), ["tools/uboot_rescue.py", "--write", "--package", "x.fwsc"], "--write and options reach the tool");
+rc = rescueCalls(["rescue", "--check"]);
+assert.equal(rc.calls.at(-1)[0], "python3", "--check needs no sudo");
+assert.ok(rc.calls.every((c) => c[0] !== "sudo"));
+rmSync(rlog, { force: true });
+op(["doctor"], { path: `${fakebin}:${rescuebin}` });
+assert.deepEqual(readFileSync(rlog, "utf8").trim().split("\n").at(-1).split("\t"), ["python3", "tools/uboot_rescue.py", "--check"], "doctor checks the rescue prerequisites");
+
 const make = spawnSync("make", ["--version"], { encoding: "utf8" });
 if (make.status === 0) {
   rmSync(log, { force: true });
@@ -117,6 +141,17 @@ if (make.status === 0) {
   const calls = readFileSync(log, "utf8").trim().split("\n").map((l) => l.split("\t"));
   assert.equal(calls.at(-1)[2], "-it", "make shell goes through op.mjs");
   assert.ok(calls.at(-1).includes("openpocket-build") && calls.at(-1).at(-1) === "bash");
+  rmSync(log, { force: true });
+  const rc = spawnSync("make", ["-C", repo, "rescue-check"], { env, encoding: "utf8" });
+  assert.equal(rc.status, 0, rc.stdout + rc.stderr);
+  assert.ok(!existsSync(log), "make rescue-check needs no docker");
+  for (const [target, write] of [["rescue", false], ["rescue-write", true]]) {
+    rmSync(rlog, { force: true });
+    const mr = spawnSync("make", ["-C", repo, target, "ARGS=--attempts 3"], { env: { ...env, PATH: `${rescuebin}:${process.env.PATH}`, FAKE_DOCKER_LOG: log }, encoding: "utf8" });
+    assert.equal(mr.status, 0, mr.stderr);
+    const last = readFileSync(rlog, "utf8").trim().split("\n").at(-1).split("\t");
+    assert.deepEqual(last.slice(-(write ? 4 : 3)), write ? ["tools/uboot_rescue.py", "--write", "--attempts", "3"] : ["tools/uboot_rescue.py", "--attempts", "3"], `make ${target}`);
+  }
 } else {
   console.log("(make not installed: Makefile delegation skipped)");
 }

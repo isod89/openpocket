@@ -60,8 +60,9 @@ setting was still the official firmware's (it survives a warm reset), so the ped
 the DSP slower and crackle, so v33 leaves them as the boot loader does again.) Being tested on the BlackBox. For a pedal that
 restarts in a loop, the page has a **rescue mode** (step 2): tick it, press Connect, plug the pedal in; the install
 starts the moment the pedal answers and halts its DSP at once. A BlackBox can always go back to its official firmware from the page (step 3). It is the same JieLi update system as the M-VAVE FM-1, where this method is
-used by Felucca, CLIPPER and SLOOP. Keep the SD-card recovery at hand (`flash/`: fm1buddy on an ESP32-S3,
-`makeimage.bat`).
+used by Felucca, CLIPPER and SLOOP. If the pedal still loops, restore it from a Mac with no extra hardware: `make rescue` (read-only check and backup), then
+`make rescue-write` (`docs/RESCUE.md`; it needs `brew install libusb`, sudo and the official BlackBox file). The second route is the
+SD-card recovery (`flash/`: fm1buddy on an ESP32-S3, `makeimage.bat`).
 
 **Without internet**: double-click `INSTALL-OFFLINE.bat` (Windows; nothing to install: a small PowerShell server,
 `tools/serve_offline.ps1`) or run `make serve` (macOS, Linux; `tools/serve.py`, needs Python 3). It serves the installer
