@@ -77,6 +77,7 @@ const char *px_param_name(int blk, int type, int k);
 int         px_type_v34(int blk, int old);   /* presets saved before v34: old type -> new */
 #define PX_PATCH_LEVEL 2                /* the preset LEVEL: p[PX_B_GATE][2] ("PRESET LVL" on the GT page), 50 = 0 dB (v36) */
 int         px_dly_time_v35(int type, int v);   /* presets saved before v35: delay TIME (20..1000 ms) -> today's knob */
+int         px_dly_value_for_ms(int type, float ms);   /* the TIME value nearest to a delay of ms (MIDI clock sync) */
 int         px_param_text(int blk, int type, int k, int v, char *buf8);
 int         px_preset_count(void);
 void        px_preset_factory(px_preset_t *p, int idx);

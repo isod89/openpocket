@@ -1,6 +1,10 @@
 build/
 firmware/build/
 firmware/openpocket.bin
+firmware/build-ble/
+firmware/openpocket-ble.bin
+firmware/openpocket-*.bin
+docs/firmware/midi-test/
 docs/firmware/*.fwsc
 docs/firmware/manifest.json
 *.o
@@ -9,4 +13,6 @@ __pycache__/
 fm1-1.bin
 fm1-300.bin
 *.dump.bin
+*.fcp
 openpocket.bundle
+node_modules/

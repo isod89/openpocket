@@ -12,8 +12,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the container, the firmware and the installer packages
         run: node tools/op.mjs package
-      - name: Host tests
-        run: node tools/op.mjs test
       - uses: actions/upload-artifact@v4
         with:
           name: openpocket-build
@@ -22,3 +20,14 @@ jobs:
             docs/firmware/*.fwsc
             docs/firmware/manifest.json
             build/SHA256SUMS
+      - name: Build the MIDI test channel package (never the installer default)
+        run: node tools/op.mjs package-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openpocket-midi-test
+          path: |
+            firmware/openpocket-midi-test.bin
+            docs/firmware/midi-test/
+            build/SHA256SUMS-midi-test
+      - name: Host tests
+        run: node tools/op.mjs test

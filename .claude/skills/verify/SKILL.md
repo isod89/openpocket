@@ -1,13 +1,14 @@
 ---
 name: verify
-description: Verify OpenPocket (guitar multi-effects firmware for the Donner Pocket X / M-VAVE BlackBox) without a pedal: build the firmware and installer packages in the pinned container, run the host tests and simulators, and drive the web installer (docs/index.html) and editor (docs/editor.html) in headless Chromium against simulated pedals. Use after any change to firmware/, engine/, loader/, tools/, tests/ or docs/*.html|js, and before claiming a change works. Only a person with a real pedal can verify sound and USB behaviour on hardware.
+description: Verify OpenPocket (guitar multi-effects firmware for the Donner Pocket X / M-VAVE BlackBox) without a pedal: build the firmware and installer packages in the pinned container, run the host tests and simulators, and drive the web installer (docs/index.html) and editor (docs/editor.html) in headless Chromium against simulated pedals. Use after any change to firmware/, engine/, loader/, tools/, tests/ or docs/*.html|js, and before claiming a change works. For a connected pedal, use the verify-pedal skill; only a person can verify sound.
 ---
 
 # Verify OpenPocket
 
 No user session exists to drive: the product is firmware that runs on a pedal, plus two static web pages. "Driving it as a
 user" means (1) building what a user installs, (2) running the pedal's own code on the PC in simulators, and (3) clicking
-through the installer and editor pages with a mocked Web MIDI device. Never flash or contact a real device from here.
+through the installer and editor pages with a mocked Web MIDI device. Never flash or contact a real device from here: that
+is the `verify-pedal` skill.
 
 ## Launch
 

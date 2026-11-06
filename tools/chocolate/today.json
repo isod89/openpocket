@@ -1,0 +1,10 @@
+{
+  "mode": "mode4",
+  "channel": 2,
+  "switches": {
+    "A": { "cc": 24, "first": 127, "second": 0 },
+    "B": { "cc": 28, "first": 127, "second": 0 },
+    "C": { "cc": 29, "first": 127, "second": 0 },
+    "D": { "cc": 30, "first": 127, "second": 0 }
+  }
+}

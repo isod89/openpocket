@@ -87,3 +87,19 @@ export async function checkOfficial(bytes) {
   }
   return { product, model: m[1], known, image, sha256: sha };
 }
+
+// an OpenPocket package against its manifest entry ({ product, size, sha256 }), before anything is sent to a pedal:
+// size, SHA-256, identity (Model_9NN) and the UFW structure. Returns { product, model, image } or throws an Error.
+export async function verifyPackage(bytes, entry) {
+  if (bytes.length !== entry.size) throw new Error(`the package is ${bytes.length} bytes, the manifest says ${entry.size}`);
+  const sha = await sha256hex(bytes);
+  if (sha !== entry.sha256) throw new Error(`SHA-256 mismatch: the package is ${sha}, the manifest says ${entry.sha256}`);
+  const product = productOf(bytes);
+  const m = /^(PocketX|BlackBox)_9\d\d$/.exec(product);
+  if (!m || product !== entry.product) throw new Error(`the package identity is "${product}", the manifest says ${entry.product}`);
+  const image = logicalImage(bytes);
+  const ents = ufwEntries(image);
+  const fl = ents && ents.find((e) => e.type === 0), ota = ents && ents.find((e) => e.type === 100);
+  if (!fl || !ota || !fl.crcOk || !ota.crcOk) throw new Error("the package is damaged (UFW / CRC)");
+  return { product, model: m[1], image };
+}

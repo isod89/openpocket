@@ -1,6 +1,7 @@
 .git
 build
 firmware/build
+firmware/build-ble
 docs/firmware/*.fwsc
 node_modules
 fm1-1.bin

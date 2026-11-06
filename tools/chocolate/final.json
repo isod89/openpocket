@@ -1,0 +1,8 @@
+{
+  "mode": "mode5",
+  "channel": 2,
+  "groups": [
+    { "A": { "cc": 12, "value": 0 }, "B": { "cc": 16, "value": 0 }, "C": { "cc": 17, "value": 0 }, "D": { "cc": 18, "value": 0 } },
+    { "A": { "cc": 11, "value": 0 }, "B": { "cc": 10, "value": 0 } }
+  ]
+}

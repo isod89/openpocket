@@ -24,8 +24,9 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".json": "applic
 const server = createServer((req, res) => {
   try {
     const p = join(SITE, decodeURIComponent(req.url.split("?")[0]).replace(/\/$/, "/index.html"));
+    const body = readFileSync(p);
     res.writeHead(200, { "content-type": TYPES[extname(p)] || "application/octet-stream" });
-    res.end(readFileSync(p));
+    res.end(body);
   } catch (_) { res.writeHead(404); res.end(); }
 }).listen(0);
 const url = `http://127.0.0.1:${server.address().port}/`;
@@ -112,6 +113,20 @@ await page.waitForFunction(() => /PocketX_924/.test(document.getElementById("msg
 ok(/PocketX_924/.test(await page.textContent("#msg")), "rescue: the pedal appears, the install runs by itself");
 ok(!(await page.isChecked("#rescueOn")), "rescue: the mode turns itself off once done");
 await page.screenshot({ path: join(OUT, "page_4_rescue.png"), fullPage: true });
+// a test channel: only through ?channel=NAME, from its own folder, with its banner; the normal page has none
+cpSync(join(FIX, "firmware"), join(SITE, "firmware", "midi-test"), { recursive: true });
+{
+  const ch = await browser.newPage({ viewport: { width: 820, height: 900 } });
+  await ch.goto(url + "?channel=midi-test");
+  await ch.waitForFunction(() => /midi-test/.test(document.getElementById("pkgver").textContent), null, { timeout: 5000 });
+  ok(await ch.isVisible("#testchan"), "test channel: the banner says it is a test build");
+  ok(/\(midi-test\)/.test(await ch.textContent("#pkgver")), "test channel: the packages come from firmware/midi-test/");
+  await ch.goto(url + "?channel=../../etc");
+  await ch.waitForFunction(() => document.getElementById("pkgver").textContent !== "…", null, { timeout: 5000 });
+  ok((await ch.textContent("#pkgver")) === "—", "test channel: a path in the name is cleaned (firmware/etc/ is asked for, nothing outside firmware/)");
+  await ch.screenshot({ path: join(OUT, "page_5_test_channel.png"), fullPage: true });
+  ok(!(await page.isVisible("#testchan")), "the normal page shows no test banner");
+}
 await browser.close();
 if (sim) sim.stdin.end();
 server.close();

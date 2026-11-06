@@ -85,6 +85,7 @@ footer a,.note a{color:inherit}
     <p class="note"><span data-t="s2note"></span> <strong id="pkgver">…</strong></p>
     <p class="note warnbox" data-t="s2warn"></p>
     <p class="note warnbox" id="bbwarn" hidden data-t="bbwarn"></p>
+    <p class="note warnbox" id="testchan" hidden data-t="testchan"></p>
     <label class="chk"><input type="checkbox" id="rescueOn"><span data-t="rescueon"></span></label>
     <div class="row">
       <button class="go" id="install" disabled data-t="install"></button>
@@ -148,6 +149,7 @@ const T = {
     foot1: "OpenPocket is an independent project, not affiliated with Donner or M-VAVE. Install at your own risk. Source code: GPL-3.0.",
     foot2: "Update protocol and loader from Felucca and felucca-bsp (Hügelton Instruments, GPL-3.0 / MPL-2.0). JieLi AC79 SDK files: Apache-2.0. Inter typeface: SIL OFL 1.1.",
     e_notfound: "Pedal not found. Check the cable (data), close other MIDI apps, then try again.",
+    testchan: "TEST CHANNEL: this installs a test build, not the release. It is for people who agreed to try it, and it is not the version the normal installer page offers. To go back, open this page without ?channel=… and press Install.",
     bbwarn: "M-VAVE BlackBox: v31 is the fix for issue #1 (OpenPocket restarted every 4 s after the pedal was switched off and on), still being tested on the BlackBox. Please report how it goes on GitHub. If your BlackBox restarts in a loop, use the rescue mode below.",
 toeditor: "Preset editor →",
         rescueon: "Rescue mode, for a pedal that restarts in a loop: tick this, press Connect, then plug the pedal in (or let it restart). The install starts by itself as soon as the pedal answers; it stops the pedal's sound processing at once, so the restarts stop. It installs the official file chosen in step 3 if there is one for this pedal, otherwise OpenPocket.",
@@ -178,15 +180,19 @@ function setState(text, cls = "") { const p = $("state"); p.textContent = text; 
 function setMsg(el, text, cls = "") { el.textContent = text; el.className = "msg " + cls; }
 const errText = (e) => (e && e.code && T.en["e_" + e.code] ? t("e_" + e.code) + (e.detail || "") : (e && e.message) || String(e));
 
+/* a test channel (?channel=midi-test): packages from firmware/<channel>/, never offered without the link */
+const CHANNEL = (new URLSearchParams(location.search).get("channel") || "").replace(/[^a-z0-9-]/g, "");
+const FW = "firmware/" + (CHANNEL ? CHANNEL + "/" : "");
 let access = null, up = null, manifest = null, lastDev = null, busy = false, official = null;
 
 if (!navigator.requestMIDIAccess) { $("nomidi").hidden = false; $("connect").disabled = true; }
+$("testchan").hidden = !CHANNEL;
 
 async function loadManifest() {
   try {
-    const r = await fetch("firmware/manifest.json", { cache: "no-store" });
+    const r = await fetch(FW + "manifest.json", { cache: "no-store" });
     manifest = await r.json();
-    $("pkgver").textContent = "v" + manifest.version;
+    $("pkgver").textContent = "v" + manifest.version + (CHANNEL ? " (" + CHANNEL + ")" : "");
   } catch (e) { $("pkgver").textContent = "—"; log("manifest: " + e.message); }
 }
 
@@ -244,7 +250,7 @@ function progress(kind, n) {
 async function packageFor(model) {
   const p = manifest && manifest.packages.find((x) => x.model === model);
   if (!p) throw Object.assign(new Error(model), { code: "pkg", detail: model });
-  const r = await fetch("firmware/" + p.file, { cache: "no-store" });
+  const r = await fetch(FW + p.file, { cache: "no-store" });
   if (!r.ok) throw Object.assign(new Error(p.file), { code: "pkg", detail: p.file });
   const bytes = new Uint8Array(await r.arrayBuffer());
   if (productOf(bytes) !== p.product) throw new Error("package identity mismatch");

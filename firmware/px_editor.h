@@ -9,7 +9,8 @@
  * editor made itself is not echoed back.
  * The including file provides: PRESET, cur_preset, load_preset, ui_blk / ui_mode / ui_item (ui.h), st_gen, the
  * store (px_store.h), BLK_COL (ui_colors.h), ota_frame_get / ota_frame_done / ota_wire_send, ms_now, OP_VERSION,
- * FELUCCA_ID_PTR, and ed_load / ed_flags (the DSP load for PING).
+ * FELUCCA_ID_PTR, and ed_load / ed_flags (the DSP load for PING). An image with a log channel also defines ED_DIAG_LINES
+ * and ed_diag_line(i, out), which writes line i (at most ED_DIAG_LEN - 1 characters); without them DIAG gets no reply.
  */
 #pragma once
 
@@ -21,7 +22,7 @@
 #define ED_P_SIZE 110u
 typedef char ed_size_check[sizeof(px_preset_t) == ED_P_SIZE ? 1 : -1];
 enum { ED_INFO = 1, ED_CAT_BLOCK, ED_CAT_TYPE, ED_TEXTS, ED_STATE, ED_SET, ED_ORDER, ED_NAME, ED_PUT, ED_SELECT,
-       ED_FOCUS, ED_LIST, ED_SLOT_GET, ED_SLOT_PUT, ED_COMMIT, ED_SAVE, ED_WATCH, ED_PING };
+       ED_FOCUS, ED_LIST, ED_SLOT_GET, ED_SLOT_PUT, ED_COMMIT, ED_SAVE, ED_WATCH, ED_PING, ED_DIAG };
 
 static uint8_t ed_out[1024];
 static uint32_t ed_n;
@@ -231,6 +232,14 @@ static void ed_handle(const uint8_t *a, uint32_t n)   /* a: the args, after the 
     case ED_PING:
         ed_b(ed_load() > 127u ? 127u : ed_load()); ed_b(ed_flags());
         break;
+#ifdef ED_DIAG_LINES
+    case ED_DIAG: {                                    /* read only: nothing here changes the pedal */
+        static char l[ED_DIAG_LEN];
+        ed_b(ED_DIAG_LINES);
+        for (i = 0; i < ED_DIAG_LINES; i++) { ed_diag_line(i, l); ed_str(l, sizeof l - 1u); }
+        break;
+    }
+#endif
     default:
         return;
     }

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "px_dsp.h"
+#include "../firmware/px_midi.h"
 
 enum { RED = 0xF800, GRN = 0x07E0, BLU = 0x001F, WHT = 0xFFFF, BLK = 0x0000, CYN = 0x07FF, YEL = 0xFFE0, ORG = 0xFD20 };
 enum { UI_BG = 0x0841, UI_PANEL = 0x18E3, UI_SEL = 0xFB00, UI_ACC = 0xFD20, UI_TXT = 0xEF7D, UI_DIM = 0x8410, UI_OK = 0x4E6B, UI_OFF = 0x2124 };
@@ -52,6 +53,10 @@ static int a_level_db(int ch) { return ch ? -84 : -62; }
 static volatile uint8_t a_tmute;
 static int bat_mv = 3920, bat_usb_mv = 0;
 
+static void b_num(char *d, uint32_t v) { char t[12]; int n = 0; while (*d) d++; do { t[n++] = (char)('0' + v % 10u); v /= 10u; } while (v); while (n) *d++ = t[--n]; *d = 0; }
+static void b_str(char *d, const char *s) { while (*d) d++; while (*s) *d++ = *s++; *d = 0; }
+static int midi_saved;
+static void midi_persist(void) { midi_saved++; }
 #include "ui_text.h"
 #include "ui.h"
 
@@ -105,5 +110,17 @@ int main(int argc, char **argv)
     tuner_open(); tuner_draw(110.5f); shot(d, "tuner_a_flat");
     tuner_draw(110.0f); shot(d, "tuner_a_ok");
     tuner_close(); poison(); ui_render(); status(); shot(d, "play_after_tuner");
+    px_midi_cfg_unpack(&mid_cfg, 0);
+    midi_open(); midi_draw(); shot(d, "midi_defaults");
+    midi_knob(1); midi_knob(1); midi_draw(); shot(d, "midi_channel_2");
+    midi_push(); midi_knob(1); mid_usb_up = 1; mid_last[0] = PXM_CC; mid_last[1] = 25; mid_last[2] = 127; midi_draw(); shot(d, "midi_send_off_host_cc");
+    midi_push(); midi_knob(1); mid_last[0] = PXM_PC; mid_last[1] = 11; midi_draw(); shot(d, "midi_clock_on_pc");
+    midi_push(); poison(); uc.screen = -1; ui_invalidate(); ui_render(); status();
+    if (midi_saved != 1 || ui_mode != M_CHAIN) { printf("midi: leaving the page after a change must save once and return to the chain\n"); return 1; }
+    midi_open(); midi_close();
+    if (midi_saved != 1) { printf("midi: leaving without a change must not save\n"); return 1; }
+    mid_cfg.chan = 16; midi_open(); midi_knob(1); midi_draw(); shot(d, "midi_channel_wraps_to_omni");
+    if (mid_cfg.chan != 0) { printf("midi: channel 16 + 1 must wrap to omni\n"); return 1; }
+    midi_knob(-1); if (mid_cfg.chan != 16) { printf("midi: omni - 1 must wrap to 16\n"); return 1; }
     return 0;
 }

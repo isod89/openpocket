@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "px_dsp.h"
+#include "../firmware/px_midi.h"
 
 static uint8_t nor[0x100000];
 static int fails, ops, cut_at = -1, dead;          /* power cut: after cut_at flash operations nothing more happens */
@@ -53,7 +54,7 @@ static void load_preset(uint32_t i) { st_get(i, &PRESET); }
 #define ST_IRQ_OFF() ((void)0)
 #include "../firmware/px_store.h"
 
-static void reboot(void) { memset(st_slot, 0, sizeof st_slot); st_cur = st_seq = 0; st_last = 0; px_store_boot(); }
+static void reboot(void) { memset(st_slot, 0, sizeof st_slot); st_cur = st_seq = 0; st_last = 0; st_midi = 0x55; mid_cfg.chan = 9; px_store_boot(); }
 static void loader_bytes_clear(void)
 {
     for (uint32_t s = 0xF0000u; s < 0xF4000u; s += 0x1000u)
@@ -220,6 +221,48 @@ int main(void)
               "format 3 store: TAPE 510 ms stays 510 ms (knob 50 -> 40), REVERSE untouched");
         CHECK(px_dly_time_v35(PX_DLY_DIGITAL, 100) == 80 && px_dly_time_v35(PX_DLY_DIGITAL, 0) == 0, "v34's 1000 ms -> 80, 20 ms -> 0");
         loader_bytes_clear();
+    }
+    loader_bytes_clear();
+
+    /* the MIDI settings ride in the header of the copy: saved with it, back after a power cycle */
+    {
+        px_preset_t q;
+        px_preset_factory(&q, 4);
+        mid_cfg.chan = 7; mid_cfg.send = 0; mid_cfg.clock = 1;
+        st_midi = px_midi_cfg_pack(&mid_cfg);
+        CHECK(st_commit() == 0, "settings: a commit without a new sound");
+        reboot();
+        CHECK(mid_cfg.chan == 7 && !mid_cfg.send && mid_cfg.clock, "settings: channel 7, send off, clock on survive a power cycle");
+        CHECK(st_save(4, &q) == 0, "settings: a preset save");
+        reboot();
+        CHECK(mid_cfg.chan == 7 && !mid_cfg.send && mid_cfg.clock, "settings: still there after a preset save (the header is rewritten with them)");
+        {   /* a store written before the settings existed has zero there: the defaults, not the last boot's values */
+            st_hdr_t h;
+            uint32_t base = st_cur;
+            memcpy(&h, nor + base, sizeof h);
+            h.pad[0] = 0;
+            memcpy(nor + base, &h, sizeof h);
+            reboot();
+            CHECK(mid_cfg.chan == 0 && mid_cfg.send && !mid_cfg.clock, "settings: a header with 0 there (every earlier OpenPocket) = omni, send on, clock off");
+        }
+        {   /* a power cut during the commit of settings: the old settings or the new, the presets intact */
+            uint32_t olds = 0, news = 0, bad = 0;
+            for (int cut = 0; cut < 9000; cut += 11) {
+                uint8_t keep[0x100000];
+                memcpy(keep, nor, sizeof nor);
+                mid_cfg.chan = 12; mid_cfg.send = 1; mid_cfg.clock = 0;
+                st_midi = px_midi_cfg_pack(&mid_cfg);
+                ops = 0; dead = 0; cut_at = cut;
+                st_commit();
+                cut_at = -1; dead = 0;
+                reboot();
+                if (mid_cfg.chan == 12) news++; else if (mid_cfg.chan == 0) olds++; else bad++;
+                st_get(4, &q);
+                if (!st_saved(4)) bad++;
+                memcpy(nor, keep, sizeof nor);
+            }
+            CHECK(bad == 0 && olds > 0 && news > 0, "settings: a power cut during a settings save leaves the old or the new, never a broken store");
+        }
     }
     loader_bytes_clear();
     printf(fails ? "%d FAILED\n" : "store tests passed\n", fails);
