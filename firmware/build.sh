@@ -27,12 +27,25 @@ CPU1OBJ=""
 if grep -q "^#define DSP_CPU1 1" "$HERE/openpocket.c"; then
   $CC -c "$BSP/chip/fm1_cpu1.S" -o "$O/cpu1.o"; CPU1OBJ="$O/cpu1.o"
 fi
+# A test channel build (OP_CHANNEL=midi-test): its own version number (OP_TEST_VERSION, default 37) and a boot-screen tag, its
+# own files (firmware/openpocket-midi-test.bin, docs/firmware/midi-test/). The release files are not touched.
+CHAN="${OP_CHANNEL:-}"
+BIN="$HERE/openpocket.bin"; PKGDIR="$HERE/../docs/firmware"
+: > "$O/channel.h"
+if [ -n "$CHAN" ]; then
+  case "$CHAN" in *[!a-z0-9-]*|"") echo "ERROR: OP_CHANNEL must be lowercase letters, digits and -"; exit 1;; esac
+  TESTVER="${OP_TEST_VERSION:-37}"
+  printf '#define OP_VERSION_NUM "%s"\n#define OP_TAG " MIDI TEST"\n' "$TESTVER" > "$O/channel.h"
+  BIN="$HERE/openpocket-$CHAN.bin"; PKGDIR="$HERE/../docs/firmware/$CHAN"
+  rm -f "$BIN"
+  echo "Test channel: $CHAN, version $TESTVER -> $BIN, $PKGDIR"
+fi
 # AC791N hardware FPU (same options as the JieLi SDK for the WL82) + DSP engine at 44.1 kHz
 FP="-mcpu=r3 -mfprev1"
 DSPDEF="-DPX_SR=44100.0f -DPX_OVERSAMPLE=4"
 INC="-I$HERE/inc -I$HERE/../engine"
 $CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $INC \
-    -I"$BSP/chip" -I"$BSP/boards/fm1" -c "$HERE/openpocket.c" -o "$O/openpocket.o"
+    -I"$BSP/chip" -I"$BSP/boards/fm1" -include "$O/channel.h" -c "$HERE/openpocket.c" -o "$O/openpocket.o"
 $CC $FP -O2 -fno-builtin $DSPDEF $INC -c "$HERE/../engine/px_dsp.c" -o "$O/px_dsp.o"
 $CC $FP -O2 -fno-builtin -c "$HERE/px_math.c" -o "$O/px_math.o"
 # official JieLi I2S driver (LLVM bitcode from the AC79 SDK, Apache-2.0) -> pi32v2 object
@@ -43,7 +56,7 @@ $CC -Os -c -x ir "$HERE/sdk/iis.bc" -o "$O/iis.o"
 "$TC/common/bin/objcopy" -O binary -j .text     "$O/openpocket.elf" "$O/text.bin"
 "$TC/common/bin/objcopy" -O binary -j .data     "$O/openpocket.elf" "$O/data.bin"
 "$TC/common/bin/objcopy" -O binary -j .ram_text "$O/openpocket.elf" "$O/rt.bin" 2>/dev/null || : > "$O/rt.bin"
-python3 - "$TC" "$O" "$HERE/openpocket.bin" <<'PY'
+python3 - "$TC" "$O" "$BIN" <<'PY'
 import re,subprocess,sys
 tc,out,dest=sys.argv[1:]
 syms=subprocess.run([f"{tc}/common/bin/objdump","-t",f"{out}/openpocket.elf"],capture_output=True,text=True,check=True).stdout
@@ -79,5 +92,6 @@ python3 "$HERE/../tools/mkloader.py" "$L/loader.bin" "$L/ota.bin"
 
 # ---- update packages for the web installer -> docs/firmware/ (PocketX_9NN.fwsc, BlackBox_9NN.fwsc, manifest.json) ----
 VER=$(sed -n 's/^#define OP_VERSION_NUM "\([0-9]*\)".*/\1/p' "$HERE/openpocket.c")
-python3 "$HERE/../tools/pxpkg.py" "$HERE/openpocket.bin" "$L/ota.bin" "$HERE/../docs/firmware" --version "$VER" \
+[ -n "$CHAN" ] && VER="$TESTVER"
+python3 "$HERE/../tools/pxpkg.py" "$BIN" "$L/ota.bin" "$PKGDIR" --version "$VER" \
     --sdk-files "$HERE/sdk/packager"

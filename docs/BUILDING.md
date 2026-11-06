@@ -29,6 +29,7 @@ Apple silicon and other ARM machines Docker emulates it (Rosetta or QEMU); you c
 | `make doctor` | check Node, Docker and the image, one line each (exit 1 when the build cannot work) |
 | `make build` | `firmware/build.sh` in the container: `firmware/openpocket.bin`, the update loader, `docs/firmware/PocketX_9NN.fwsc`, `BlackBox_9NN.fwsc`, `manifest.json` |
 | `make package` | `build`, then `build/SHA256SUMS` |
+| `make package-test` | the MIDI test channel (`OP_CHANNEL=midi-test`): `firmware/openpocket-midi-test.bin` and `docs/firmware/midi-test/` (v37 MIDI TEST, its own `manifest.json`), with `build/SHA256SUMS-midi-test`. The release files are not touched and the installer offers it only with `?channel=midi-test` |
 | `make test` | `tests/run_tests.sh` (engine, preset store, screen, simulated pedal, installer, editor; the browser page tests also run when Playwright is installed) |
 | `make clean` | remove every build output (on the host; needs neither Docker nor the image) |
 | `make shell` | a shell in the container (as your user) |

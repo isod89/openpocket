@@ -49,6 +49,11 @@ assert.equal(r.calls.filter((c) => c[0] === "run").length, 1, "package is one co
 assert.deepEqual(r.calls.at(-1).slice(0, -1), base(["sh", "-c"]));
 assert.match(r.calls.at(-1).at(-1), /^sh firmware\/build\.sh && .*sha256sum .*openpocket\.bin.*> build\/SHA256SUMS/);
 
+r = op(["package-test"]);
+assert.equal(r.calls.filter((c) => c[0] === "run").length, 1, "package-test is one container run");
+assert.match(r.calls.at(-1).at(-1), /^OP_CHANNEL=midi-test sh firmware\/build\.sh && .*sha256sum firmware\/openpocket-midi-test\.bin docs\/firmware\/midi-test\/\*\.fwsc/);
+assert.doesNotMatch(r.calls.at(-1).at(-1), /docs\/firmware\/manifest\.json/, "the test package never touches the default manifest");
+
 r = op(["shell"]);
 assert.deepEqual(r.calls.at(-1), ["run", "--rm", "-it", ...base(["bash"]).slice(2)], "shell has a tty and the user");
 
@@ -97,12 +102,12 @@ r = op(["build"], { path: join(tmp, "empty") });
 assert.notEqual(r.status, 0);
 assert.match(r.err, /Docker is not installed or not running/, "no docker at all");
 
-for (const p of ["build/x", "firmware/build/y", "docs/firmware/PocketX_900.fwsc", "docs/firmware/manifest.json", "engine/px_render"]) touch(p);
+for (const p of ["firmware/openpocket-midi-test.bin", "docs/firmware/midi-test/PocketX_937.fwsc", "build/x", "firmware/build/y", "docs/firmware/PocketX_900.fwsc", "docs/firmware/manifest.json", "engine/px_render"]) touch(p);
 touch("docs/firmware/README.md");
 touch("engine/px_dsp.c");
 r = op(["clean"], { path: join(tmp, "empty") });
 assert.equal(r.status, 0, "clean needs no docker");
-for (const p of ["build", "firmware/build", "firmware/openpocket.bin", "docs/firmware/PocketX_900.fwsc", "docs/firmware/manifest.json", "engine/px_render"]) {
+for (const p of ["build", "firmware/build", "firmware/openpocket.bin", "firmware/openpocket-midi-test.bin", "docs/firmware/midi-test", "docs/firmware/PocketX_900.fwsc", "docs/firmware/manifest.json", "engine/px_render"]) {
   assert.ok(!existsSync(join(root, p)), `${p} removed`);
 }
 for (const p of ["docs/firmware/README.md", "engine/px_dsp.c", "guitar.wav"]) assert.ok(existsSync(join(root, p)), `${p} kept`);

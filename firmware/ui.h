@@ -23,13 +23,14 @@
  */
 #pragma once
 
-enum { M_CHAIN, M_BLOCK, M_EDIT, M_TUNER, M_SAVE, M_MOVE };
+enum { M_CHAIN, M_BLOCK, M_EDIT, M_TUNER, M_SAVE, M_MOVE, M_MIDI };
 static uint32_t st_gen;                 /* bumped on each save: the "EDITED" reference reloads */
 static void st_get(uint32_t k, px_preset_t *p);
 static int st_save(uint32_t k, const px_preset_t *p);
 static int st_reset(uint32_t k);
 static int st_saved(uint32_t k);
 static void save_draw(void);
+static void midi_draw(void);
 static uint32_t ui_mode = M_CHAIN, ui_blk = PX_B_AMP, ui_item = 0;
 #define UI_PAGE (ui_mode == M_BLOCK || ui_mode == M_EDIT)   /* the block page has the focus */
 
@@ -143,7 +144,7 @@ static void draw_status(int force)
 /* the DSP load, from the main loop: "C1 42%" (2nd core), "C0", "BYP" (red) */
 static void ui_status(const char *s, int red)
 {
-    if (ui_mode == M_TUNER || ui_mode == M_SAVE) return;
+    if (ui_mode == M_TUNER || ui_mode == M_SAVE || ui_mode == M_MIDI) return;
     int same = uc.status_red == red;
     for (int i = 0; i < 12; i++) { if (uc.status[i] != s[i]) same = 0; if (!s[i]) break; }
     if (same && !uc.full) return;
@@ -309,6 +310,7 @@ static void ui_render(void)
 {
     if (ui_mode == M_TUNER) return;
     if (ui_mode == M_SAVE) { save_draw(); return; }
+    if (ui_mode == M_MIDI) { midi_draw(); return; }
     int scr = UI_PAGE ? 1 : 0;
     if (scr != uc.screen) { uc.screen = scr; uc.full = 1; }
     int f = uc.full;
@@ -456,6 +458,65 @@ static void save_confirm(void)
     for (int i = 0; i < 7; i++) { fm1_wdt_feed(); fm1_delay_ms(100); }
     save_close();
 }
+/* ===================================================== MIDI page ======== */
+/* hold FX: the MIDI settings (docs/MIDI.md). KNOB changes the selected row, PUSH moves to the next row and, after the
+ * last one, leaves; HOME leaves. The settings are saved (a flash write, as SAVE) only if something changed. */
+enum { MI_CHAN, MI_SEND, MI_CLOCK, MI_ROWS };
+static uint32_t mi_row, mi_shown_hash = ~0u;
+static uint8_t mi_orig;
+static void midi_persist(void);                 /* openpocket.c: writes the settings to the store */
+static void midi_open(void)
+{
+    ui_mode = M_MIDI; mi_row = 0; mi_shown_hash = ~0u; mi_orig = px_midi_cfg_pack(&mid_cfg);
+    lcd_rect(0, 0, 240, 240, UI_BG);
+    lcd_rect(0, 0, 240, 4, UI_ACC); lcd_rect(0, 27, 240, 3, UI_ACC); lcd_rect(0, 4, 8, 23, UI_ACC);
+    ft_box(8, 4, 232, "MIDI", &FT_MD, BLK, UI_ACC, 0);
+    lcd_rect(0, F_Y, 240, 240u - F_Y, UI_PANEL);
+    ft_box(0, F_Y + 3u, 240, "KNOB: SET   PUSH: NEXT   HOME: OK", &FT_SM, UI_DIM, UI_PANEL, 1);
+}
+static void midi_draw(void)
+{
+    uint32_t h = mi_row | (uint32_t)px_midi_cfg_pack(&mid_cfg) << 4 | (uint32_t)mid_usb_up << 12 |
+                 (uint32_t)mid_last[0] << 13 | (uint32_t)mid_last[1] << 16 | (uint32_t)mid_last[2] << 23;
+    if (h == mi_shown_hash) return;
+    mi_shown_hash = h;
+    static const char *const NAME[MI_ROWS] = {"CHANNEL", "SEND", "CLOCK > DELAY"};
+    char v[MI_ROWS][8];
+    if (mid_cfg.chan) { v[0][0] = (char)(mid_cfg.chan >= 10 ? '0' + mid_cfg.chan / 10 : ' '); v[0][1] = (char)('0' + mid_cfg.chan % 10); v[0][2] = 0; }
+    else { v[0][0] = 'O'; v[0][1] = 'M'; v[0][2] = 'N'; v[0][3] = 'I'; v[0][4] = 0; }
+    v[1][0] = v[2][0] = 0;
+    b_str(v[1], mid_cfg.send ? "ON" : "OFF");
+    b_str(v[2], mid_cfg.clock ? "ON" : "OFF");
+    for (uint32_t r = 0; r < MI_ROWS; r++) {
+        uint32_t y = 44u + r * 36u;
+        uint16_t bg = r == mi_row ? C_CARD : UI_BG;
+        lcd_rect(0, y, 240, 32, bg);
+        ft_box(8, y + 4u, 130, NAME[r], &FT_SM, r == mi_row ? UI_TXT : UI_DIM, bg, 0);
+        ft_box(140, y + 2u, 92, v[r], &FT_MD, r == mi_row ? UI_ACC : UI_TXT, bg, 2);
+    }
+    ft_box(0, 160, 240, mid_usb_up ? "USB: HOST CONNECTED" : "USB: NO HOST", &FT_SM, mid_usb_up ? GRN : UI_DIM, UI_BG, 1);
+    char l[24]; l[0] = 0;
+    if (mid_last[0] == PXM_PC) { b_str(l, "LAST: PC "); b_num(l, mid_last[1] + 1u); }
+    else if (mid_last[0] == PXM_CC) { b_str(l, "LAST: CC "); b_num(l, mid_last[1]); b_str(l, " = "); b_num(l, mid_last[2]); }
+    else b_str(l, "LAST: NONE");
+    ft_box(0, 186, 240, l, &FT_SM, UI_TXT, UI_BG, 1);
+}
+static void midi_close(void)
+{
+    ui_mode = M_CHAIN; ui_item = 0;
+    if (px_midi_cfg_pack(&mid_cfg) != mi_orig) midi_persist();
+    lcd_rect(0, 0, 240, 240, UI_BG);
+    uc.screen = -1;
+    ui_invalidate();
+}
+static void midi_knob(int dd)
+{
+    if (mi_row == MI_CHAN) mid_cfg.chan = (uint8_t)((mid_cfg.chan + 17u + (uint32_t)(dd > 0 ? 1 : 16)) % 17u);
+    else if (mi_row == MI_SEND) mid_cfg.send ^= 1u;
+    else mid_cfg.clock ^= 1u;
+}
+static void midi_push(void) { if (++mi_row >= MI_ROWS) midi_close(); }
+
 static void ui_preset_step(int dd)
 {
     int n = px_preset_count();

@@ -406,6 +406,18 @@ static float syn_rel_ms(float x) { return 50.0f + x * x * 2950.0f; }     /* rele
 static int syn_bari_st(int v) { return -1 - (int)((float)v * 0.01f * 11.99f); }
 static int syn_oct(int v) { return v < 34 ? -1 : (v < 67 ? 0 : 1); }
 /* presets saved before v34 (store format 1 / 2): the old amp / drive / cab numbers -> the nearest of the v34 set */
+/* the TIME knob value (0..100) whose delay is nearest to `ms` (MIDI clock sync) */
+int px_dly_value_for_ms(int type, float ms)
+{
+    int best = 0;
+    float bd = 1e30f;
+    for (int v = 0; v <= 100; v++) {
+        float d = dly_ms(type, v) - ms;
+        if (d < 0.0f) d = -d;
+        if (d < bd) { bd = d; best = v; }
+    }
+    return best;
+}
 int px_dly_time_v35(int type, int v)
 {
     if (type == PX_DLY_REVERSE || v < 0) return v < 0 ? 0 : v;

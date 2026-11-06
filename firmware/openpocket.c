@@ -253,6 +253,7 @@ static void lcd_text(uint32_t x, uint32_t y, const char *str, uint16_t fg, uint1
 }
 /* ---- preset: the v2 engine's struct (engine/px_dsp.h), edited directly by the UI ---- */
 #include "px_dsp.h"
+#include "px_midi.h"                    /* MIDI map and settings (docs/MIDI.md) */
 static px_preset_t PRESET;
 static uint32_t cur_preset = 0;
 static uint32_t master_vol = 80;        /* 0..100, follows the MASTER knob (ADC channel 2) */
@@ -302,8 +303,13 @@ static void fm1_fault(const fm1_crash_t *c)
 #define PH_PU   (*(volatile uint32_t *)0x501D0u)
 #define PH_DIR  (*(volatile uint32_t *)0x501C8u)
 #define ENC_MASK 0x3u      /* PC0=A, PC1=B */
+#ifndef OP_VERSION_NUM                  /* a test channel build (firmware/build.sh, OP_CHANNEL) sets its own number and tag */
 #define OP_VERSION_NUM "36"
-#define OP_VERSION "v" OP_VERSION_NUM   /* shown at boot: changes with every released build */
+#endif
+#ifndef OP_TAG
+#define OP_TAG ""
+#endif
+#define OP_VERSION "v" OP_VERSION_NUM OP_TAG   /* shown at boot: changes with every released build */
 #define PROBE 0            /* 1 = GPIO diagnostic: shows the pins that change at the bottom */
 #define ADC_PROBE 0        /* 1 = ADC diagnostic: shows the channels that move at the bottom (C2:512) */
 #define PA_PD   (*(volatile uint32_t *)0x50014u)
@@ -542,6 +548,7 @@ static const int8_t QDEC[16] = {0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0};
 static uint32_t ed_load(void) { return a_bypass ? a_peak : a_load; }   /* PING: the DSP load, as at the bottom right */
 static uint32_t ed_flags(void) { return (a_bypass ? 1u : 0u) | (a_c1 ? 2u : 0u); }
 #include "px_editor.h"      /* the web editor (docs/EDITOR-PROTOCOL.md) */
+#include "px_midi_io.h"     /* musical MIDI over USB (docs/MIDI.md) */
 #endif
 #endif
 
@@ -564,8 +571,8 @@ static void app_main(void)
     dbn_t btn[NBTN] = {{0,0,0}};
     dbn_t bhome = {0,0,0};
     uint32_t adc_tick = 0, home_t = 0, t_knob = 0, t_tuner = 0;
-    int home_down = 0, home_long = 0, push_down = 0, push_long = 0;
-    uint32_t push_t = 0, clk_t = 0;
+    int home_down = 0, home_long = 0, push_down = 0, push_long = 0, fx_down = 0, fx_long = 0;
+    uint32_t push_t = 0, clk_t = 0, fx_t = 0;
     int clk_pend = 0;                    /* chain page: a PUSH waiting to see if a 2nd one makes it a double-click */
     int32_t master_raw = -100;
 #if DSP_CPU1
@@ -660,6 +667,7 @@ static void app_main(void)
         fm1_wdt_feed();
 #if !AUDIO_PROBE
         px_usb_service(now);             /* web installer: handshake, update, UBOOT soft key */
+        px_midi_service();               /* USB-MIDI: Program / Control Change in, the pedal's own changes out */
         audio_poll(now);                 /* the sound follows the UI (preset, settings, volume) */
         if (ui_mode != M_TUNER) {        /* DSP load at the bottom right: "C1 42%" (2nd core), "C0" or BYP */
             static uint32_t t_cpu;
@@ -702,7 +710,7 @@ static void app_main(void)
             if (accum >= 4) { accum -= 4; dd = 1; } else if (accum <= -4) { accum += 4; dd = -1; }
             if (dd) {
                 int fast = (now - t_knob) < 45u; t_knob = now;
-                if (ui_mode == M_SAVE) save_knob(dd); else if (ui_mode != M_TUNER) ui_knob(dd, fast);
+                if (ui_mode == M_SAVE) save_knob(dd); else if (ui_mode == M_MIDI) midi_knob(dd); else if (ui_mode != M_TUNER) ui_knob(dd, fast);
                 any = 1;
             }
         }
@@ -716,7 +724,12 @@ static void app_main(void)
         if (!push_now && push_down) { push_down = 0; if (!push_long) p_push = 1; }
         int p_up = dbn_press(&btn[B_FSUP], (pa & PA_FS_UP) != 0);
         int p_dn = dbn_press(&btn[B_FSDN], (pa & PA_FS_DN) != 0);
-        int p_fx = dbn_press(&btn[B_FX], (pa & PA_FX) != 0);
+        /* FX: a short press (on release) cycles the effects, a long one (0.8 s) opens the MIDI settings */
+        dbn_press(&btn[B_FX], (pa & PA_FX) != 0);
+        int fx_now = btn[B_FX].stab != 0, p_fx = 0, p_midi = 0;
+        if (fx_now && !fx_down) { fx_down = 1; fx_long = 0; fx_t = now; }
+        if (fx_now && fx_down && !fx_long && now - fx_t >= 800u) { fx_long = 1; p_midi = 1; }
+        if (!fx_now && fx_down) { fx_down = 0; if (!fx_long) p_fx = 1; }
         int p_mod = dbn_press(&btn[B_MOD], (ph & PH_MOD) != 0);
         int p_amp = dbn_press(&btn[B_AMP], (ph & PH_AMP) != 0);
         /* HOME: short press = back to the chain, long press (0.7 s) = tuner */
@@ -744,6 +757,11 @@ static void app_main(void)
         if (ui_mode == M_SAVE) {
             if (p_push) save_confirm();
             else if (p_home) save_close();
+        } else if (ui_mode == M_MIDI) {
+            if (p_push) midi_push();
+            else if (p_home) midi_close();
+        } else if (p_midi && ui_mode != M_TUNER && ui_mode != M_MOVE) {
+            midi_open();
         } else if (ui_mode == M_TUNER) {
             if (p_push || p_save || p_up || p_dn || p_fx || p_mod || p_amp || p_cab || p_dly || p_rev || p_home) tuner_close();
         } else if (p_save) {

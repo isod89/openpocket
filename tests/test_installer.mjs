@@ -78,10 +78,11 @@ ok(productOf(px) === "PocketX_924" && productOf(bb) === "BlackBox_924", "package
   const dump = join(TMP, "after_update.bin");
   const sim = simAccess([join(TMP, "flash_old.bin"), "--dump", dump]);
   await sim.ready;
+  [...sim.access.outputs.values()][0].send([0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7]);   // a DAW's General MIDI reset: not ours
   const u = new Updater(sim.access, null, FAST);
   const steps = [];
   const who = await u.identify();
-  ok(who && who.id.text === "PocketX_923" && IS_OPENPOCKET(who.id), "the pedal reports the OpenPocket it runs (PocketX_923)");
+  ok(who && who.id.text === "PocketX_923" && IS_OPENPOCKET(who.id), "a foreign SysEx is dropped; the pedal reports the OpenPocket it runs (PocketX_923)");
   let res = null, err = null;
   try { res = await u.install(logicalImage(px), "PocketX_924", (s) => steps.push(s)); } catch (e) { err = e; }
   ok(!err && res === "PocketX_924", `update 923 -> 924 ${err ? "(" + err.code + " " + err.message + ")" : ""}`);

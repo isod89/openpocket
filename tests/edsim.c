@@ -97,6 +97,7 @@ static int ota_wire_send(const uint8_t *p, uint32_t n)
     return 0;
 }
 
+#include "../firmware/px_midi.h"
 #include "../firmware/px_store.h"
 #include "../firmware/px_editor.h"
 

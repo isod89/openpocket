@@ -25,6 +25,9 @@ Written from scratch for the pedal's own chip (JieLi AC791N, two cores), install
   Greenback, T75, Alnico Blue, Jensen, Cream, DI) with a MIC position
 - **Pro levels (v36)**: every amp, block and preset at the same loudness (-23 LUFS, measured on real guitar);
   24 factory presets round the fitted amps, 28 USER slots; a PRESET LVL per preset; soft output limiter
+- **MIDI over USB-C (test build v37)**: Program Change selects a preset, Control Change switches blocks and sets their models and
+  settings, the pedal tells the computer when you change the sound, MIDI clock sets the delay time. Class-compliant, no driver;
+  Bluetooth MIDI is not in yet. Reference: [docs/MIDI.md](docs/MIDI.md), hardware test: [docs/MIDI-TEST.md](docs/MIDI-TEST.md)
 - What changed since v33: [docs/WHATS-NEW-v34-v36.md](docs/WHATS-NEW-v34-v36.md)
 - **New screen (v36)**: a PLAY page readable from a distance (preset number and name, amp, chain in colour) and an EDIT
   page with big values and bars

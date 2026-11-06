@@ -1,6 +1,8 @@
 build/
 firmware/build/
 firmware/openpocket.bin
+firmware/openpocket-*.bin
+docs/firmware/midi-test/
 docs/firmware/*.fwsc
 docs/firmware/manifest.json
 *.o

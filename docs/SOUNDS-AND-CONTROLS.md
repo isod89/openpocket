@@ -147,6 +147,28 @@ core, `BYP` = overload guard: turn a block off). `EDITED`: the sound differs fro
 Top centre of PLAY: the **battery** (v36), from the chip's own VBAT/4 channel (green, amber below 30 %, red below 15 %;
 `USB` when the 5 V supply is there); the tuner page shows the same reading in volts.
 
+## MIDI over USB-C (test build v37; [MIDI.md](MIDI.md))
+**Hold FX** for 0.8 s: the MIDI page (CHANNEL OMNI or 1 to 16, SEND, CLOCK > DELAY). Program Change 0 to 51 loads slot 1 to 52;
+Control Change sets the sound; the pedal sends Program Change and Control Change for what you do on it.
+
+| Block | On / off | Model | Setting 1 | 2 | 3 | 4 | 5 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| GATE | 20 | 52 | 33 | 34 | 35 | 36 | 37 |
+| COMP | 21 | 53 | 39 | 40 | 41 | 42 | 43 |
+| PITCH | 22 | 54 | 44 | 45 | 46 | 47 | 48 |
+| SFX | 23 | 55 | 49 | 50 | 51 | 70 | 71 |
+| DRIVE | 24 | 56 | 72 | 73 | 74 | 75 | 76 |
+| AMP | 25 | 57 | 77 | 78 | 79 | 80 | 81 |
+| CAB | 26 | 58 | 82 | 83 | 84 | 85 | 86 |
+| EQ | 27 | 59 | 87 | 88 | 89 | 90 | 91 |
+| MOD | 28 | 60 | 92 | 93 | 94 | 95 | 96 |
+| DELAY | 29 | 61 | 97 | 102 | 103 | 104 | 105 |
+| REVERB | 30 | 62 | 106 | 107 | 108 | 109 | 110 |
+| SYN | 31 | 63 | 111 | 112 | 113 | 114 | 115 |
+
+On / off: 64 and up is on. Settings 0 to 127 are 0 to 100. Model: the whole 0 to 127 range is divided between the block's models.
+CC 7 is the MASTER volume. Details, the clock sync and the limits: [MIDI.md](MIDI.md).
+
 ## Saving your sounds (v25)
 - `EDITED` at the top of the PLAY screen means the sound has been edited since the preset was loaded.
 - **Long press on PUSH**: SAVE page. The knob picks the slot (1 to 52; the current preset is offered first; the
