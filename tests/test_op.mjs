@@ -41,6 +41,9 @@ let r = op(["build"]);
 assert.equal(r.status, 0);
 assert.deepEqual(r.calls, [["info"], BUILD, base(["sh", "firmware/build.sh"])], "build");
 
+r = op(["ble"]);
+assert.deepEqual(r.calls.at(-1), base(["sh", "-c", "OP_BLE=1 sh firmware/build.sh && sha256sum firmware/openpocket-ble.bin build/ble/*.fwsc"]), "ble: the test image is its own build");
+
 r = op(["test"]);
 assert.deepEqual(r.calls.at(-1), base(["sh", "tests/run_tests.sh"]), "test");
 
@@ -97,12 +100,12 @@ r = op(["build"], { path: join(tmp, "empty") });
 assert.notEqual(r.status, 0);
 assert.match(r.err, /Docker is not installed or not running/, "no docker at all");
 
-for (const p of ["build/x", "firmware/build/y", "docs/firmware/PocketX_900.fwsc", "docs/firmware/manifest.json", "engine/px_render"]) touch(p);
+for (const p of ["build/x", "firmware/build/y", "firmware/build-ble/z", "firmware/openpocket-ble.bin", "docs/firmware/PocketX_900.fwsc", "docs/firmware/manifest.json", "engine/px_render"]) touch(p);
 touch("docs/firmware/README.md");
 touch("engine/px_dsp.c");
 r = op(["clean"], { path: join(tmp, "empty") });
 assert.equal(r.status, 0, "clean needs no docker");
-for (const p of ["build", "firmware/build", "firmware/openpocket.bin", "docs/firmware/PocketX_900.fwsc", "docs/firmware/manifest.json", "engine/px_render"]) {
+for (const p of ["build", "firmware/build", "firmware/build-ble", "firmware/openpocket-ble.bin", "firmware/openpocket.bin", "docs/firmware/PocketX_900.fwsc", "docs/firmware/manifest.json", "engine/px_render"]) {
   assert.ok(!existsSync(join(root, p)), `${p} removed`);
 }
 for (const p of ["docs/firmware/README.md", "engine/px_dsp.c", "guitar.wav"]) assert.ok(existsSync(join(root, p)), `${p} kept`);

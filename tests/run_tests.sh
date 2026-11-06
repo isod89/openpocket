@@ -25,6 +25,10 @@ echo "== installer"
 node tests/test_installer.mjs "$1"
 echo "== build entry point (tools/op.mjs)"
 node tests/test_op.mjs
+echo "== Bluetooth test image sources (third_party/jieli-ble)"
+node tests/test_ble_sources.mjs
+echo "== Bluetooth test image status codes"
+$CC -O1 -Wall -Wno-unused-function -o build/ble_status tests/test_ble_status.c && build/ble_status
 echo "== editor"
 $CC -O1 -Wall -Wno-unused-function -o build/edsim tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 node tests/test_editor.mjs

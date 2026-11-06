@@ -1,6 +1,8 @@
 build/
 firmware/build/
 firmware/openpocket.bin
+firmware/build-ble/
+firmware/openpocket-ble.bin
 docs/firmware/*.fwsc
 docs/firmware/manifest.json
 *.o

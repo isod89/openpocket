@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // The one host-side entry point of the OpenPocket build (macOS, Linux, Windows; Node 18+). The Makefile and the
 // .bat files only call this. Every Docker command line lives here.
-//   node tools/op.mjs doctor | build | test | package | clean | shell | image | serve [editor|build]
+//   node tools/op.mjs doctor | build | ble | test | package | clean | shell | image | serve [editor|build|ble]
 //   node tools/op.mjs render in.wav [out.wav] [preset]   |   node tools/op.mjs appimage [fm1-1.bin]
 // NATIVE=1 runs the commands on this machine (toolchain from firmware/setup.sh) instead of in the container.
 import { spawnSync } from "node:child_process";
@@ -72,10 +72,11 @@ const commands = {
   },
   image,
   build: () => inContainer(["sh", "firmware/build.sh"]),
+  ble: () => inContainer(["sh", "-c", "OP_BLE=1 sh firmware/build.sh && sha256sum firmware/openpocket-ble.bin build/ble/*.fwsc"]),   // the advertise-only Bluetooth test image (docs/BLE-TEST.md)
   test: () => inContainer(["sh", "tests/run_tests.sh"]),
   package: () => inContainer(["sh", "-c", `sh firmware/build.sh && mkdir -p build && sha256sum ${OUTS} > build/SHA256SUMS && cat build/SHA256SUMS`]),
   clean() {
-    for (const p of ["build", "firmware/build", "firmware/openpocket.bin", "docs/firmware/manifest.json", "engine/px_render"]) {
+    for (const p of ["build", "firmware/build", "firmware/build-ble", "firmware/openpocket.bin", "firmware/openpocket-ble.bin", "docs/firmware/manifest.json", "engine/px_render"]) {
       rmSync(resolve(root, p), { recursive: true, force: true });
     }
     const dir = resolve(root, "docs/firmware");
@@ -84,12 +85,13 @@ const commands = {
   },
   shell: () => inContainer(["bash"], { tty: true }),
   serve([arg]) {
-    if (arg === "build" || !existsSync(resolve(root, "docs/firmware/manifest.json"))) {
-      const built = commands.build();
+    const ble = arg === "ble";                 // the Bluetooth test packages (build/ble) instead of docs/firmware
+    if (ble ? !existsSync(resolve(root, "build/ble/manifest.json")) : arg === "build" || !existsSync(resolve(root, "docs/firmware/manifest.json"))) {
+      const built = ble ? commands.ble() : commands.build();
       if (built !== 0) return built;
     }
     const py = process.platform === "win32" ? ["py", "-3"] : ["python3"];
-    const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", arg === "editor" ? "editor.html" : "index.html"], { stdio: "inherit", cwd: root });
+    const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", arg === "editor" ? "editor.html" : "index.html", ...(ble ? ["build/ble"] : [])], { stdio: "inherit", cwd: root });
     if (r.error) fail("Python 3 is needed to serve the installer offline (python.org).");
     return r.status ?? 0;
   },

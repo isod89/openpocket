@@ -2,15 +2,24 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """OpenPocket offline installer: serves docs/ (installer, editor, packages) on this computer only, at
 http://localhost:8765/ (Web MIDI works on localhost). Chrome or Edge. Ctrl+C stops it.
-  tools/serve.py [index.html|editor.html]"""
+  tools/serve.py [index.html|editor.html] [firmware-dir]
+firmware-dir (for example build/ble) replaces docs/firmware as the place the installer reads the packages from."""
 import functools, http.server, os, sys, webbrowser
 
 page = sys.argv[1] if len(sys.argv) > 1 else "index.html"
-root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs")
+here = os.path.dirname(os.path.abspath(__file__))
+root = os.path.abspath(os.path.join(here, "..", "docs"))
+fwdir = os.path.abspath(os.path.join(here, "..", sys.argv[2])) if len(sys.argv) > 2 else None
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
                       ".js": "text/javascript", ".mjs": "text/javascript", ".fwsc": "application/octet-stream"}
+    def translate_path(self, path):
+        p = super().translate_path(path)
+        prefix = os.path.join(root, "firmware")
+        if fwdir and (p == prefix or p.startswith(prefix + os.sep)):
+            return os.path.join(fwdir, os.path.relpath(p, prefix))
+        return p
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()

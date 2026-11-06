@@ -1,6 +1,9 @@
 #!/bin/sh
 # Build OpenPocket -> firmware/openpocket.bin (app), build/loader/ota.bin (update loader),
 #                    docs/firmware/*.fwsc (packages for the web installer)   (in the container: tools/op.mjs build)
+# OP_BLE=1 sh firmware/build.sh builds the advertise-only Bluetooth test image instead (docs/BLE-TEST.md): the same
+#   firmware plus the JieLi controller (third_party/jieli-ble) -> firmware/openpocket-ble.bin and build/ble/*.fwsc.
+#   Nothing of the normal build's outputs is touched.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BSP="${BSP:-$HERE/bsp}"
@@ -17,7 +20,12 @@ if [ ! -x "$TC/pi32v2/bin/ld" ]; then
   echo "ERROR: linker '$TC/pi32v2/bin/ld' missing (incomplete toolchain)."
   exit 1
 fi
-O="$HERE/build"; rm -rf "$O"; mkdir -p "$O"
+# the stack guard: on, except in the Bluetooth test image (its task stacks are outside the guard window); app.ld refuses the
+# link if the guard is on and those stacks are outside. OP_GUARD_STACK=1 with OP_BLE=1 is how that check is shown to fire.
+GUARD_STACK=1; [ -n "$OP_BLE" ] && GUARD_STACK="${OP_GUARD_STACK:-0}"
+if [ -n "$OP_BLE" ]; then O="$HERE/build-ble"; APP="$HERE/openpocket-ble.bin"; PKG="$HERE/../build/ble"; BLEDEF="-DOP_BLE_TEST=1 -I$HERE/ble"
+else O="$HERE/build"; APP="$HERE/openpocket.bin"; PKG="$HERE/../docs/firmware"; BLEDEF=""; fi
+rm -rf "$O"; mkdir -p "$O"
 CC="$TC/pi32v2/bin/clang -target pi32v2"
 $CC -c "$BSP/chip/crt0.S"    -o "$O/crt0.o"
 $CC -c "$BSP/chip/fm1_vec.S" -o "$O/vec.o"
@@ -31,19 +39,30 @@ fi
 FP="-mcpu=r3 -mfprev1"
 DSPDEF="-DPX_SR=44100.0f -DPX_OVERSAMPLE=4"
 INC="-I$HERE/inc -I$HERE/../engine"
-$CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $INC \
+$CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $BLEDEF -DOP_GUARD_STACK=$GUARD_STACK $INC \
     -I"$BSP/chip" -I"$BSP/boards/fm1" -c "$HERE/openpocket.c" -o "$O/openpocket.o"
 $CC $FP -O2 -fno-builtin $DSPDEF $INC -c "$HERE/../engine/px_dsp.c" -o "$O/px_dsp.o"
 $CC $FP -O2 -fno-builtin -c "$HERE/px_math.c" -o "$O/px_math.o"
+BLEOBJ=""; MAPOPT=""
+if [ -n "$OP_BLE" ]; then
+  MAPOPT="-Map $O/openpocket.map"
+  # JieLi's LE controller (LLVM bitcode, Apache-2.0, third_party/jieli-ble) -> pi32v2 objects, and our context switch
+  mkdir -p "$O/jl"
+  for b in "$HERE"/../third_party/jieli-ble/*/*.bc; do
+    $CC -Os -c -x ir "$b" -o "$O/jl/$(basename "$(dirname "$b")")_$(basename "$b" .bc).o"
+  done
+  rm -f "$O/libjl.a"; "$TC/pi32v2/bin/ar" rcs "$O/libjl.a" "$O"/jl/*.o   # an archive: the linker takes only the objects the image calls
+  $CC -c "$HERE/ble/ble_ctx.S" -o "$O/ble_ctx.o"; $CC -c "$HERE/ble/ble_isr.S" -o "$O/ble_isr.o"; BLEOBJ="$O/ble_ctx.o $O/ble_isr.o $O/libjl.a"
+fi
 # official JieLi I2S driver (LLVM bitcode from the AC79 SDK, Apache-2.0) -> pi32v2 object
 $CC -Os -c -x ir "$HERE/sdk/iis.bc" -o "$O/iis.o"
-"$TC/pi32v2/bin/ld" -T "$HERE/app.ld" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o" "$O/iis.o" -o "$O/openpocket.elf"
+"$TC/pi32v2/bin/ld" --defsym "op_guard_stack=$GUARD_STACK" -T "$HERE/app.ld" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o" "$O/iis.o" $BLEOBJ $MAPOPT -o "$O/openpocket.elf"
 # symbol map: used to translate a crash address (PC) into a function name
 "$TC/common/bin/objdump" -t "$O/openpocket.elf" 2>/dev/null | sort > "$O/symbols.txt" || true
 "$TC/common/bin/objcopy" -O binary -j .text     "$O/openpocket.elf" "$O/text.bin"
 "$TC/common/bin/objcopy" -O binary -j .data     "$O/openpocket.elf" "$O/data.bin"
 "$TC/common/bin/objcopy" -O binary -j .ram_text "$O/openpocket.elf" "$O/rt.bin" 2>/dev/null || : > "$O/rt.bin"
-python3 - "$TC" "$O" "$HERE/openpocket.bin" <<'PY'
+python3 - "$TC" "$O" "$APP" <<'PY'
 import re,subprocess,sys
 tc,out,dest=sys.argv[1:]
 syms=subprocess.run([f"{tc}/common/bin/objdump","-t",f"{out}/openpocket.elf"],capture_output=True,text=True,check=True).stdout
@@ -79,5 +98,6 @@ python3 "$HERE/../tools/mkloader.py" "$L/loader.bin" "$L/ota.bin"
 
 # ---- update packages for the web installer -> docs/firmware/ (PocketX_9NN.fwsc, BlackBox_9NN.fwsc, manifest.json) ----
 VER=$(sed -n 's/^#define OP_VERSION_NUM "\([0-9]*\)".*/\1/p' "$HERE/openpocket.c")
-python3 "$HERE/../tools/pxpkg.py" "$HERE/openpocket.bin" "$L/ota.bin" "$HERE/../docs/firmware" --version "$VER" \
+mkdir -p "$PKG"
+python3 "$HERE/../tools/pxpkg.py" "$APP" "$L/ota.bin" "$PKG" --version "$VER" \
     --sdk-files "$HERE/sdk/packager"

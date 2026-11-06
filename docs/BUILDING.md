@@ -28,6 +28,8 @@ Apple silicon and other ARM machines Docker emulates it (Rosetta or QEMU); you c
 | --- | --- |
 | `make doctor` | check Node, Docker and the image, one line each (exit 1 when the build cannot work) |
 | `make build` | `firmware/build.sh` in the container: `firmware/openpocket.bin`, the update loader, `docs/firmware/PocketX_9NN.fwsc`, `BlackBox_9NN.fwsc`, `manifest.json` |
+| `make ble` | the advertise-only Bluetooth test image (`OP_BLE=1 firmware/build.sh`): `firmware/openpocket-ble.bin`, `build/ble/*.fwsc`. Own target, own output folders; [BLE-TEST.md](BLE-TEST.md) |
+| `make serve-ble` | `make serve` with `build/ble/` as the installer's package folder, to flash the test image |
 | `make package` | `build`, then `build/SHA256SUMS` |
 | `make test` | `tests/run_tests.sh` (engine, preset store, screen, simulated pedal, installer, editor; the browser page tests also run when Playwright is installed) |
 | `make clean` | remove every build output (on the host; needs neither Docker nor the image) |
@@ -57,7 +59,7 @@ old one.
 The toolchain is JieLi's proprietary software. It is **not** in this repository and is not redistributed by it: the image
 build downloads it from JieLi's own server (`jl-update.oss-cn-shenzhen.aliyuncs.com`, the file `https://pkgman.jieliapp.com/s/linux-toolchain`
 redirects to). If you publish a container image, do not include the toolchain layer. The Apache-2.0 SDK parts in
-`firmware/sdk/` are covered by `NOTICE.md`.
+`firmware/sdk/` and `third_party/jieli-ble/` are covered by `NOTICE.md`.
 
 ## Reproducibility
 
