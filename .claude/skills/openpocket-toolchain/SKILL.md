@@ -24,6 +24,7 @@ Run commands from the repository root.
 | Build the firmware, the update loader and the installer packages | `node tools/op.mjs build` |
 | Build, then write `build/SHA256SUMS` | `node tools/op.mjs package` |
 | Host tests (engine, preset store, screen, simulated pedal, installer, editor) | `node tools/op.mjs test` |
+| The simulated pedal on a local port (host `cc`, no Docker; skill `openpocket-simulator`) | `node tools/op.mjs sim` |
 | Remove every build output (needs no Docker) | `node tools/op.mjs clean` |
 | A shell in the container | `node tools/op.mjs shell` |
 

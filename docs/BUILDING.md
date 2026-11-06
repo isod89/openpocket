@@ -33,6 +33,7 @@ Apple silicon and other ARM machines Docker emulates it (Rosetta or QEMU); you c
 | `make clean` | remove every build output (on the host; needs neither Docker nor the image) |
 | `make shell` | a shell in the container (as your user) |
 | `make serve` | the installer and editor on `http://localhost:8765/` (offline install; needs Python 3 on the host) |
+| `make sim [ARGS="--port 9000"]` | the simulated pedal on `http://127.0.0.1:8766/`: screen, controls, state, an HTTP API, the installer and editor pages on a virtual MIDI port (`docs/SIMULATOR.md`; needs a C compiler on the host, no Docker) |
 | `make render IN=guitar.wav [OUT=..] [PRESET=1]` | a DI recording through the engine |
 | `make appimage DUMP=fm1-1.bin` | `fm1-300.bin` for the SD-card recovery |
 

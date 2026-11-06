@@ -111,6 +111,9 @@ replaces the files with this folder's.
   on a simulated flash: every command, pushes both ways, a power cycle; then the editor page in Chromium (sliders,
   drag and drop, save, move, export / import).
 
+To play with the simulated pedal yourself (screen, footswitches, knob, the installer and editor pages), run `make sim`
+and open `http://127.0.0.1:8766/`; see [`docs/SIMULATOR.md`](docs/SIMULATOR.md).
+
 ## Layout
 
 | | |

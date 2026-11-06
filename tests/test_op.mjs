@@ -23,6 +23,7 @@ chmodSync(join(fakebin, "docker"), 0o755);
 const root = join(tmp, "work");
 mkdirSync(join(root, "tools"), { recursive: true });
 cpSync(join(repo, "tools/op.mjs"), join(root, "tools/op.mjs"));
+cpSync(join(repo, "tools/sim.mjs"), join(root, "tools/sim.mjs"));
 
 function op(args, { env = {}, cwd = root, path = fakebin, script = join(root, "tools/op.mjs") } = {}) {
   rmSync(log, { force: true });
@@ -106,6 +107,11 @@ for (const p of ["build", "firmware/build", "firmware/openpocket.bin", "docs/fir
   assert.ok(!existsSync(join(root, p)), `${p} removed`);
 }
 for (const p of ["docs/firmware/README.md", "engine/px_dsp.c", "guitar.wav"]) assert.ok(existsSync(join(root, p)), `${p} kept`);
+
+r = op(["sim", "--help"]);
+assert.equal(r.status, 0, "sim is passed to tools/sim.mjs");
+assert.match(r.err, /usage: node tools\/op\.mjs sim/, "sim prints its own usage");
+assert.deepEqual(r.calls, [], "sim runs on the host: no Docker");
 
 const make = spawnSync("make", ["--version"], { encoding: "utf8" });
 if (make.status === 0) {

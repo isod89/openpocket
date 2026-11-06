@@ -11,7 +11,8 @@ through the installer and editor pages with a mocked Web MIDI device. Never flas
 
 ## Launch
 
-Nothing stays running except short-lived test servers, which the scripts start and stop themselves.
+Nothing stays running except short-lived test servers, which the scripts start and stop themselves, and the hosted
+simulator when you start it (`node tools/op.mjs sim`, skill `openpocket-simulator`): stop the one you started.
 
 ```
 node tools/op.mjs doctor      # Node, Docker, image (toolchain skill: .claude/skills/openpocket-toolchain)
@@ -37,6 +38,8 @@ Run it first whenever anything looks off.
 | Installer page, update flow | `pages.sh` (runs `tests/test_page.mjs`) | `build/page/page_1..4*.png`, last line `page test passed` |
 | Editor page | `pages.sh` (runs `tests/test_editor_page.mjs`) | `build/editor/editor_1..6*.png`, last line `editor page test passed` |
 | Screen layout | `cc ... tests/uisim.c` (see toolchain skill), `build/uisim build/ui` | PPM pages, `never drawn` absent from the log |
+| The pedal as a user plays it: footswitches, knob, pages, save, tuner, the live screen | `node tools/op.mjs sim`, then the HTTP API (skill `openpocket-simulator`, `docs/SIMULATOR.md`) | `GET /api/state` and `/api/screen.png` after each press; the flash file `build/sim/flash.bin` survives a restart |
+| Editor and installer pages by hand or with `chrome-devtools-axi` | `sim` serves them at `/site/editor.html` and `/site/index.html` with a virtual Web MIDI | Connect finds "OpenPocket"; an edit shows in `/api/state` |
 | MIDI musical messages | see `features/midi-usb.md` | host simulator tests when the USB-MIDI feature is in; hardware: `docs/MIDI-TEST.md` |
 
 Features: `features/README.md` and one file per feature there. A proof that drives only one entry point is incomplete when
@@ -45,7 +48,7 @@ the map lists more.
 ## Evidence
 
 Screenshots and logs go to `build/` (gitignored); copy what you cite to a folder outside the repo. Proof standards: run the
-real code (the simulators compile the firmware's own `px_editor.h`, `px_store.h`, `ota.c`), not a re-implementation;
+real code (the simulators compile the firmware's own `px_editor.h`, `px_store.h`, `ui.h`, `ota.c`), not a re-implementation;
 a mocked boundary is only Web MIDI/USB (already isolated by the tests); state what was exercised and what was not.
 **Not verifiable here:** audio, DSP load and glitches, USB enumeration on a real host, Bluetooth, flashing, the screen on
 the real LCD. Say so, and point to `docs/MIDI-TEST.md` (hardware checklist) when it exists.
