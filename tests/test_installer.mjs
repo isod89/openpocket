@@ -4,16 +4,16 @@
 // (step 2), on a 1 MiB flash. No browser, no hardware.
 //   cc -O1 -o build/devsim tests/devsim.c && node tests/test_installer.mjs [PocketX_016.fwsc]
 // The optional official package checks the way back's step 1 (the official loader staged by OpenPocket's ota.c).
-import { spawn, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Updater, IS_OPENPOCKET } from "../docs/pxota.js";
 import { productOf, logicalImage, checkOfficial } from "../docs/pxpkg.js";
+import { simAccess } from "./simpedal.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SIM = process.env.DEVSIM || join(ROOT, "build", "devsim");
 const TMP = mkdtempSync(join(tmpdir(), "opinst-"));
 let failed = 0;
 const ok = (c, what) => { console.log(`${what.padEnd(70)} ${c ? "ok" : "FAIL"}`); if (!c) failed++; };
@@ -21,40 +21,6 @@ const FAST = { afterUpgrade: 50, afterStep1: 50, loaderWait: 5000, step1Idle: 30
   backWait: 5000, perRequest: 0, poll: 50 };
 
 execFileSync("python3", [join(ROOT, "tests", "fixtures.py"), TMP], { stdio: "inherit" });
-
-// a fake WebMIDI access over one simulated pedal: its port pair is renamed when the device re-enumerates
-function simAccess(args) {
-  const child = spawn(SIM, args, { stdio: ["pipe", "pipe", "inherit"] });
-  const log = [];
-  const access = { inputs: new Map(), outputs: new Map() };
-  let port = null, buf = "", readyFn;
-  const ready = new Promise((r) => { readyFn = r; });
-  const mkPorts = (name) => {
-    if (port) { port.input.state = "disconnected"; port.output.state = "disconnected"; }
-    access.inputs.clear(); access.outputs.clear();
-    if (name === "none") { port = null; return; }
-    const input = { name, state: "connected", onmidimessage: null, open: async () => {} };
-    const output = { name, state: "connected", open: async () => {},
-      send: (bytes) => {
-        if (output.state === "disconnected") throw new Error("disconnected");
-        child.stdin.write(Buffer.from(bytes).toString("hex") + "\n");
-      } };
-    port = { input, output };
-    access.inputs.set(name, input); access.outputs.set(name, output);
-  };
-  child.stdout.on("data", (d) => {
-    buf += d.toString();
-    let i;
-    while ((i = buf.indexOf("\n")) >= 0) {
-      const ln = buf.slice(0, i); buf = buf.slice(i + 1);
-      if (ln.startsWith("#port ")) { mkPorts(ln.slice(6)); readyFn(); }
-      else if (ln.startsWith("#log ")) log.push(ln.slice(5));
-      else if (port && port.input.onmidimessage && ln) port.input.onmidimessage({ data: Uint8Array.from(Buffer.from(ln, "hex")) });
-    }
-  });
-  const done = new Promise((r) => child.on("exit", (code) => r(code)));
-  return { access, log, ready, end: async () => { child.stdin.end(); return done; } };
-}
 
 const pkg = (name) => readFileSync(join(TMP, name));
 const flashOf = (f) => readFileSync(f);

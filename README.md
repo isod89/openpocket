@@ -38,7 +38,7 @@ Written from scratch for the pedal's own chip (JieLi AC791N, two cores), install
   (the note compresses on a hard attack and blooms back)
 - **24-bit audio** in and out, guitar read from the left input channel only, like the official firmware (the right
   channel only carries noise: mixing it in was the constant hiss on high-gain amps)
-- **USB update**: the pedal shows up as a USB-MIDI device and takes updates from the [web installer](docs/index.html)
+- **USB update**: the pedal shows up as a USB-MIDI device and takes updates from the [web installer](docs/index.html), or from the command line (`make flash`, see [docs/BUILDING.md](docs/BUILDING.md))
 
 Full list of models, presets and controls: [docs/SOUNDS-AND-CONTROLS.md](docs/SOUNDS-AND-CONTROLS.md).
 Development notes (how the audio path was found, what changed in each version): [docs/AUDIO-SDK.md](docs/AUDIO-SDK.md).

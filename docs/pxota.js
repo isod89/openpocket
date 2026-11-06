@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// OpenPocket — the M-UPGRADE update protocol over WebMIDI, for the Donner Pocket X and the M-VAVE BlackBox.
+// OpenPocket — the M-UPGRADE update protocol over a Web MIDI-shaped access object (the installer page passes Web MIDI; tools/midi-node.mjs passes a Node adapter), for the Donner Pocket X and the M-VAVE BlackBox.
 // Adapted from Felucca's web/fm1ota.js (GPL-3.0, Leo Kuroshita / Hügelton Instruments), used by CLIPPER and SLOOP.
 //
 // Step 1: the running firmware (the official one, or OpenPocket's ota.c) reads parts of the package and stages its

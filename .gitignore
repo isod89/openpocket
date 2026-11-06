@@ -10,3 +10,4 @@ fm1-1.bin
 fm1-300.bin
 *.dump.bin
 openpocket.bundle
+node_modules/

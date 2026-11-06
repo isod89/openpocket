@@ -3,6 +3,7 @@
 // The one host-side entry point of the OpenPocket build (macOS, Linux, Windows; Node 18+). The Makefile and the
 // .bat files only call this. Every Docker command line lives here.
 //   node tools/op.mjs doctor | build | test | package | clean | shell | image | serve [editor|build]
+//   node tools/op.mjs flash --dry-run | --confirm-flash [--package FILE]   (writes to a connected pedal: docs/BUILDING.md)
 //   node tools/op.mjs render in.wav [out.wav] [preset]   |   node tools/op.mjs appimage [fm1-1.bin]
 // NATIVE=1 runs the commands on this machine (toolchain from firmware/setup.sh) instead of in the container.
 import { spawnSync } from "node:child_process";
@@ -83,6 +84,9 @@ const commands = {
     return 0;
   },
   shell: () => inContainer(["bash"], { tty: true }),
+  async flash(args) {                          // runs on this machine: the pedal is a USB device, not in the container
+    return (await import("./flash.mjs")).main(args);
+  },
   serve([arg]) {
     if (arg === "build" || !existsSync(resolve(root, "docs/firmware/manifest.json"))) {
       const built = commands.build();
@@ -110,4 +114,4 @@ const commands = {
 
 const [name, ...rest] = process.argv.slice(2);
 if (!Object.hasOwn(commands, name)) fail(`usage: node tools/op.mjs ${Object.keys(commands).join(" | ")}`);
-process.exit(commands[name](rest));
+process.exit(await commands[name](rest));
