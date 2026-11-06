@@ -7,5 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY firmware/setup.sh /usr/local/bin/op-setup-toolchain
 RUN JIELI_DEST=/opt/jieli sh /usr/local/bin/op-setup-toolchain
+# the engine as WebAssembly for the simulated pedal's sound (engine/wasm.sh)
+RUN apt-get update && apt-get install -y --no-install-recommends clang lld \
+    && rm -rf /var/lib/apt/lists/*
 ENV JIELI_TOOLCHAIN=/opt/jieli/toolchain OP_IN_CONTAINER=1
 WORKDIR /src

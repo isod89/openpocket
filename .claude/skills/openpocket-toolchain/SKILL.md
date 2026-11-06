@@ -24,8 +24,10 @@ Run commands from the repository root.
 | Build the firmware, the update loader and the installer packages | `node tools/op.mjs build` |
 | Build, then write `build/SHA256SUMS` | `node tools/op.mjs package` |
 | Host tests (engine, preset store, screen, simulated pedal, installer, editor) | `node tools/op.mjs test` |
+| The simulated pedal on a local port (host `cc`, no Docker; skill `openpocket-simulator`) | `node tools/op.mjs sim` |
 | Remove every build output (needs no Docker) | `node tools/op.mjs clean` |
 | A shell in the container | `node tools/op.mjs shell` |
+| Dry-run or flash a built package to a connected pedal (host, USB MIDI) | `node tools/op.mjs flash`: see the `openpocket-flash` skill |
 
 Outputs: `firmware/openpocket.bin`, `docs/firmware/PocketX_9NN.fwsc`, `BlackBox_9NN.fwsc`, `manifest.json`. All of them
 are gitignored. Two clean builds give identical bytes; a changed checksum means the source or a pin changed.
@@ -50,8 +52,9 @@ Follow `references/updating-pins.md`. Never bypass the checksum check.
 
 ## Safety rules of this repository
 
-- **Never flash a device from an agent.** No `flash`, no WebUSB or MIDI write to a real pedal. Only the captain installs,
-  from the browser installer, by hand. Hardware checks are in `docs/MIDI-TEST.md` when present.
+- **Never flash a device unless the captain explicitly instructs it.** `node tools/op.mjs flash --dry-run` is allowed; `--confirm-flash`
+  and any other write to a real pedal only on the captain's say-so, following the `openpocket-flash` skill. Builds and tests never
+  touch a pedal. Hardware checks are in `docs/MIDI-TEST.md` when present.
 - **Never publish an unreviewed package as the installer default.** A test package is a separate, labelled file and is
   not listed in the default `docs/firmware/manifest.json`. `PUBLISH-*.bat` is the maintainer's tool: do not run it.
 - **Keep the official-firmware analysis out of the repository.** Facts about the vendor's firmware (offsets, tables,

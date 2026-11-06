@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// OpenPocket — the M-UPGRADE update protocol over WebMIDI, for the Donner Pocket X and the M-VAVE BlackBox.
+// OpenPocket — the M-UPGRADE update protocol over a Web MIDI-shaped access object (the installer page passes Web MIDI; tools/midi-node.mjs passes a Node adapter), for the Donner Pocket X and the M-VAVE BlackBox.
 // Adapted from Felucca's web/fm1ota.js (GPL-3.0, Leo Kuroshita / Hügelton Instruments), used by CLIPPER and SLOOP.
 //
 // Step 1: the running firmware (the official one, or OpenPocket's ota.c) reads parts of the package and stages its
@@ -116,7 +116,7 @@ async function handshake(link, tries = 3) {
 
 // timings (ms) as the hardware needs them; the tests shorten them
 export const TIMING = { afterUpgrade: 2000, afterStep1: 3000, loaderWait: 30000, step1Idle: 8000, step2Idle: 180000,
-  afterWrite: 3000, backWait: 40000, perRequest: 10, poll: 1000 };
+  afterWrite: 3000, backWait: 40000, perRequest: 10, poll: 1000, rescuePoll: 100 };
 
 export class Updater {
   constructor(access, log, timing = {}) {
@@ -212,6 +212,33 @@ export class Updater {
     const pkg = pick(dev.id.model);
     if (!pkg) { dev.link.close(); throw fail("pkg", dev.id.model, dev.id.model); }
     return this.installOn(dev, pkg.image, pkg.product, step);
+  }
+
+  // rescue for a program with no button to press again (the command line): rescue() again and again until a pedal is
+  // installed or timeoutMs has passed. The time bounds the waiting only; an install that has started is never cut short.
+  // A pedal that vanished before the first transfer finished has had nothing written (stopped, lost): wait for it again.
+  // The update loader that a lost attempt left behind is resumed with the package of the pedal that was picked, else with
+  // `loader` ({ image, product }): a loader does not report its model, so the caller names the package.
+  // onEvent("wait", msLeft) and onEvent("retry", error) report on the way. Returns the version the pedal reports, or null
+  // when no pedal answered in time.
+  async rescueWithin(pick, onStep, { timeoutMs, onEvent, loader = null } = {}) {
+    const end = Date.now() + timeoutMs, tell = onEvent || (() => {});
+    let pkg = null;
+    for (;;) {
+      try {
+        const done = await this.rescue((model) => (pkg = pick(model)), onStep);
+        if (done) return done;
+        const half = pkg || loader;
+        if (half && await this.resume(half.image, half.product, onStep)) return half.product;
+      } catch (e) {
+        if (!["stopped", "lost", "noloader"].includes(e.code)) throw e;
+        tell("retry", e);
+      }
+      const left = end - Date.now();
+      if (left <= 0) return null;
+      tell("wait", left);
+      await sleep(Math.min(this.t.rescuePoll, left));
+    }
   }
 
   async installOn(dev, image, product, step) {

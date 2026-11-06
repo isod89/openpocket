@@ -1,0 +1,493 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenPocket simulator</title>
+<style>
+  :root { color-scheme: light; --ink: oklch(0.25 0 none); --dim: oklch(0.45 0 none); --stage: oklch(0.97 0 none); --line: oklch(0.85 0 none); --lit: oklch(0.96 0.02 255); }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-block-size: 100dvh; display: flex; flex-wrap: wrap; gap: 1rem 2rem; align-items: center; justify-content: center; padding: 1rem; background: var(--stage); color: var(--ink); font: 15px/1.45 system-ui, sans-serif; }
+  .stage { flex: 1 1 24rem; min-inline-size: 0; display: flex; justify-content: center; }
+  .pedal { --u: calc(100cqw / 1000); container-type: inline-size; position: relative; inline-size: min(100%, calc((100dvh - 2rem) * 1000 / 1046)); aspect-ratio: 1000 / 1046; user-select: none; -webkit-user-select: none; }
+  .body { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; }
+  .control, .lcd { position: absolute; inset-inline-start: calc((var(--x) - var(--w) / 2) * var(--u)); inset-block-start: calc((var(--y) - var(--w) / 2) * var(--u)); inline-size: calc(var(--w) * var(--u)); block-size: calc(var(--w) * var(--u)); }
+  .control { display: block; margin: 0; padding: 0; border: 0; background: none; color: inherit; cursor: pointer; touch-action: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  .control svg { display: block; inline-size: 100%; block-size: 100%; overflow: visible; pointer-events: none; }
+  .control:focus-visible { outline: calc(5 * var(--u)) solid oklch(0.75 0.15 240); outline-offset: calc(5 * var(--u)); }
+  .lcd { image-rendering: pixelated; background: black; }
+
+  .key { border-radius: calc(9 * var(--u)); color: oklch(0.72 0 none); background: linear-gradient(oklch(0.3 0 none), oklch(0.22 0 none)); box-shadow: inset 0 0 0 calc(2 * var(--u)) oklch(0.36 0 none), 0 calc(5 * var(--u)) calc(6 * var(--u)) oklch(0 0 none / 0.7); }
+  .key svg { inline-size: 72%; margin-inline: auto; }
+  .key[data-lit=on], .key[data-lit=focus] { color: oklch(0.24 0.02 255); background: linear-gradient(var(--lit), color-mix(in oklch, var(--lit), oklch(0.72 0.06 255) 30%)); }
+  .key[data-lit=on] { box-shadow: inset 0 0 0 calc(2 * var(--u)) oklch(1 0 none / 0.7), 0 0 calc(8 * var(--u)) oklch(0.85 0.06 255 / 0.45), 0 calc(5 * var(--u)) calc(6 * var(--u)) oklch(0 0 none / 0.7); }
+  .key[data-lit=focus] { background: oklch(1 0 none); box-shadow: inset 0 0 0 calc(2 * var(--u)) oklch(1 0 none), 0 0 calc(14 * var(--u)) calc(5 * var(--u)) oklch(0.88 0.09 245 / 0.9); }
+  .key.held, .key:active { transform: translateY(calc(3 * var(--u))) scale(0.97); }
+  .footswitch .cap { transform-origin: center; transform-box: fill-box; }
+  .footswitch.held .cap, .footswitch:active .cap { transform: scale(0.95); }
+  .footswitch .ring { stroke: oklch(0.93 0 none); }
+  .footswitch.held .ring { stroke: oklch(1 0 none); filter: drop-shadow(0 0 3px oklch(0.88 0.09 245)); }
+  .knob { border-radius: 50%; cursor: grab; }
+  .knob:active { cursor: grabbing; }
+  .knob .turns { transform: rotate(var(--angle, 0deg)); transform-origin: 0 0; }
+  #para.held .turns { transform: rotate(var(--angle, 0deg)) scale(0.97); }
+  @media (prefers-reduced-motion: no-preference) {
+    .key { transition: transform 80ms ease-out, background-color 120ms ease-out, box-shadow 120ms ease-out; }
+    .footswitch .cap { transition: transform 80ms ease-out; }
+  }
+
+  aside { flex: 0 1 22rem; min-inline-size: 0; }
+  h1 { margin: 0; font-size: 1.1rem; }
+  #conn { margin: 0.1rem 0 1rem; color: var(--dim); }
+  h2 { margin: 1rem 0 0.25rem; font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.9rem; margin: 0; }
+  dt { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  dd { margin: 0; color: var(--dim); }
+  kbd { font: inherit; padding-inline: 0.3em; border: 1px solid var(--line); border-radius: 4px; background: oklch(1 0 none); }
+  nav { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; }
+  a { color: oklch(0.45 0.13 250); }
+  a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
+  #sound { display: grid; gap: 0.5rem; }
+  #sound p { margin: 0; }
+  #sound .hint { color: var(--dim); font-size: 0.85rem; overflow-wrap: anywhere; }
+  #sound .warn { padding: 0.4rem 0.6rem; border-inline-start: 3px solid oklch(0.7 0.16 70); background: oklch(0.96 0.04 85); font-size: 0.85rem; }
+  #sound [hidden] { display: none; }
+  fieldset { display: flex; gap: 0.25rem 1rem; flex-wrap: wrap; margin: 0; padding: 0; border: 0; }
+  legend { padding: 0; margin-block-end: 0.15rem; color: var(--dim); }
+  .field { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr) 3.5rem; gap: 0.6rem; align-items: center; }
+  .field output { font-variant-numeric: tabular-nums; text-align: end; color: var(--dim); }
+  .field select { grid-column: 2 / -1; min-inline-size: 0; }
+  .field input[type=range], .field meter { inline-size: 100%; margin: 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: center; }
+  #play { min-inline-size: 5rem; padding: 0.3rem 0.8rem; font: inherit; border: 1px solid var(--line); border-radius: 6px; background: oklch(1 0 none); color: inherit; cursor: pointer; }
+  #play:active { background: var(--lit); }
+  #play:focus-visible { outline: 2px solid oklch(0.45 0.13 250); outline-offset: 2px; }
+  @media (hover: hover) and (pointer: fine) { #play:hover { background: var(--lit); } }
+  #drop { display: block; padding: 0.7rem; border: 1px dashed var(--line); border-radius: 6px; }
+  #drop[data-over] { background: var(--lit); }
+</style>
+</head>
+<body>
+<div class="stage">
+<div class="pedal" id="pedal">
+  <svg class="body" viewBox="0 0 1000 1046" aria-hidden="true">
+    <defs>
+      <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#232325"/><stop offset=".5" stop-color="#1b1b1d"/><stop offset="1" stop-color="#161617"/></linearGradient>
+      <linearGradient id="chrome" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#8c8e92"/><stop offset=".3" stop-color="#f1f2f3"/><stop offset=".55" stop-color="#aeb0b4"/><stop offset=".8" stop-color="#e5e6e8"/><stop offset="1" stop-color="#77797d"/></linearGradient>
+      <radialGradient id="screwhead" cx=".4" cy=".35"><stop offset="0" stop-color="#3a3a3d"/><stop offset="1" stop-color="#0c0c0d"/></radialGradient>
+      <filter id="brushed" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".003 .8" numOctaves="2" seed="7"/><feColorMatrix values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  .5 0 0 0 -.2"/><feComposite in2="SourceGraphic" operator="in"/></filter>
+      <filter id="soft"><feGaussianBlur stdDeviation="9"/></filter>
+    </defs>
+    <ellipse cx="500" cy="1030" rx="480" ry="10" fill="#000" opacity=".35" filter="url(#soft)"/>
+    <g id="jacks"></g>
+    <rect x="846" y="30" width="18" height="22" rx="3" fill="#2a2a2c"/><rect x="849" y="26" width="12" height="10" rx="2" fill="url(#chrome)"/>
+    <rect x="0" y="50" width="1000" height="984" rx="30" fill="url(#metal)"/>
+    <rect x="0" y="50" width="1000" height="984" rx="30" fill="#fff" opacity=".06" filter="url(#brushed)"/>
+    <rect x="1.5" y="51.5" width="997" height="981" rx="29" fill="none" stroke="#fff" stroke-opacity=".14" stroke-width="3"/>
+    <path d="M30 1033H970" stroke="#000" stroke-width="3" opacity=".6"/>
+    <g id="screws"></g>
+    <g fill="none" stroke="#e6e6e8" stroke-linecap="round" stroke-linejoin="round">
+      <g id="legend-blackbox" stroke-width="2.6"></g>
+      <g id="legend-mvave" stroke-width="6"></g>
+      <g id="legend-master" stroke-width="1.6"></g>
+      <g id="legend-para" stroke-width="1.6"></g>
+      <g id="legend-tuner" stroke-width="1.6"></g>
+      <path d="M445 836H290Q279 836 279 839.5Q279 843 290 843H445M555 836H710Q721 836 721 839.5Q721 843 710 843H555" stroke-width="1.8" opacity=".8"/>
+    </g>
+    <text x="89" y="131" fill="#c8c8cb" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="16" textLength="279" lengthAdjust="spacingAndGlyphs">Amp Modeler / Effects Processor</text>
+    <path d="M160 950H178L169 966Z M832 966H850L841 950Z" fill="#e6e6e8"/>
+    <rect x="330" y="148" width="340" height="334" rx="30" fill="#0a0a0b" stroke="#37373a" stroke-width="3"/>
+    <rect x="336" y="154" width="328" height="322" rx="26" fill="none" stroke="#000" stroke-width="5"/>
+  </svg>
+
+  <canvas class="lcd" id="lcd" width="240" height="240" style="--x:500;--y:315;--w:272" role="img" aria-label="The pedal's screen"></canvas>
+
+  <div class="control knob" id="master" role="slider" tabindex="0" aria-label="MASTER volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="--x:152;--y:238;--w:194" data-knob="master"></div>
+  <div class="control knob" id="para" role="slider" tabindex="0" aria-label="PARA knob: turn it, press it for PUSH" aria-valuenow="0" style="--x:843;--y:238;--w:194" data-knob="para"></div>
+
+  <button class="control key" type="button" data-control="home" aria-label="HOME" style="--x:138;--y:606;--w:85"></button>
+  <button class="control key" type="button" data-control="fx" aria-label="FX" style="--x:258;--y:606;--w:85"></button>
+  <button class="control key" type="button" data-control="amp" aria-label="AMP" style="--x:383;--y:606;--w:85"></button>
+  <button class="control key" type="button" data-control="mod" aria-label="MOD" style="--x:503;--y:606;--w:85"></button>
+  <button class="control key" type="button" data-control="dly" aria-label="DLY" style="--x:622;--y:606;--w:85"></button>
+  <button class="control key" type="button" data-control="rev" aria-label="REV" style="--x:745;--y:606;--w:85"></button>
+  <button class="control key" type="button" data-control="cab" aria-label="CAB" style="--x:863;--y:606;--w:85"></button>
+  <button class="control footswitch" type="button" data-control="fs_dn" aria-label="Left footswitch: previous preset" style="--x:167;--y:833;--w:190"></button>
+  <button class="control footswitch" type="button" data-control="fs_up" aria-label="Right footswitch: next preset" style="--x:839;--y:833;--w:190"></button>
+</div>
+</div>
+
+<aside>
+  <h1>OpenPocket simulator</h1>
+  <p id="conn" role="status">connecting…</p>
+  <section id="sound" aria-labelledby="sound-title">
+    <h2 id="sound-title">Sound</h2>
+    <fieldset>
+      <legend>Input</legend>
+      <label><input type="radio" name="source" value="loop" checked> Loop</label>
+      <label><input type="radio" name="source" value="file"> File</label>
+      <label><input type="radio" name="source" value="device"> Device</label>
+    </fieldset>
+    <div data-panel="loop">
+      <label class="field">Guitar loop <select id="loop"></select></label>
+      <p class="hint" id="credit"></p>
+    </div>
+    <div data-panel="file" hidden>
+      <label id="drop">Drop an audio file on this page, or choose one: <input type="file" id="file" accept="audio/*"></label>
+      <p class="hint" id="file-name"></p>
+    </div>
+    <div data-panel="device" hidden>
+      <label class="field">Input device <select id="device"><option value="">Default input</option></select></label>
+      <p class="warn" id="device-warning">Microphones next to speakers howl. Use headphones. A device starts muted: its meter moves, and you hear it only when you tick the box.</p>
+      <label><input type="checkbox" id="hear"> Hear this input</label>
+    </div>
+    <div class="row">
+      <button type="button" id="play">Play</button>
+      <label id="repeat-label"><input type="checkbox" id="repeat" checked> Loop</label>
+      <label><input type="checkbox" id="bypass"> Bypass</label>
+    </div>
+    <label class="field">Input level <input type="range" id="level" min="0" max="400" step="5" value="100"> <output id="level-text" for="level">100%</output></label>
+    <div class="field"><span id="in-label">Input</span> <meter id="in-meter" min="-60" max="0" low="-18" high="-6" optimum="-30" value="-60" aria-labelledby="in-label"></meter> <output id="in-db">-∞</output></div>
+    <div class="field"><span id="out-label">Output</span> <meter id="out-meter" min="-60" max="0" low="-12" high="-3" optimum="-30" value="-60" aria-labelledby="out-label"></meter> <output id="out-db">-∞</output></div>
+    <label class="field">Output volume <input type="range" id="volume" min="0" max="100" value="70"> <output id="volume-text" for="volume">70%</output></label>
+    <p class="hint" id="sound-status" role="status">Press Play: the sound starts with a click, as browsers require.</p>
+  </section>
+  <h2>Keys</h2>
+  <dl>
+    <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Right and left footswitch</dd>
+    <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Turn PARA</dd>
+    <dt><kbd>Enter</kbd></dt><dd>PUSH (press PARA). Twice on the chain: MOVE. Hold 0.8 s: SAVE</dd>
+    <dt><kbd>Esc</kbd> <kbd>H</kbd></dt><dd>HOME. Hold 0.7 s: tuner</dd>
+    <dt><kbd>F</kbd> <kbd>A</kbd> <kbd>M</kbd></dt><dd>FX, AMP, MOD</dd>
+    <dt><kbd>D</kbd> <kbd>R</kbd> <kbd>C</kbd></dt><dd>DLY, REV, CAB</dd>
+    <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>MASTER down and up</dd>
+  </dl>
+  <h2>Mouse and touch</h2>
+  <p>Press and hold the buttons as on the pedal. Drag a knob or use the wheel on it. Click PARA for PUSH. With a knob in focus the arrow keys turn that knob.</p>
+  <p>The tuner is a long press of HOME: OpenPocket does nothing special with both footswitches, whatever the panel says.</p>
+  <h2>Pages</h2>
+  <nav><a href="/plain">Plain controls</a> <a href="/site/index.html">Installer</a> <a href="/site/editor.html">Editor</a></nav>
+</aside>
+
+<script type="module">
+import { PedalAudio, dbfs } from "/sim/pedal-audio.js";
+import { BUTTONS, DETENT_DEGREES, MASTER_STEP, PRESS_MS, SLOP_PX, backlights, dragDetents, isFast, keyAction, masterAngle, masterFollow, masterFromDrag, paraStep, wheelNotches } from "/sim/pedal-input.js";
+
+// ---- the panel's lettering: a stroke font, so it looks the same on every computer ----
+const GLYPHS = {
+  A: "M0 10L3 0L6 10M1 6.7L5 6.7", Λ: "M0 10L3 0L6 10", B: "M0 0L0 10L4.2 10Q6 10 6 7.5Q6 5 4.2 5L0 5M4 5Q5.6 5 5.6 2.5Q5.6 0 4 0L0 0",
+  C: "M6 2Q6 0 4 0L2 0Q0 0 0 2L0 8Q0 10 2 10L4 10Q6 10 6 8", D: "M0 0L0 10L3.5 10Q6 10 6 7.5L6 2.5Q6 0 3.5 0L0 0",
+  E: "M6 0L0 0L0 10L6 10M0 5L4.8 5", F: "M6 0L0 0L0 10M0 5L4.8 5", H: "M0 0L0 10M6 0L6 10M0 5L6 5", K: "M0 0L0 10M6 0L0 6M2 4.2L6 10",
+  L: "M0 0L0 10L6 10", M: "M0 10L0 0L3 7L6 0L6 10", N: "M0 10L0 0L6 10L6 0", O: "M2 0L4 0Q6 0 6 2L6 8Q6 10 4 10L2 10Q0 10 0 8L0 2Q0 0 2 0",
+  P: "M0 10L0 0L4 0Q6 0 6 2.6Q6 5.2 4 5.2L0 5.2", R: "M0 10L0 0L4 0Q6 0 6 2.6Q6 5.2 4 5.2L0 5.2M3.4 5.2L6 10",
+  S: "M6 2Q6 0 4 0L2 0Q0 0 0 2.5Q0 5 2 5L4 5Q6 5 6 7.5Q6 10 4 10L2 10Q0 10 0 8", T: "M0 0L6 0M3 0L3 10", U: "M0 0L0 8Q0 10 2 10L4 10Q6 10 6 8L6 0",
+  V: "M0 0L3 10L6 0", X: "M0 0L6 10M6 0L0 10", Y: "M0 0L3 5L6 0M3 5L3 10", "-": "M1 5.4L5 5.4",
+};
+const SVG = "http://www.w3.org/2000/svg";
+const shape = (tag, attrs) => { const e = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+// the path of TEXT, its top left at (x, y), letters h tall and h * wide across, gap apart
+function lettering(text, x, y, h, wide, gap) {
+  const sx = h / 10 * wide, sy = h / 10;
+  return [...text].map((c, i) => GLYPHS[c].replace(/([\d.]+) ([\d.]+)/g, (_, gx, gy) => `${(x + i * (6 * sx + gap) + gx * sx).toFixed(2)} ${(y + gy * sy).toFixed(2)}`)).join("");
+}
+const $ = (id) => document.getElementById(id);
+const legend = (id, ...args) => $(id).append(shape("path", { d: lettering(...args) }));
+legend("legend-blackbox", "BLACKBOX", 89, 82, 26, 1.66, 9);
+legend("legend-mvave", "M-VΛVE", 762, 87, 31, 1.08, 5);
+legend("legend-master", "MASTER", 108, 368, 13, 1.54, 3.8);
+legend("legend-para", "PARA", 803, 368, 13, 1.54, 3.8);
+legend("legend-tuner", "TUNER", 465, 833, 12, 1.53, 4);
+
+function screw(x, y) {
+  const g = shape("g", { fill: "none" });
+  g.append(shape("circle", { cx: x, cy: y, r: 21, stroke: "#b9babd", "stroke-width": 3.5 }), shape("circle", { cx: x, cy: y, r: 14, fill: "url(#screwhead)" }),
+    shape("path", { d: `M${x - 8} ${y}H${x + 8}M${x} ${y - 8}V${y + 8}`, stroke: "#000", "stroke-width": 3 }));
+  $("screws").append(g);
+}
+screw(42, 90); screw(956, 90);
+function jack(x) {
+  const g = shape("g", {});
+  g.append(shape("rect", { x: x - 50, y: 34, width: 100, height: 18, rx: 2, fill: "url(#chrome)" }), shape("rect", { x: x - 38, y: 8, width: 76, height: 28, rx: 3, fill: "url(#chrome)" }),
+    shape("rect", { x: x - 16, y: 0, width: 32, height: 10, rx: 2, fill: "#2f3033" }));
+  for (let i = -30; i <= 30; i += 10) g.append(shape("path", { d: `M${x + i} 10V34`, stroke: "#000", "stroke-opacity": 0.28, "stroke-width": 2 }));
+  $("jacks").append(g);
+}
+jack(328); jack(666);
+
+// ---- the controls' drawings ----
+for (const key of document.querySelectorAll(".key")) {
+  const text = key.getAttribute("aria-label"), width = text.length * 8.6 - 2.6;
+  const svg = shape("svg", { viewBox: `-3 -8 ${Math.max(width, 30) + 6} 26`, fill: "none", stroke: "currentColor", "stroke-width": 1.9, "stroke-linejoin": "round", "aria-hidden": "true" });
+  svg.append(shape("path", { d: lettering(text, (Math.max(width, 30) - width) / 2, 0, 10, 1, 2.6) }));
+  key.append(svg);
+}
+function footswitch(el) {
+  const svg = shape("svg", { viewBox: "-95 -95 190 190", "aria-hidden": "true" });
+  const hex = Array.from({ length: 6 }, (_, i) => `${60 * Math.cos(i * Math.PI / 3 + Math.PI / 6)} ${60 * Math.sin(i * Math.PI / 3 + Math.PI / 6)}`).join(" ");
+  const cap = shape("g", { class: "cap" });
+  cap.append(shape("circle", { r: 43, fill: "url(#chrome)", stroke: "#6f7175", "stroke-width": 1.5 }), shape("circle", { cx: -8, cy: -12, r: 24, fill: "#fff", opacity: 0.55 }));
+  svg.append(shape("circle", { class: "ring", r: 82, fill: "#111112", "stroke-width": 11 }), shape("polygon", { points: hex, fill: "url(#chrome)", stroke: "#55575b", "stroke-width": 1.5 }),
+    shape("circle", { r: 48, fill: "#3c3d40" }), cap);
+  el.append(svg);
+}
+document.querySelectorAll(".footswitch").forEach(footswitch);
+function knob(el) {
+  const svg = shape("svg", { viewBox: "-100 -100 200 200", "aria-hidden": "true" }), turns = shape("g", { class: "turns" });
+  turns.append(shape("circle", { r: 95, fill: "#0b0b0c", stroke: "#1f1f21", "stroke-width": 8, "stroke-dasharray": "4.4 3" }), shape("circle", { r: 80, fill: "url(#screwhead)", stroke: "#2b2b2e", "stroke-width": 1.5 }),
+    shape("circle", { cy: -62, r: 5.5, fill: "#f2f2f3" }));
+  svg.append(turns);
+  el.append(svg);
+}
+document.querySelectorAll(".knob").forEach(knob);
+
+// ---- the simulator: requests in order, and what it reports ----
+const conn = $("conn"), lcd = $("lcd").getContext("2d");
+let queue = Promise.resolve(), state = null, frame = -1, masterDragged = null;
+function send(path) {
+  const sent = queue.then(async () => {
+    const r = await fetch("/api/" + path, { method: "POST" });
+    if (!r.ok) conn.textContent = (await r.json()).error;
+  }).catch((e) => { conn.textContent = "not connected: " + e.message; });
+  queue = sent;
+  return sent.then(refresh);
+}
+function paint(bytes) {
+  const img = lcd.createImageData(240, 240), px = img.data;
+  for (let i = 0; i < 240 * 240; i++) {
+    const c = bytes[i * 2] << 8 | bytes[i * 2 + 1];
+    px[i * 4] = (c >> 11 & 31) * 255 / 31; px[i * 4 + 1] = (c >> 5 & 63) * 255 / 63; px[i * 4 + 2] = (c & 31) * 255 / 31; px[i * 4 + 3] = 255;
+  }
+  lcd.putImageData(img, 0, 0);
+}
+function show(s) {
+  const lit = backlights(s);
+  for (const [name, level] of Object.entries(lit)) document.querySelector(`[data-control=${name}]`).dataset.lit = level;
+  for (const name of BUTTONS) document.querySelector(`[data-control=${name}]`).classList.toggle("held", s.held.includes(name));
+  $("para").classList.toggle("held", s.held.includes("push"));
+  $("para").style.setProperty("--angle", `${135 + s.knob * DETENT_DEGREES}deg`);
+  $("para").setAttribute("aria-valuenow", s.knob);
+  $("para").setAttribute("aria-valuetext", `${s.mode} page, preset ${s.slot + 1} ${s.name}`);
+  const volume = masterDragged ?? s.volume;
+  $("master").style.setProperty("--angle", `${masterAngle(volume)}deg`);
+  $("master").setAttribute("aria-valuenow", volume);
+}
+async function poll() {
+  try {
+    const r = await fetch("/api/state"), s = await r.json();
+    if (s.error) throw new Error(s.error);
+    state = s;
+    show(s);
+    audio.follow(s);
+    $("bypass").checked = Boolean(s.dsp.bypass);
+    conn.textContent = `Connected. Preset ${s.slot + 1}, ${s.name}${s.dirty ? " (edited)" : ""}.`;
+    document.body.dataset.conn = "ok";
+    if (s.frame !== frame) {
+      paint(new Uint8Array(await (await fetch("/api/screen.rgb565")).arrayBuffer()));
+      frame = s.frame;
+      document.body.dataset.frame = frame;
+    }
+  } catch (e) {
+    conn.textContent = "not connected: " + e.message;
+    document.body.dataset.conn = "error";
+  }
+}
+let polling = false, pollAgain = false;
+async function refresh() {
+  if (polling) { pollAgain = true; return; }
+  polling = true;
+  do { pollAgain = false; await poll(); } while (pollAgain);
+  polling = false;
+}
+
+// ---- what a person does, and scripts through window.pedal ----
+let lastDetent = 0;
+const down = (name) => send("down/" + name), up = (name) => send("up/" + name);
+function turn(detents, fast) {
+  const now = performance.now();
+  const quick = fast ?? isFast(lastDetent, now, detents);
+  lastDetent = now;
+  return send(`knob/${detents}${quick ? "?fast" : ""}`);
+}
+const setMaster = (volume) => send("volume/" + volume);
+const volumeNow = () => state?.volume ?? 0;
+function moveMaster(delta) {
+  const next = masterFollow(volumeNow(), volumeNow() + delta);
+  return next === volumeNow() ? Promise.resolve() : setMaster(next);
+}
+window.pedal = {
+  audio: () => audio.state(),
+  down, up, turn, master: setMaster,
+  async tap(name, ms = 0) { down(name); if (ms) await new Promise((r) => setTimeout(r, ms)); return up(name); },
+  state: () => state,
+};
+
+// a click leaves the focus where it is: the keys keep their meaning for a person who mixes mouse and keyboard
+// and a long touch is a hold, not the browser's menu
+for (const el of document.querySelectorAll(".control")) for (const ev of ["mousedown", "contextmenu"]) el.addEventListener(ev, (e) => e.preventDefault());
+for (const el of document.querySelectorAll("[data-control]")) {
+  const name = el.dataset.control;
+  el.addEventListener("pointerdown", (e) => { if (e.button) return; el.setPointerCapture(e.pointerId); down(name); });
+  el.addEventListener("lostpointercapture", () => up(name));
+  el.addEventListener("click", (e) => { if (e.detail === 0) pedal.tap(name); });   // a screen reader's click: no pointer before it
+}
+
+function dragged(el, onMove, onStart = () => { }, onEnd = () => { }) {
+  let id = null, x, y;
+  el.addEventListener("pointerdown", (e) => { if (e.button) return; el.setPointerCapture(e.pointerId); id = e.pointerId; x = e.clientX; y = e.clientY; onStart(); });
+  el.addEventListener("pointermove", (e) => { if (e.pointerId === id) onMove(e.clientX - x, e.clientY - y); });
+  el.addEventListener("lostpointercapture", () => { id = null; onEnd(); });
+}
+const knobWidth = (el) => el.getBoundingClientRect().width;
+
+{
+  const el = $("master");
+  let start = 0;
+  dragged(el, (dx, dy) => {
+    const next = masterFollow(masterDragged, masterFromDrag(start, dx, dy, knobWidth(el)));
+    if (next !== masterDragged) { masterDragged = next; setMaster(next); }
+  }, () => { masterDragged = start = volumeNow(); }, () => { masterDragged = null; });
+}
+{
+  const el = $("para");
+  let gesture = "idle", timer = 0, rest = 0, moved = 0, sent = 0;
+  const step = (event) => {
+    const { to, send: edges } = paraStep(gesture, event);
+    gesture = to;
+    for (const edge of edges) (edge === "down" ? down : up)("push");
+  };
+  dragged(el, (dx, dy) => {
+    if (gesture === "undecided" && Math.hypot(dx, dy) >= SLOP_PX) { clearTimeout(timer); step("far"); }
+    if (gesture !== "turning") return;
+    const detents = dragDetents(dx, dy, knobWidth(el));
+    if (detents !== sent) { const n = detents - sent; sent = detents; turn(n); }
+  }, () => { sent = 0; step("down"); timer = setTimeout(() => step("still"), PRESS_MS); }, () => { clearTimeout(timer); step("up"); });
+  el.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const w = wheelNotches(rest, e.deltaY, e.deltaMode);
+    rest = w.rest;
+    if (w.notches) turn(w.notches);
+  }, { passive: false });
+}
+{
+  let rest = 0;
+  $("master").addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const w = wheelNotches(rest, e.deltaY, e.deltaMode);
+    rest = w.rest;
+    if (w.notches) moveMaster(w.notches * MASTER_STEP);
+  }, { passive: false });
+}
+
+const keysDown = new Map();
+const focused = (t) => t.dataset?.control ?? t.dataset?.knob ?? null;
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest("a, #sound")) return;
+  const a = keyAction(e.key, focused(e.target));
+  if (!a) return;
+  e.preventDefault();
+  if (a.hold) { if (!keysDown.has(e.code)) { keysDown.set(e.code, a.hold); down(a.hold); } }
+  else if (a.turn) turn(a.turn);
+  else if (a.master) moveMaster(a.master);
+  else setMaster(a.masterTo);
+});
+document.addEventListener("keyup", (e) => {
+  if (keysDown.has(e.code)) { up(keysDown.get(e.code)); keysDown.delete(e.code); }
+});
+const letGo = () => { for (const name of keysDown.values()) up(name); keysDown.clear(); };
+window.addEventListener("blur", letGo);
+
+// ---- the sound: what goes in, and the meters ----
+const panel = () => document.querySelector("[name=source]:checked").value;
+const showDb = (meter, text, peak) => {
+  const db = dbfs(peak);
+  $(meter).value = Math.max(db, -60);
+  $(meter).dataset.db = Number.isFinite(db) ? db.toFixed(1) : "-inf";
+  $(text).textContent = Number.isFinite(db) ? db.toFixed(0) : "-∞";
+};
+const say = (text) => { $("sound-status").textContent = text; };
+const audio = new PedalAudio({
+  onMeter({ input, output, load }) {
+    showDb("in-meter", "in-db", input);
+    showDb("out-meter", "out-db", output);
+    const a = audio.state();
+    if (a.running) say(`${a.playing ? (a.muted ? "Muted" : "Playing") : "Stopped"}. ${a.sampleRate / 1000} kHz, ${a.latencyMs} ms to the speakers, DSP ${load} % of this computer's time for a block.`);
+  },
+  onLoad: (load) => send("load/" + load),
+  onChange() { $("play").textContent = audio.playing ? "Stop" : "Play"; },
+});
+
+let loops = [], dropped = null;
+const loop = () => loops[$("loop").selectedIndex];
+function credit() {
+  const l = loop();
+  $("credit").replaceChildren(`${l.title} by ${l.author}. ${l.license}, ${l.signal}. `, Object.assign(document.createElement("a"), { href: l.source, textContent: "Source" }), " ",
+    Object.assign(document.createElement("a"), { href: "/loops/ATTRIBUTION.md", textContent: "Credits" }));
+}
+async function loadLoops() {
+  loops = (await (await fetch("/loops/manifest.json")).json()).loops;
+  $("loop").replaceChildren(...loops.map((l) => new Option(`${l.title} (${l.kind})`)));
+  credit();
+}
+async function listDevices() {
+  const inputs = (await navigator.mediaDevices?.enumerateDevices() ?? []).filter((d) => d.kind === "audioinput" && d.deviceId !== "default");
+  const chosen = $("device").value;
+  $("device").replaceChildren(new Option("Default input", ""), ...inputs.map((d, i) => new Option(d.label || `Input ${i + 1}`, d.deviceId)));
+  $("device").value = inputs.some((d) => d.deviceId === chosen) ? chosen : "";
+}
+function play() {
+  const kind = panel();
+  if (kind === "loop") { const l = loop(); return audio.playBuffer(l.file, async () => (await fetch("/loops/" + l.file)).arrayBuffer()); }
+  if (kind === "file") {
+    if (!dropped) throw new Error("drop a file on the page, or choose one");
+    const file = dropped;
+    return audio.playBuffer(file, () => file.arrayBuffer());
+  }
+  return audio.playDevice($("device").value).then(listDevices);
+}
+const attempt = (fn) => async (...args) => {
+  try { await fn(...args); } catch (e) { say(e.name === "NotAllowedError" ? "The browser refused the input: allow the microphone for this page." : `No sound: ${e.message}`); }
+};
+const start = attempt(play);
+const restart = () => { if (audio.playing) start(); };
+$("play").addEventListener("click", attempt(() => (audio.playing ? audio.stop() : play())));
+for (const radio of document.querySelectorAll("[name=source]")) {
+  radio.addEventListener("change", () => {
+    if (audio.playing) audio.stop();
+    for (const p of document.querySelectorAll("[data-panel]")) p.hidden = p.dataset.panel !== panel();
+    $("repeat-label").hidden = panel() === "device";
+    if (panel() === "device") listDevices();
+  });
+}
+$("loop").addEventListener("change", () => { credit(); restart(); });
+$("device").addEventListener("change", restart);
+function useFile(file) {
+  dropped = file;
+  $("file-name").textContent = file.name;
+  document.querySelector("[name=source][value=file]").click();
+  // a file dragged in from elsewhere is no click on this page: the context would wait for one for ever
+  if (navigator.userActivation?.hasBeenActive === false) return say("File ready: press Play.");
+  return start();
+}
+$("file").addEventListener("change", (e) => { if (e.target.files[0]) useFile(e.target.files[0]); });
+document.addEventListener("dragover", (e) => { e.preventDefault(); $("drop").dataset.over = ""; });
+document.addEventListener("dragleave", () => { delete $("drop").dataset.over; });
+document.addEventListener("drop", (e) => {
+  e.preventDefault();
+  delete $("drop").dataset.over;
+  if (e.dataTransfer.files[0]) useFile(e.dataTransfer.files[0]);
+});
+$("repeat").addEventListener("change", (e) => audio.setRepeat(e.target.checked));
+$("hear").addEventListener("change", (e) => audio.hearDevice(e.target.checked));
+$("bypass").addEventListener("change", (e) => send(`bypass/${e.target.checked ? 1 : 0}`));
+$("level").addEventListener("input", (e) => { audio.setLevel(+e.target.value); $("level-text").textContent = e.target.value + "%"; });
+$("volume").addEventListener("input", (e) => { audio.setVolume(+e.target.value); $("volume-text").textContent = e.target.value + "%"; });
+navigator.mediaDevices?.addEventListener("devicechange", listDevices);
+loadLoops().catch((e) => say(`No loops: ${e.message}`));
+
+refresh();
+setInterval(refresh, 100);
+</script>
+</body>
+</html>

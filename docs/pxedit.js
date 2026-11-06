@@ -6,7 +6,7 @@ import { PORT_RE } from "./pxota.js";
 
 const H = [0x7D, 0x4F, 0x50];
 export const C = { INFO: 1, CAT_BLOCK: 2, CAT_TYPE: 3, TEXTS: 4, STATE: 5, SET: 6, ORDER: 7, NAME: 8, PUT: 9, SELECT: 10,
-  FOCUS: 11, LIST: 12, SLOT_GET: 13, SLOT_PUT: 14, COMMIT: 15, SAVE: 16, WATCH: 17, PING: 18 };
+  FOCUS: 11, LIST: 12, SLOT_GET: 13, SLOT_PUT: 14, COMMIT: 15, SAVE: 16, WATCH: 17, PING: 18, DIAG: 19 };
 export const P_SIZE = 110;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function fail(code, msg) { const e = new Error(msg); e.code = code; return e; }
@@ -115,6 +115,11 @@ export class Editor {
       this.link = null;
     }
     return null;
+  }
+  // the log channel: its text lines; a timeout when this firmware has none (only the Bluetooth test image answers)
+  async diag() {
+    const r = new Reader(await this.request(C.DIAG, [], 600));
+    return Array.from({ length: r.b() }, () => r.s());
   }
   close() {
     if (this.link) { try { this.link.input.onmidimessage = null; } catch (_) { } }

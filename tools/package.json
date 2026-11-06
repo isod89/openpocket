@@ -1,0 +1,9 @@
+{
+  "name": "openpocket-tools",
+  "private": true,
+  "description": "Host dependencies of tools/op.mjs flash (the command-line flasher). Nothing else in the repository needs npm.",
+  "license": "GPL-3.0-only",
+  "dependencies": {
+    "@julusian/midi": "3.8.1"
+  }
+}

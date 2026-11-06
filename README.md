@@ -38,7 +38,7 @@ Written from scratch for the pedal's own chip (JieLi AC791N, two cores), install
   (the note compresses on a hard attack and blooms back)
 - **24-bit audio** in and out, guitar read from the left input channel only, like the official firmware (the right
   channel only carries noise: mixing it in was the constant hiss on high-gain amps)
-- **USB update**: the pedal shows up as a USB-MIDI device and takes updates from the [web installer](docs/index.html)
+- **USB update**: the pedal shows up as a USB-MIDI device and takes updates from the [web installer](docs/index.html), or from the command line (`make flash`, see [docs/BUILDING.md](docs/BUILDING.md))
 
 Full list of models, presets and controls: [docs/SOUNDS-AND-CONTROLS.md](docs/SOUNDS-AND-CONTROLS.md).
 Development notes (how the audio path was found, what changed in each version): [docs/AUDIO-SDK.md](docs/AUDIO-SDK.md).
@@ -111,6 +111,9 @@ replaces the files with this folder's.
   on a simulated flash: every command, pushes both ways, a power cycle; then the editor page in Chromium (sliders,
   drag and drop, save, move, export / import).
 
+To play with the simulated pedal yourself (screen, footswitches, knob, the installer and editor pages, and its sound,
+with bundled guitar loops, a file or an input of your computer), run `make sim` and open `http://127.0.0.1:8766/`; see [`docs/SIMULATOR.md`](docs/SIMULATOR.md).
+
 ## Layout
 
 | | |
@@ -122,6 +125,7 @@ replaces the files with this folder's.
 | `tools/` | package builder, loader wrapper, font converter, flash image tools |
 | `tests/` | host tests and the simulated pedal |
 | `flash/` | SD-card recovery with fm1buddy (ESP32-S3) |
+| `firmware/ble/`, `third_party/jieli-ble/` | the optional advertise-only Bluetooth test image (`make ble`, [docs/BLE-TEST.md](docs/BLE-TEST.md)) and JieLi's Bluetooth controller it links |
 
 ## Licence
 

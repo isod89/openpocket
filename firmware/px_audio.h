@@ -46,9 +46,11 @@ void *os_current_task_rom(void) { return 0; }
 void cpu_assert_debug(void) { }
 void P33_SYSTEM_RESET(void) { for (;;) ; }
 
+#if !OP_BLE_TEST   /* the ble build has a real heap (ble/ble_os.c); iis_open draws its block from it */
 static uint8_t jl_heap[4096] __attribute__((aligned(8)));   /* iis_open: 2 channels x 8 x sr_points (256) */
 void *malloc(unsigned n) { return (n <= sizeof jl_heap) ? jl_heap : 0; }   /* single block: iis_open */
 void free(void *p) { (void)p; }
+#endif
 /* memset / memcpy: felucca-bsp libc.c (included by openpocket.c) */
 
 static volatile uint32_t *jl_preg(uint32_t gpio, uint32_t off)

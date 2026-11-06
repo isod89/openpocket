@@ -42,6 +42,7 @@ The 12 blocks, by index: 0 GATE, 1 COMP, 2 PITCH, 3 SFX, 4 DRIVE, 5 AMP, 6 CAB, 
 | 16 SAVE | slot | slot, rc. Saves the current sound into the slot, writes the flash, the slot becomes the current one (as the pedal's SAVE) |
 | 17 WATCH | on (0/1) | on. While on, the pedal pushes `STATE` (cmd 5) when the sound, the slot or the focused block changes on the pedal; it stops by itself 5 s after the last request |
 | 18 PING | — | DSP load % (0..127), flags (bit 0: bypass, bit 1: second core) |
+| 19 DIAG | — | n (3), then n strings: this boot, the last boot, the status line. Read only. Only the Bluetooth test image answers: other firmware gives no reply. `docs/BLE-TEST.md`, "Reading the pedal from a computer" |
 
 Writing the flash mutes the sound for a moment, as saving on the pedal does. A whole import sends `SLOT_PUT` without
 bit 1 for every slot, then one `COMMIT`.

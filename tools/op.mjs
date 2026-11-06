@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // The one host-side entry point of the OpenPocket build (macOS, Linux, Windows; Node 18+). The Makefile and the
 // .bat files only call this. Every Docker command line lives here.
-//   node tools/op.mjs doctor | build | test | package | clean | shell | image | serve [editor|build]
+//   node tools/op.mjs doctor | build | ble | test | package | clean | shell | image | serve [editor|build|ble]
+//   node tools/op.mjs flash --dry-run | --confirm-flash [--rescue] [--package FILE]   (writes to a connected pedal: docs/BUILDING.md)
+//   node tools/op.mjs log [--follow] [--json] [--wait SEC] [--scan SEC]   (reads a connected pedal's state: docs/BLE-TEST.md)
 //   node tools/op.mjs render in.wav [out.wav] [preset]   |   node tools/op.mjs appimage [fm1-1.bin]
+//   node tools/op.mjs sim [--port 8766] [--flash FILE] [--reset] | --update FLASH.bin   the hosted simulated pedal
+//   node tools/op.mjs wasm   the engine as WebAssembly for the simulated pedal's sound (tools/sim/px_engine.wasm)
 // NATIVE=1 runs the commands on this machine (toolchain from firmware/setup.sh) instead of in the container.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
@@ -67,15 +71,18 @@ const commands = {
       const img = spawnSync("docker", ["image", "inspect", IMAGE], { stdio: "ignore" });
       console.log(img.status === 0 ? `ok   image ${IMAGE} is built` : `note image ${IMAGE} is not built yet: the first build or \`image\` makes it (about 1 minute)`);
     }
+    const cc = spawnSync(process.env.CC || "cc", ["--version"], { stdio: "ignore" });
+    console.log(cc.error || cc.status !== 0 ? "note no C compiler (cc): `sim`, the hosted simulated pedal, needs one (Xcode command line tools, build-essential)" : "ok   C compiler for `sim`");
     if (process.arch === "arm64") console.log("note ARM machine: the linux/amd64 toolchain runs under emulation (a `test` takes about 1 minute)");
     return bad;
   },
   image,
   build: () => inContainer(["sh", "firmware/build.sh"]),
+  ble: () => inContainer(["sh", "-c", "OP_BLE=1 sh firmware/build.sh && sha256sum firmware/openpocket-ble.bin build/ble/*.fwsc"]),   // the advertise-only Bluetooth test image (docs/BLE-TEST.md)
   test: () => inContainer(["sh", "tests/run_tests.sh"]),
   package: () => inContainer(["sh", "-c", `sh firmware/build.sh && mkdir -p build && sha256sum ${OUTS} > build/SHA256SUMS && cat build/SHA256SUMS`]),
   clean() {
-    for (const p of ["build", "firmware/build", "firmware/openpocket.bin", "docs/firmware/manifest.json", "engine/px_render"]) {
+    for (const p of ["build", "firmware/build", "firmware/build-ble", "firmware/openpocket.bin", "firmware/openpocket-ble.bin", "docs/firmware/manifest.json", "engine/px_render"]) {
       rmSync(resolve(root, p), { recursive: true, force: true });
     }
     const dir = resolve(root, "docs/firmware");
@@ -83,16 +90,25 @@ const commands = {
     return 0;
   },
   shell: () => inContainer(["bash"], { tty: true }),
+  async flash(args) {                          // runs on this machine: the pedal is a USB device, not in the container
+    return (await import("./flash.mjs")).main(args);
+  },
+  async log(args) {                            // the same: reads the connected pedal, writes nothing
+    return (await import("./log.mjs")).main(args);
+  },
   serve([arg]) {
-    if (arg === "build" || !existsSync(resolve(root, "docs/firmware/manifest.json"))) {
-      const built = commands.build();
+    const ble = arg === "ble";                 // the Bluetooth test packages (build/ble) instead of docs/firmware
+    if (ble ? !existsSync(resolve(root, "build/ble/manifest.json")) : arg === "build" || !existsSync(resolve(root, "docs/firmware/manifest.json"))) {
+      const built = ble ? commands.ble() : commands.build();
       if (built !== 0) return built;
     }
     const py = process.platform === "win32" ? ["py", "-3"] : ["python3"];
-    const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", arg === "editor" ? "editor.html" : "index.html"], { stdio: "inherit", cwd: root });
+    const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", arg === "editor" ? "editor.html" : "index.html", ...(ble ? ["build/ble"] : [])], { stdio: "inherit", cwd: root });
     if (r.error) fail("Python 3 is needed to serve the installer offline (python.org).");
     return r.status ?? 0;
   },
+  sim: (args) => exec(process.execPath, ["tools/sim.mjs", ...args]),   // the host's own Node and C compiler: no container
+  wasm: () => inContainer(["sh", "engine/wasm.sh"]),
   render([input, output, preset]) {
     if (!input) fail("usage: render in.wav [out.wav] [preset 1..52]");
     const rel = inside(input);
@@ -110,4 +126,4 @@ const commands = {
 
 const [name, ...rest] = process.argv.slice(2);
 if (!Object.hasOwn(commands, name)) fail(`usage: node tools/op.mjs ${Object.keys(commands).join(" | ")}`);
-process.exit(commands[name](rest));
+process.exit(await commands[name](rest));
