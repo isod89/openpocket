@@ -31,3 +31,13 @@ jobs:
             build/SHA256SUMS-midi-test
       - name: Host tests
         run: node tools/op.mjs test
+      - name: Build the Bluetooth audio test image (never the installer default)
+        run: node tools/op.mjs bt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openpocket-bt-audio
+          path: |
+            firmware/openpocket-bt.bin
+            firmware/build-bt/symbols.txt
+            firmware/build-bt/openpocket.map
+            build/bt/

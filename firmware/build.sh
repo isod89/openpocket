@@ -4,7 +4,11 @@
 # OP_BLE=1 sh firmware/build.sh builds the Bluetooth MIDI test image instead (docs/BLE-TEST.md): the same
 #   firmware plus the JieLi controller and host (third_party/jieli-ble) -> firmware/openpocket-ble.bin and build/ble/*.fwsc.
 #   Nothing of the normal build's outputs is touched.
+# OP_BT=1 sh firmware/build.sh builds the Bluetooth audio test image (docs/BT-AUDIO-TEST.md): the BLE test image with JieLi's
+#   classic controller and host (third_party/jieli-ble + third_party/jieli-bt, firmware/bt/members.txt) and Android's SBC decoder
+#   (third_party/sbc-android) in place of the LE stack -> firmware/openpocket-bt.bin and build/bt/*.fwsc.
 set -e
+[ -n "$OP_BT" ] && OP_BLE=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BSP="${BSP:-$HERE/bsp}"
 TC="${JIELI_TOOLCHAIN:-$HOME/.jieli/toolchain}"
@@ -23,7 +27,11 @@ fi
 # the stack guard: on, except in the Bluetooth test image (its task stacks are outside the guard window); app.ld refuses the
 # link if the guard is on and those stacks are outside. OP_GUARD_STACK=1 with OP_BLE=1 is how that check is shown to fire.
 GUARD_STACK=1; [ -n "$OP_BLE" ] && GUARD_STACK="${OP_GUARD_STACK:-0}"
-if [ -n "$OP_BLE" ]; then O="$HERE/build-ble"; APP="$HERE/openpocket-ble.bin"; PKG="$HERE/../build/ble"; BLEDEF="-DOP_BLE_TEST=1 -I$HERE/ble"
+LDS="$HERE/app.ld"
+if [ -n "$OP_BT" ]; then O="$HERE/build-bt"; APP="$HERE/openpocket-bt.bin"; PKG="$HERE/../build/bt"; LDS="$HERE/bt/app-bt.ld"
+  # four tasks (the app's, the controller's, the host's, the pairing crypto's) of 2.75 KB in NOINIT; the flash's unique ID for the address
+  BLEDEF="-DOP_BLE_TEST=1 -DOP_BT_AUDIO=1 -DFL_UID -DMAXTASK=4 -DSTACK_WORDS=704u -I$HERE/ble -I$HERE/bt"
+elif [ -n "$OP_BLE" ]; then O="$HERE/build-ble"; APP="$HERE/openpocket-ble.bin"; PKG="$HERE/../build/ble"; BLEDEF="-DOP_BLE_TEST=1 -I$HERE/ble"
 else O="$HERE/build"; APP="$HERE/openpocket.bin"; PKG="$HERE/../docs/firmware"; BLEDEF=""; fi
 rm -rf "$O"; mkdir -p "$O"
 CC="$TC/pi32v2/bin/clang -target pi32v2"
@@ -61,7 +69,9 @@ if [ -n "$OP_BLE" ]; then
   MAPOPT="-Map $O/openpocket.map"
   # JieLi's LE controller (LLVM bitcode, Apache-2.0, third_party/jieli-ble) -> pi32v2 objects, and our context switch
   mkdir -p "$O/jl"
-  for b in "$HERE"/../third_party/jieli-ble/*/*.bc; do
+  if [ -n "$OP_BT" ]; then BCS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' -e "s|^|$HERE/../|" "$HERE/bt/members.txt")
+  else BCS=$(ls "$HERE"/../third_party/jieli-ble/*/*.bc); fi
+  for b in $BCS; do
     $CC -Os -c -x ir "$b" -o "$O/jl/$(basename "$(dirname "$b")")_$(basename "$b" .bc).o"
   done
   # v40 made memcpy and memset RAM code, out of the call range of the library's code at the end of the flash: the
@@ -69,6 +79,15 @@ if [ -n "$OP_BLE" ]; then
   for o in "$O"/jl/*.o; do python3 "$HERE/../tools/elfsym.py" "$o" memcpy=ble_memcpy memset=ble_memset; done
   rm -f "$O/libjl.a"; "$TC/pi32v2/bin/ar" rcs "$O/libjl.a" "$O"/jl/*.o   # an archive: the linker takes only the objects the image calls
   $CC -c "$HERE/ble/ble_ctx.S" -o "$O/ble_ctx.o"; $CC -c "$HERE/ble/ble_isr.S" -o "$O/ble_isr.o"; BLEOBJ="$O/ble_ctx.o $O/ble_isr.o $O/libjl.a"
+  if [ -n "$OP_BT" ]; then
+    # the classic baseband's interrupts, counted; Android's SBC decoder (Apache-2.0) and its wrapper (firmware/bt/bt_sbc.c)
+    $CC -c "$HERE/bt/bt_isr.S" -o "$O/bt_isr.o"
+    SBC="$HERE/../third_party/sbc-android/decoder"; mkdir -p "$O/sbc"
+    for c in "$SBC"/srce/*.c "$HERE/bt/bt_sbc.c"; do
+      $CC $FP -Os -ffunction-sections -fno-builtin -w -I"$HERE/bt/sbc_port" -I"$HERE/inc" -I"$SBC/include" -I"$HERE/bt" -c "$c" -o "$O/sbc/$(basename "$c" .c).o"
+    done
+    BLEOBJ="$BLEOBJ $O/bt_isr.o $O/sbc/*.o"
+  fi
 fi
 # official JieLi I2S driver (LLVM bitcode from the AC79 SDK, Apache-2.0) -> pi32v2 object
 $CC -Os -c -x ir "$HERE/sdk/iis.bc" -o "$O/iis.o"
@@ -90,7 +109,7 @@ python3 "$HERE/../tools/ramcode.py" "$O/openpocket.o" $RAM_FW
 # a direct call between the flash code and the RAM code is out of the CPU's call range: refuse it with its name
 # (v40: the audio path's RAM code, .ram_text.dsp.*, is within range by its place, firmware/app.ld)
 python3 "$HERE/../tools/check_calls.py" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o"
-"$TC/pi32v2/bin/ld" --defsym "op_guard_stack=$GUARD_STACK" -T "$HERE/app.ld" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o" "$O/iis.o" $BLEOBJ $MAPOPT -o "$O/openpocket.elf"
+"$TC/pi32v2/bin/ld" --defsym "op_guard_stack=$GUARD_STACK" -T "$LDS" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o" "$O/iis.o" $BLEOBJ $MAPOPT -o "$O/openpocket.elf"
 # symbol map: used to translate a crash address (PC) into a function name
 "$TC/common/bin/objdump" -t "$O/openpocket.elf" 2>/dev/null | sort > "$O/symbols.txt" || true
 "$TC/common/bin/objcopy" -O binary -j .text     "$O/openpocket.elf" "$O/text.bin"
@@ -107,6 +126,10 @@ be,cl,ch,nb=sym("_bss_end"),sym("_cram_lo"),sym("_cram_hi"),sym("_ble_stack_hi")
 re_,hs,he=sym("_rt_end"),sym("_bss_hi_start"),sym("_bss_hi_end")
 ls_,le=sym("_bss_lo_start"),sym("_bss_lo_end")
 if ls_ is not None and le and le > ls_: print(f"low RAM   : {le-ls_} of 24576 bytes (below the RAM)")
+l2s,l2e=sym("_bss_lo2_start"),sym("_bss_lo2_end")
+if l2s is not None and l2e and l2e > l2s: print(f"low RAM 2 : {l2e-l2s} of 7680 bytes (the decoded music)")
+et,etf=sym("_etext"),sym("_etext_fw")
+if et and etf: print(f"flash     : firmware code to {etf:#x}, library code to {et:#x}")
 ps_,pe=sym("_pool_tail_start"),sym("_pool_tail_end")
 if ps_ and pe: print(f"pool tail : {pe-ps_} bytes, {0x01C5E000-pe} left before the RAM code")
 if re_ and he: print(f"hi RAM    : RAM code {re_-0x01C5E000}, data {he-hs}, free {0x01C74000-he} of 90112 bytes (the RAM code window)")

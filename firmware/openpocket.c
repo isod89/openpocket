@@ -618,11 +618,19 @@ static void ed_diag_line(uint32_t i, char *out);
 #if OP_BLE_TEST             /* the Bluetooth MIDI test image (docs/BLE-TEST.md): make ble */
 #include "ble/ble_os.c"
 #include "ble/ble_libc.c"
+#if OP_BT_AUDIO             /* the Bluetooth audio test image (docs/BT-AUDIO-TEST.md): make bt. The same image, the classic stack */
+#include "bt/bt_cfg.c"
+#include "ble/ble_rf.c"
+#include "bt/bt_stubs.c"
+#include "bt/bt_glue.c"
+#include "bt/bt_a2dp.c"
+#else
 #include "ble/ble_cfg.c"
 #include "ble/ble_rf.c"
 #include "ble/ble_stubs.c"
 #include "ble/ble_test.c"
 #include "ble/ble_midi.c"
+#endif
 #include "ble/ble_diag.h"
 static void ed_diag_line(uint32_t i, char *out)
 {
@@ -671,7 +679,9 @@ static void app_main(void)
     /* boot screen with the version: shows which image is running */
     lcd_rect(0,0,240,240,UI_BG);
     ft_box(0, 98, 240, "OPENPOCKET", &FT_MD, UI_ACC, UI_BG, 1);
-#if OP_BLE_TEST
+#if OP_BT_AUDIO
+    ft_box(0, 126, 240, OP_VERSION " BT AUDIO TEST", &FT_SM, UI_DIM, UI_BG, 1);
+#elif OP_BLE_TEST
     ft_box(0, 126, 240, OP_VERSION " BLE TEST", &FT_SM, UI_DIM, UI_BG, 1);
 #else
     ft_box(0, 126, 240, OP_VERSION, &FT_SM, UI_DIM, UI_BG, 1);
@@ -827,7 +837,7 @@ static void app_main(void)
                 bat_raw[2] = (int32_t)a_xrun; bat_raw[3] = (int32_t)a_clip; bat_raw[4] = (int32_t)a_peak_all;   /* tuner page */
 #if OP_BLE_TEST
                 {   /* "STARTING 4 C1 42%": the Bluetooth state first; FAILED and ADVERTISING scroll their long lines instead (ble_status.h) */
-                    char b[48], full[128]; int k, j;
+                    char b[48], full[224]; int k, j;   /* (ED_DIAG_LEN: the Bluetooth audio image's lines are longer) */
                     static uint32_t scroll;
                     ble_test_state(b);
                     if (ble_state == BLE_FAILED || ble_state == BLE_ADV) {   /* longer than the status area: scroll it (ble_status.h) */

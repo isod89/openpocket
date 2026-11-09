@@ -1,0 +1,283 @@
+/* SPDX-License-Identifier: GPL-3.0-only OR MPL-2.0 */
+/* The Bluetooth audio test image (build target "bt", docs/BT-AUDIO-TEST.md): JieLi's classic controller and host (the stock
+ * firmware's own, third_party/jieli-ble + third_party/jieli-bt) are started; the pedal shows up on a phone as "OpenPocket", pairs
+ * with no PIN (Just Works) and plays the phone's music into its output (A2DP sink, SBC, mono).
+ *
+ * The image is the Bluetooth test image's (OP_BLE_TEST: ble/ble_os.c's scheduler, the radio start-up, the stall watch, the boot
+ * report, DIAG) with the classic stack in place of the LE one: openpocket.c calls the same ble_test_* functions, defined here.
+ *
+ *   start   an app task ("btapp") runs btstack_init (it waits for the controller), then sends the stack's commands
+ *   events  bt_event_notify (the stack calls it): ready -> visible and connectable; connected; media start / stop
+ *   audio   the main loop (ble_test_poll) takes the phone's packets (a2dp_media_try_get_packet: never waits), decodes their
+ *           SBC frames (bt_sbc.c) into the ring (px_bt_ring.h) and steers its rate; px_audio.h dsp_out adds the ring to the
+ *           output */
+#include <stdint.h>
+#include "fm1_irq.h"
+#include "ble_os.h"
+#include "ble_status.h"
+#include "bt_sbc.h"
+
+extern int btstack_init(void);
+extern int __crc16_mutex_init(void);
+extern int task_create(void (*fn)(void *), void *arg, const char *name);
+extern uint32_t ble_task_waiting(const char *name);
+extern void bt_max_pwr_set(uint8_t pwr, uint8_t pg_pwr, uint8_t iq_pwr, uint8_t ble_pwr);
+extern void __set_simple_pair_flag(uint8_t on);
+extern void __set_simple_pair_param(uint8_t io_cap, uint8_t oob_data, uint8_t mitm);
+extern void __set_a2dp_auto_play_flag(uint8_t on);
+extern void __set_page_timeout_value(uint16_t ms);
+extern void __set_super_timeout_value(uint16_t ms);
+extern void __change_hci_class_type(uint32_t cod);
+extern void lmp_set_sniff_disable(void);
+extern int user_send_cmd_prepare(int cmd, uint16_t len, uint8_t *param);
+extern int a2dp_media_try_get_packet(uint8_t **frame);
+extern void a2dp_media_free_packet(void *packet);
+extern int a2dp_media_get_remain_play_time(uint8_t include_tws);
+extern int os_sem_create(void *s, int cnt);
+extern int os_sem_pend(void *s, int timeout);
+extern int os_sem_post(void *s);
+extern uint32_t bt_stub_calls;
+extern const char *bt_stub_last;
+
+/* the SDK's numbers (include_lib/btstack/avctp_user.h, include_lib/utils/event/bt_event.h, Apache-2.0) */
+enum { USER_CTRL_WRITE_SCAN_ENABLE = 13, USER_CTRL_WRITE_CONN_ENABLE = 15 };
+enum { BT_EVENT_FROM_CTRLER = 1, BT_EVENT_FROM_HCI = 2, BT_EVENT_FROM_CON = 3 };
+enum { BT_STATUS_INIT_OK = 3, BT_STATUS_START_CONNECTED = 5, BT_STATUS_FIRST_CONNECTED = 6, BT_STATUS_SECOND_CONNECTED = 7,
+       BT_STATUS_ENCRY_COMPLETE = 8, BT_STATUS_FIRST_DISCONNECT = 9, BT_STATUS_SECOND_DISCONNECT = 10, BT_STATUS_CONN_A2DP_CH = 39,
+       BT_STATUS_A2DP_MEDIA_START = 48, BT_STATUS_A2DP_MEDIA_STOP = 49 };
+#define BT_COD 0x240404u                                        /* the stock firmware's class of device: audio, rendering */
+
+/* what the audio path reads (px_audio.h bt_ring): the ring, its samples in the SRAM below the RAM (app-bt.ld .bss_lo2: CPU only, checked
+ * by nothing but the ear) */
+#define BT_TARGET 6615u                                         /* the backlog it keeps: 150 ms */
+#define BT_PREBUF 1024u                                         /* decoded before it starts: 23 ms */
+static int16_t bt_ring_mem[BT_RING_N] __attribute__((aligned(4), section(".bss.lo2.bt_ring")));   /* (bt_ring: px_audio.h) */
+
+/* the state, for the screen and the log */
+enum { BT_OFF, BT_STARTING, BT_VISIBLE, BT_LINKED, BT_PLAYING, BT_FAILED };
+static volatile uint32_t bt_st;
+static uint16_t ble_conn;                                       /* (openpocket.c: a link is up, scroll the link line) */
+uint32_t bt_cnt_irq_br, bt_cnt_irq_slot;                        /* bt_isr.S: IRQ 40 and 41 */
+static volatile uint32_t bt_ev_n, bt_ev_hist[6], bt_ev_i;       /* the events, the last six: from << 12 | code << 4 */
+static volatile uint32_t bt_init_ok, bt_links, bt_enc, bt_a2dp_ch, bt_media, bt_disc;
+static volatile uint32_t bt_cmd_bits, bt_scans;                 /* for the app task: bit 0 = visible and connectable */
+static uint32_t bt_cmd_sem[4];
+static uint32_t bt_t_start, bt_t_init;
+static uint8_t *bt_pkt;                                         /* the packet being decoded */
+static const uint8_t *bt_pp;
+static uint32_t bt_pn, bt_pkts, bt_frames_in, bt_t_steer;
+static int16_t bt_frame[BT_SBC_MAX_SAMPLES];
+
+static void bt_cmd(uint32_t bit) { bt_cmd_bits |= bit; os_sem_post(bt_cmd_sem); }
+
+/* the stack's events (its tasks call this) */
+int bt_event_notify(int from, void *e)
+{
+    const uint8_t *ev = e;
+    const uint8_t code = ev ? ev[0] : 0xFFu;
+    bt_ev_hist[bt_ev_i++ % 6u] = (uint32_t)from << 12 | (uint32_t)code << 4;
+    bt_ev_n++;
+    if (from != BT_EVENT_FROM_CON) return 0;
+    switch (code) {
+    case BT_STATUS_INIT_OK:
+        bt_init_ok = 1; bt_st = BT_VISIBLE; ble_state = BLE_ADV;
+        bt_cmd(1u);                                             /* visible (inquiry scan) and connectable (page scan) */
+        break;
+    case BT_STATUS_START_CONNECTED: case BT_STATUS_FIRST_CONNECTED: case BT_STATUS_SECOND_CONNECTED:
+        if (bt_st < BT_LINKED) { bt_st = BT_LINKED; bt_links++; }
+        ble_conn = 1;
+        break;
+    case BT_STATUS_ENCRY_COMPLETE: bt_enc++; break;
+    case BT_STATUS_CONN_A2DP_CH: bt_a2dp_ch++; break;
+    case BT_STATUS_A2DP_MEDIA_START: bt_st = BT_PLAYING; bt_media++; break;
+    case BT_STATUS_A2DP_MEDIA_STOP: if (bt_st == BT_PLAYING) bt_st = BT_LINKED; break;
+    case BT_STATUS_FIRST_DISCONNECT: case BT_STATUS_SECOND_DISCONNECT:
+        bt_disc++; ble_conn = 0; bt_st = BT_VISIBLE;
+        bt_pkt = 0; bt_pn = 0;                                  /* (the link's packets go with it: the stack clears its queue) */
+        bt_cmd(1u);                                             /* visible again for the next phone */
+        break;
+    default: break;
+    }
+    return 0;
+}
+
+/* btstack_init waits on a semaphore until the controller's task has started, and the stack's commands may wait too: both run
+ * here, in a task, never in the main loop */
+static void bt_app_task(void *arg)
+{
+    int rc;
+    (void)arg;
+    ble_stage_set(BLE_STAGE_INIT);                              /* (BLE_STAGE_RF: ble_rf.c, inside the init) */
+    rc = btstack_init();
+    if (rc) { ble_judge_start(rc, 1); bt_st = BT_FAILED; return; }
+    ble_stage_set(BLE_STAGE_READY);
+    bt_max_pwr_set(10, 5, 8, 9);                                /* after the controller's own init (the SDK's values) */
+    bt_t_init = fm1_uptime_ms();
+    for (;;) {
+        os_sem_pend(bt_cmd_sem, 0);
+        if (bt_cmd_bits & 1u) {
+            bt_cmd_bits &= ~1u;
+            user_send_cmd_prepare(USER_CTRL_WRITE_SCAN_ENABLE, 0, 0);
+            user_send_cmd_prepare(USER_CTRL_WRITE_CONN_ENABLE, 0, 0);
+            bt_scans++;
+        }
+    }
+}
+
+void ble_test_start(void)
+{
+    ble_vm_load();                                              /* the stored radio records, read once before the controller runs */
+    __crc16_mutex_init();                                       /* else thread_create waits for ever in crc_get_32bit */
+    bt_mac_make();                                              /* this pedal's address, from the flash's unique ID */
+    bt_sbc_reset();
+    bt_ring_init(&bt_ring, bt_ring_mem);
+    os_sem_create(bt_cmd_sem, 0);
+    __set_simple_pair_flag(1);                                  /* Secure Simple Pairing ... */
+    __set_simple_pair_param(3, 0, 2);                           /* ... no display or keys, no OOB, 2 = HCI "no MITM, dedicated bonding": Just Works */
+    __set_a2dp_auto_play_flag(1);
+    __set_page_timeout_value(8000);
+    __set_super_timeout_value(8000);
+    __change_hci_class_type(BT_COD);
+    lmp_set_sniff_disable();                                    /* the link never sleeps (the pedal is powered while it plays) */
+    ble_state = BLE_STARTING;
+    bt_st = BT_STARTING;
+    ble_stage_set(BLE_STAGE_TASK);
+    bt_t_start = fm1_uptime_ms();
+    if (task_create(bt_app_task, 0, "btapp")) { ble_fail(BLE_FAIL_TASK_CREATE, -1); bt_st = BT_FAILED; }
+}
+
+/* the phone's packets -> SBC frames -> the ring, as long as it has room for a frame (24 frames a pass at most: 70 ms) */
+static void bt_decode(void)
+{
+    uint32_t pass = 0;
+    while (bt_ring_room(&bt_ring) >= BT_SBC_MAX_SAMPLES && pass++ < 24u) {
+        int k;
+        if (!bt_pn) {
+            uint8_t *p = 0;
+            int len;
+            uint32_t off;
+            if (bt_pkt) { a2dp_media_free_packet(bt_pkt); bt_pkt = 0; }
+            len = a2dp_media_try_get_packet(&p);
+            if (len <= 0 || !p) break;
+            bt_pkt = p;
+            bt_pkts++;
+            off = bt_sbc_payload(p, (uint32_t)len);
+            bt_pp = p + off;
+            bt_pn = (uint32_t)len - off;
+        }
+        k = bt_sbc_frame(&bt_pp, &bt_pn, bt_frame);
+        if (k <= 0) { bt_pn = 0; continue; }                    /* the packet is done (or refused: the rest is dropped) */
+        bt_ring_put(&bt_ring, bt_frame, (uint32_t)k);
+        bt_frames_in++;
+    }
+    if (bt_pkt && !bt_pn) { a2dp_media_free_packet(bt_pkt); bt_pkt = 0; }
+}
+
+void ble_test_poll(void)
+{
+    uint32_t now;
+    ble_busy(1);
+    ble_poll();
+    ble_busy(0);
+    now = fm1_uptime_ms();
+    if (bt_st == BT_STARTING && !bt_t_init && now - bt_t_start > 10000u) {   /* btstack_init not back in 10 s (the radio start-up
+                                                                         * replay takes a few; a call that hangs is the stall watch's) */
+        ble_wait = ble_task_waiting("btctrler");
+        ble_fail(BLE_FAIL_TIMEOUT, (int32_t)ble_stage);
+        bt_st = BT_FAILED;
+    }
+    if (bt_st == BT_STARTING && bt_t_init && !bt_init_ok && now - bt_t_init > 2000u) {
+        bt_st = BT_VISIBLE; ble_state = BLE_ADV;                /* no "ready" event within 2 s of the init: make it visible anyway */
+        bt_cmd(1u);
+    }
+    if (bt_st >= BT_LINKED && bt_st != BT_FAILED) {
+        bt_decode();
+        if (now - bt_t_steer >= 4u) {                           /* (the remaining time walks the packet list with interrupts off) */
+            int ms = a2dp_media_get_remain_play_time(0);
+            bt_t_steer = now;
+            bt_ring_rate(&bt_ring, bt_sbc_info.rate);
+            bt_ring_steer(&bt_ring, ms > 0 ? (uint32_t)ms * 441u / 10u : 0u, BT_TARGET, BT_PREBUF);
+        }
+    }
+}
+
+/* ---- the screen and the log */
+static char *bt__hex(char *o, uint32_t v, int digits) { while (digits--) *o++ = "0123456789ABCDEF"[(v >> (4 * digits)) & 15u]; return o; }
+static char *bt__dec(char *o, uint32_t v) { return ble__num(o, (int32_t)(v > 0x7FFFFFFFu ? 0x7FFFFFFF : v)); }
+
+/* the short text before the load in the status area: "BT START 4", "BT VISIBLE", "BT LINK", "BT PLAY", "FAILED s c" */
+void ble_test_state(char *out)
+{
+    char *o = out;
+    switch (bt_st) {
+    case BT_STARTING: o = ble__put(o, "BT START "); o = bt__dec(o, ble_stage); break;
+    case BT_VISIBLE: o = ble__put(o, "BT VISIBLE"); break;
+    case BT_LINKED: o = ble__put(o, "BT LINK"); break;
+    case BT_PLAYING: o = ble__put(o, "BT PLAY"); break;
+    case BT_FAILED: ble_status_text(out); return;
+    default: o = ble__put(o, "BT OFF"); break;
+    }
+    *o = 0;
+}
+
+/* visible, no link: "BT VIS IRQ 40:123 41:4567 EV 9 SCAN 1 V F BD 0B0B ADDR 024F1A2B3C4D UID 1 STUB 0" (out: 160 bytes) */
+void ble_test_line(char *out)
+{
+    char *o = out;
+    uint32_t i;
+    if (bt_st == BT_FAILED || bt_st == BT_STARTING) { ble_status_full(out); return; }
+    o = ble__put(o, "BT VIS IRQ 40:"); o = bt__dec(o, bt_cnt_irq_br);
+    o = ble__put(o, " 41:"); o = bt__dec(o, bt_cnt_irq_slot);
+    o = ble__put(o, " EV "); o = bt__dec(o, bt_ev_n);
+    o = ble__put(o, bt_init_ok ? " RDY" : " NORDY");
+    o = ble__put(o, " SCAN "); o = bt__dec(o, bt_scans);
+    o = ble__put(o, " V "); o = bt__hex(o, ble_vm_have, 1); *o++ = ' '; o = bt__hex(o, ble_vm_area >> 12, 2);
+    *o++ = ' '; o = bt__hex(o, ble_vm_trim(), 4);
+    o = ble__put(o, " ADDR ");
+    for (i = 6; i--;) o = bt__hex(o, bt_mac[i], 2);
+    o = ble__put(o, " UID "); o = bt__dec(o, (uint32_t)bt_uid_ok);
+    o = ble__put(o, " HEAP "); o = bt__dec(o, ble_heap_min_free());
+    o = ble__put(o, " STUB "); o = bt__dec(o, bt_stub_calls);
+    if (bt_stub_last) { *o++ = ' '; o = ble__put(o, bt_stub_last); }
+    *o = 0;
+}
+
+/* a link: "BT LINK n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 1234 ER 0 PK 200 BUF 148 MS UND 0 RATE -0.04% DISC 0" */
+void ble_midi_line(char *out)
+{
+    char *o = out;
+    int ms = bt_st == BT_PLAYING ? a2dp_media_get_remain_play_time(0) : 0;
+    int32_t pm = (int32_t)(((int64_t)bt_ring.step - (int64_t)bt_ring.base) * 10000 / (int64_t)(bt_ring.base ? bt_ring.base : 1u));
+    o = ble__put(o, bt_st == BT_PLAYING ? "BT PLAY n" : "BT LINK n"); o = bt__dec(o, bt_links);
+    o = ble__put(o, " ENC "); o = bt__dec(o, bt_enc);
+    o = ble__put(o, " A2DP "); o = bt__dec(o, bt_a2dp_ch);
+    o = ble__put(o, " PLAY "); o = bt__dec(o, bt_media);
+    o = ble__put(o, " SBC "); o = bt__dec(o, bt_sbc_info.rate);
+    *o++ = ' '; o = bt__dec(o, bt_sbc_info.channels); o = ble__put(o, "CH BP"); o = bt__dec(o, bt_sbc_info.bitpool);
+    o = ble__put(o, " FR "); o = bt__dec(o, bt_sbc_info.frames);
+    o = ble__put(o, " ER "); o = bt__dec(o, bt_sbc_info.errors);
+    o = ble__put(o, " PK "); o = bt__dec(o, bt_pkts);
+    o = ble__put(o, " BUF "); o = bt__dec(o, ms > 0 ? (uint32_t)ms : 0u);
+    o = ble__put(o, "+"); o = bt__dec(o, bt_ring_fill(&bt_ring) * 10u / 441u); o = ble__put(o, " MS");
+    o = ble__put(o, " UND "); o = bt__dec(o, bt_ring.stops);
+    o = ble__put(o, " RATE "); if (pm < 0) { *o++ = '-'; pm = -pm; } o = bt__dec(o, (uint32_t)pm / 100u); *o++ = '.';
+    *o++ = (char)('0' + (pm / 10) % 10); *o++ = (char)('0' + pm % 10); *o++ = '%';
+    o = ble__put(o, " DISC "); o = bt__dec(o, bt_disc);
+    *o = 0;
+}
+
+/* the last events and the stand-ins called: "EV 3:03 3:06 3:27 ... STUB 2 name" */
+void ble_trace_line(char *out)
+{
+    char *o = ble__put(out, "EV");
+    uint32_t i, n = bt_ev_i < 6u ? bt_ev_i : 6u;
+    for (i = 0; i < n; i++) {
+        uint32_t v = bt_ev_hist[(bt_ev_i - n + i) % 6u];
+        *o++ = ' '; o = bt__dec(o, v >> 12); *o++ = ':'; o = bt__dec(o, (v >> 4) & 0xFFu);
+    }
+    o = ble__put(o, " IRQ 40:"); o = bt__dec(o, bt_cnt_irq_br);
+    o = ble__put(o, " 41:"); o = bt__dec(o, bt_cnt_irq_slot);
+    o = ble__put(o, " STUB "); o = bt__dec(o, bt_stub_calls);
+    if (bt_stub_last) { *o++ = ' '; o = ble__put(o, bt_stub_last); }
+    *o = 0;
+}

@@ -116,6 +116,14 @@ static volatile uint8_t a_nan;                         /* engine output a NaN/In
 static volatile uint32_t a_nan_count;
 static int a_running;
 
+#if OP_BT_AUDIO
+/* the Bluetooth audio test image: the phone's music (firmware/bt/bt_a2dp.c decodes it into this ring), added after the volume and
+ * before the soft knee, at its own level; never while the output is muted for a flash write */
+#include "px_bt_ring.h"
+static bt_ring_t bt_ring;
+static const float bt_gain = 0.5f;                     /* -6 dB: the phone's own volume does the rest */
+static float bt_mix[A_FR];
+#endif
 /* DSP work for one block: a_in -> a_res (gain, clipping) + load measurement. Runs on the 2nd core (CPU1)
  * when available, otherwise on CPU0 in the interrupt. */
 static void dsp_out(void);
@@ -168,9 +176,17 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
     const float g = a_gain;                            /* v38: the volume glides there (~3 ms), no zipper */
     float gv = a_gv;
     int clip = 0;
+#if OP_BT_AUDIO
+    for (uint32_t i = 0; i < A_FR; i++) bt_mix[i] = 0.0f;
+    if (!a_mute) bt_ring_mix(&bt_ring, bt_mix, A_FR, bt_gain);
+#endif
     for (uint32_t i = 0; i < A_FR; i++) {
         gv += (g - gv) * 0.008f;
+#if OP_BT_AUDIO
+        float v = a_out[i] * gv + bt_mix[i], m = v < 0.0f ? -v : v;
+#else
         float v = a_out[i] * gv, m = v < 0.0f ? -v : v;
+#endif
         if (m > 0.8f) {
             float t = (m - 0.8f) * 5.0f;
             m = 0.8f + 0.2f * t / (1.0f + t);

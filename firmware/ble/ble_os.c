@@ -32,7 +32,9 @@ int cpu_irq_disabled(void) { return !(fm1_icfg() & 0x200u); }   /* icfg bit 9: t
 int cpu_in_irq(void) { return 0; }
 
 /* ---- heap: first fit with coalescing on free, 8-byte aligned, one static pool */
-#define HEAP_BYTES (24u * 1024u)
+#ifndef HEAP_BYTES
+#define HEAP_BYTES (24u * 1024u)                    /* (the Bluetooth audio image sets its own, firmware/bt/bt_a2dp.c) */
+#endif
 typedef struct blk { uint32_t size; uint32_t used; } blk_t;       /* size includes this header */
 static uint8_t heap[HEAP_BYTES] __attribute__((aligned(8)));
 static int heap_ready;
@@ -103,8 +105,12 @@ uint32_t ble_heap_free(void) { return heap_free_bytes; }
 uint32_t ble_heap_min_free(void) { return heap_min_free; }
 
 /* ---- tasks and their message queues */
+#ifndef MAXTASK
 #define MAXTASK 3                                   /* the library starts one ("btctrler"); room for two more */
+#endif
+#ifndef STACK_WORDS
 #define STACK_WORDS 1024u                           /* 4 KB each: the radio start-up replay runs on one */
+#endif
 #define QDEPTH 16
 #define QARGS 12                                    /* type + up to 11 words */
 typedef struct { int v[QARGS]; } msg_t;
@@ -349,6 +355,10 @@ uint32_t sys_timer_get_ms(void) { return fm1_uptime_ms(); }
 /* ble_isr.S: counts the baseband interrupts, then continues in the library's own interrupt function (saved here) */
 void (*ble_irq_target_ev)(void), (*ble_irq_target_rx)(void);
 extern void ble_isr_ev(void), ble_isr_rx(void);
+#if OP_BT_AUDIO
+void (*bt_irq_target_br)(void), (*bt_irq_target_slot)(void);
+extern void bt_isr_br(void), bt_isr_slot(void);
+#endif
 
 /* ---- interrupt registration: the library hands over its own interrupt functions (already complete interrupt entries) */
 void request_irq(uint8_t idx, uint8_t prio, void (*handler)(void), uint8_t cpu)
@@ -357,6 +367,10 @@ void request_irq(uint8_t idx, uint8_t prio, void (*handler)(void), uint8_t cpu)
     ble_stage_set(BLE_STAGE_BB);                    /* le_hw_init: the baseband is set up and asks for its interrupts */
     if (idx == 45u) { ble_irq_target_ev = handler; handler = ble_isr_ev; }   /* ble_isr.S counts, then runs the library's entry */
     else if (idx == 29u) { ble_irq_target_rx = handler; handler = ble_isr_rx; }
+#if OP_BT_AUDIO                                     /* the classic baseband's two lines, counted the same way (bt/bt_isr.S) */
+    else if (idx == 40u) { bt_irq_target_br = handler; handler = bt_isr_br; }
+    else if (idx == 41u) { bt_irq_target_slot = handler; handler = bt_isr_slot; }
+#endif
     fm1_irq_attach(idx, handler, prio);
 }
 void unrequest_irq(uint8_t idx, uint8_t cpu) { (void)cpu; FM1_ICFG(idx) &= ~(1u << ((idx & 7u) * 4u)); }

@@ -1,0 +1,97 @@
+/* SPDX-License-Identifier: GPL-3.0-only OR MPL-2.0 */
+/* What the classic Bluetooth controller and host need from the system around them, written for OpenPocket (the SDK's own versions
+ * live in its system and Wi-Fi libraries, which are not linked): the list-buffer allocator of the radio's data pools, the
+ * low-power hooks (the pedal never sleeps the radio), a few helpers of the Wi-Fi front end and the flash, the pedal's own
+ * Bluetooth address and name, and the one SDP record (the A2DP sink, the library's own record). Signatures are the
+ * library's (read from its declarations); the allocator follows the SDK's public header system/generic/lbuf.h (Apache-2.0). */
+#include <stdint.h>
+#include <stddef.h>
+#include "ble_os.h"
+
+void local_irq_disable(void);
+void local_irq_enable(void);
+
+#include "bt_lbuf.h"                                          /* the radio pools' allocator (tests/test_bt_lbuf.c) */
+
+/* ---- low power: the radio never sleeps here (the SDK's low-power service is not linked); a handle that is not NULL, as the
+ * library asserts on one (the BLE image found it on hardware, docs/BLE-TEST.md) */
+void *low_power_get(void *priv, void *ops) { static uint32_t handle[4]; (void)priv; (void)ops; return handle; }
+void low_power_put(void *p) { (void)p; }
+void low_power_request(void *p) { (void)p; }
+void low_power_exit_request(void) { }
+uint8_t low_power_get_default_osc_type(void) { return 0; }
+uint8_t low_power_get_osc_type(void) { return 0; }
+void low_power_reset_osc_type(uint8_t t) { (void)t; }
+int low_power_trace_drift(int us) { (void)us; return 0; }
+void wf_deepsl_reg_pop(void *p) { (void)p; }
+
+/* ---- the Wi-Fi front end's helpers (its library is not linked: ble_rf.c replays its start-up) and the radio's AGC switch */
+void rf_dc_set_max(void) { }
+void rf_dc_set_reload(void) { }
+int wf_get_phcom_cnt(void) { return 0; }
+void wifi_det_change_channel_classification(void *a, void *b) { (void)a; (void)b; }
+void bt_sfr_pop(void) { }
+void btagc_enalbe(uint8_t on) { (void)on; }
+
+/* ---- JieLi's private test commands and the update over Bluetooth (never used here) */
+int clk_get_osc_cap(void) { return 0; }
+void doe(uint16_t key, void *p, int n, int x) { (void)key; (void)p; (void)n; (void)x; }
+void bredr_esco_standard_tws_link_open(void *a, void *b, int c, uint8_t d) { (void)a; (void)b; (void)c; (void)d; }
+void bredr_esco_standard_tws_link_close(void *a) { (void)a; }
+void __BT_UPDATA_JUMP(void) { }
+void spi_cache_way_switch(uint8_t on) { (void)on; }            /* (the Bluetooth update's path: not taken) */
+int sdfile_get_disk_capacity(void) { return 0; }
+const char *sdk_version_info_get(void) { return "OPENPOCKET BT AUDIO"; }
+void usr_timer_del(uint16_t id) { sys_timer_del(id); }
+
+/* ---- the flash's factory unique ID (fm1_flash.h fl_uid_ram, built with FL_UID): the source of this pedal's own address */
+static uint8_t bt_uid[16];
+static int bt_uid_ok;
+static void bt_uid_read(void)
+{
+    uint32_t f = irq_save();
+    bt_uid_ok = FL_FAR(fl_uid_ram)(bt_uid) == 0;
+    irq_restore(f);
+}
+int norflash_ioctl(void *dev, int cmd, int arg)                 /* 100: the flash's unique ID, into arg (bt_get_flash_id) */
+{
+    uint32_t i;
+    (void)dev;
+    if (cmd != 100 || !arg || !bt_uid_ok) return -1;
+    for (i = 0; i < 16u; i++) ((uint8_t *)(uintptr_t)arg)[i] = bt_uid[i];
+    return 0;
+}
+
+/* this pedal's Bluetooth address: classic Bluetooth has no random addresses, so a fixed one (the BLE image's) would make two
+ * pedals one device to a phone. From the flash's unique ID: 02:4F (locally administered, "O") and four bytes of a CRC-32 of the
+ * ID. The inquiry access codes' LAPs (0x9E8B00..0x9E8B3F) are avoided. Without the ID: the BLE image's address. */
+static uint8_t bt_mac[6] = {0x54, 0x4C, 0x42, 0x50, 0x4F, 0x02};
+static uint32_t bt_crc32(const uint8_t *p, uint32_t n)
+{
+    uint32_t c = 0xFFFFFFFFu, k;
+    while (n--) { c ^= *p++; for (k = 0; k < 8u; k++) c = c & 1u ? (c >> 1) ^ 0xEDB88320u : c >> 1; }
+    return ~c;
+}
+static void bt_mac_make(void)
+{
+    uint32_t c, lap;
+    bt_uid_read();
+    if (!bt_uid_ok) return;
+    c = bt_crc32(bt_uid, 16u);
+    lap = c & 0xFFFFFFu;
+    if (lap >= 0x9E8B00u && lap <= 0x9E8B3Fu) c ^= 0x00400000u;
+    bt_mac[0] = (uint8_t)c; bt_mac[1] = (uint8_t)(c >> 8); bt_mac[2] = (uint8_t)(c >> 16); bt_mac[3] = (uint8_t)(c >> 24);
+    bt_mac[4] = 0x4F; bt_mac[5] = 0x02;                          /* (the library keeps addresses least significant byte first) */
+}
+uint8_t *bt_get_mac_addr(void) { return bt_mac; }               /* the library's is weak (hci_vendor.c) */
+const char *bt_get_local_name(void) { return "OpenPocket"; }   /* the library's is weak: the name a phone lists */
+
+/* the pairing records' store (database_file.c): none, so a pairing lasts until the power goes off (the phone then pairs again) */
+void *bt_vm_interface(void) { return 0; }
+
+/* ---- the SDP record: the library's own A2DP sink record (sdp_util.c, "JL_A2DP", the stock firmware's), registered in the table
+ * the SDP server reads (firmware/bt/app-bt.ld brackets .sdp_record_item as sdp_record_item_begin..end; it links the items, so
+ * the table is in RAM) */
+typedef struct { void *next; uint32_t handle; const uint8_t *record; } bt_sdp_item_t;
+extern const uint8_t sdp_a2dp_service_data[];
+bt_sdp_item_t bt_sdp_a2dp __attribute__((used, aligned(4), section(".sdp_record_item"))) = {0, 0x00010001u, sdp_a2dp_service_data};
