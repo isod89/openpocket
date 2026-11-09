@@ -59,7 +59,8 @@ static inline void bt_ring_put(bt_ring_t *q, const int16_t *x, uint32_t n)
     q->w = w + n;
 }
 /* the stream's sampling rate (a phone may choose 48 kHz): the reader resamples it to the pedal's 44.1 kHz */
-static inline void bt_ring_rate(bt_ring_t *q, uint32_t hz) { q->base = hz ? (uint32_t)(((uint64_t)hz << 16) / 44100u) : BT_STEP_ONE; }
+static inline void bt_ring_rate(bt_ring_t *q, uint32_t hz)   /* (32-bit: 48,000 << 16 fits; the firmware has no 64-bit division) */
+{ q->base = hz && hz <= 48000u ? (hz << 16) / 44100u : BT_STEP_ONE; }
 
 /* once per main-loop pass (about 1 kHz): start the reader when the whole backlog (decoded here + still encoded, in samples) has
  * reached `target` and at least `prebuf` samples are decoded, so it starts (and starts again after running dry) with its full

@@ -247,7 +247,8 @@ void ble_midi_line(char *out)
 {
     char *o = out;
     int ms = bt_st == BT_PLAYING ? a2dp_media_get_remain_play_time(0) : 0;
-    int32_t pm = (int32_t)(((int64_t)bt_ring.step - (int64_t)bt_ring.base) * 10000 / (int64_t)(bt_ring.base ? bt_ring.base : 1u));
+    const int32_t base = (int32_t)(bt_ring.base ? bt_ring.base : 1u);   /* (32-bit: the firmware has no 64-bit division) */
+    int32_t pm = ((int32_t)bt_ring.step - base) * 10000 / base;   /* 0.01 %; |step - base| <= 0.5 % of base */
     o = ble__put(o, bt_st == BT_PLAYING ? "BT PLAY n" : "BT LINK n"); o = bt__dec(o, bt_links);
     o = ble__put(o, " ENC "); o = bt__dec(o, bt_enc);
     o = ble__put(o, " A2DP "); o = bt__dec(o, bt_a2dp_ch);
