@@ -3,7 +3,7 @@
  * runtime library: docs/HARDWARE-HANDBOOK.md, "64-bit"). Read off the linked members' code: the pairing crypto (bigint.c) divides
  * 64-bit numbers; the link manager (lmp.c) scales a 16-bit value by a double. 64-bit multiply and shifts are native on this CPU;
  * only division and the double-precision steps are here, written with 32-bit and 64-bit integer operations only (never a
- * double operation: that would call these very functions). tests/test_bt_rt.c checks them against the PC's own arithmetic.
+ * double operation: that would call these very functions). Also the variable 64-bit shifts, should the compiler call them. tests/test_bt_rt.c checks them against the PC's own arithmetic.
  * BT_RT_PREFIX renames them for that test. */
 #include <stdint.h>
 
@@ -14,6 +14,37 @@
 #define BT_RT_XCAT(a, b) BT_RT_CAT(a, b)
 #define BT_RT(name) BT_RT_XCAT(BT_RT_PREFIX, name)
 #endif
+
+/* ---- 64-bit shifts by a variable count, in case the compiler calls them (32-bit halves only: never a 64-bit shift, which could
+ * call these very functions). Counts outside 0..63 are undefined in C; here they give the count & 63. */
+typedef union { uint64_t u; int64_t s; struct { uint32_t lo, hi; } w; } bt_rt_dw;   /* (little-endian) */
+uint64_t BT_RT(__ashldi3)(uint64_t a, int b)
+{
+    bt_rt_dw x, r;
+    b &= 63; x.u = a;
+    if (!b) return a;
+    if (b >= 32) { r.w.lo = 0; r.w.hi = x.w.lo << (b - 32); }
+    else { r.w.lo = x.w.lo << b; r.w.hi = (x.w.hi << b) | (x.w.lo >> (32 - b)); }
+    return r.u;
+}
+uint64_t BT_RT(__lshrdi3)(uint64_t a, int b)
+{
+    bt_rt_dw x, r;
+    b &= 63; x.u = a;
+    if (!b) return a;
+    if (b >= 32) { r.w.hi = 0; r.w.lo = x.w.hi >> (b - 32); }
+    else { r.w.hi = x.w.hi >> b; r.w.lo = (x.w.lo >> b) | (x.w.hi << (32 - b)); }
+    return r.u;
+}
+int64_t BT_RT(__ashrdi3)(int64_t a, int b)
+{
+    bt_rt_dw x, r;
+    b &= 63; x.s = a;
+    if (!b) return a;
+    if (b >= 32) { r.w.hi = (uint32_t)((int32_t)x.w.hi >> 31); r.w.lo = (uint32_t)((int32_t)x.w.hi >> (b - 32)); }
+    else { r.w.hi = (uint32_t)((int32_t)x.w.hi >> b); r.w.lo = (x.w.lo >> b) | (x.w.hi << (32 - b)); }
+    return r.s;
+}
 
 /* ---- 64-bit division: shift and subtract over the dividend's significant bits (32-bit operands take the native divide) */
 static int bt_rt_clz64(uint64_t v)

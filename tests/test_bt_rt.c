@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* The Bluetooth audio image's compiler runtime (firmware/bt/bt_rt.c) against the PC's own arithmetic, bit for bit: 64-bit division
- * and remainder (signed and unsigned, a million random pairs of every size), int -> double, double -> int, and double multiply
+ * and remainder (signed and unsigned, a million random pairs of every size), 64-bit shifts, int -> double, double -> int, and double multiply
  * (a million random normal products, rounding to nearest even included; zeros, infinities, NaN, overflow). */
 #include <math.h>
 #include <stdint.h>
@@ -29,6 +29,12 @@ int main(void)
         if (sd && t___moddi3(sn, sd) != sn % sd) bad++;
     }
     CHECK(bad == 0, "64-bit division and remainder, signed and unsigned, a million random pairs (%u wrong)", bad);
+    for (bad = 0, i = 0; i < 1000000u; i++) {
+        uint64_t a = rnd();
+        int b = (int)(rnd() % 64u);
+        if (t___ashldi3(a, b) != a << b || t___lshrdi3(a, b) != a >> b || t___ashrdi3((int64_t)a, b) != (int64_t)a >> b) bad++;
+    }
+    CHECK(bad == 0, "64-bit shifts by a variable count, left, right, arithmetic right (%u wrong)", bad);
     for (bad = 0, i = 0; i < 1000000u; i++) {
         uint32_t u = (uint32_t)rnd_bits();
         int32_t v = (int32_t)u;
