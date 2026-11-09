@@ -21,7 +21,7 @@
 #  - sound: the WebAssembly engine on known signals, against the native build; the bundled loops against their manifest
 #  - Chocolate Plus files: tools/chocolate/fcp.py against a made-up export
 #  - Bluetooth audio (docs/BT-AUDIO-TEST.md): the ring and its rate (tests/test_bt_ring.c), the radio pools' allocator
-#    (test_bt_lbuf.c), SBC through Android's encoder and decoder (test_bt_sbc.c), the third-party sources (test_bt_sources.mjs)
+#    (test_bt_lbuf.c), the compiler runtime it adds (test_bt_rt.c), SBC through Android's encoder and decoder (test_bt_sbc.c), the third-party sources (test_bt_sources.mjs)
 #  - pages: docs/index.html, docs/editor.html and the pedal skin in headless Chromium (needs Playwright: npm i playwright
 #    && npx playwright install chromium)
 set -e
@@ -80,6 +80,7 @@ echo "== Bluetooth audio image: its sources (third_party/jieli-bt, third_party/s
 node tests/test_bt_sources.mjs
 $CC -O1 -Wall -Wno-unused-function -o build/test_bt_ring tests/test_bt_ring.c -lm && build/test_bt_ring
 $CC -O1 -Wall -Wno-unused-function -o build/test_bt_lbuf tests/test_bt_lbuf.c && build/test_bt_lbuf
+$CC -O2 -Wall -Wno-unused-function -o build/test_bt_rt tests/test_bt_rt.c -lm && build/test_bt_rt
 SBC=third_party/sbc-android
 $CC -O1 -w -I$SBC/decoder/include -I$SBC/encoder/include -Ifirmware/bt -o build/test_bt_sbc tests/test_bt_sbc.c firmware/bt/bt_sbc.c \
     $SBC/decoder/srce/*.c $SBC/encoder/srce/*.c -lm && build/test_bt_sbc

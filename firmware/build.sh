@@ -86,7 +86,9 @@ if [ -n "$OP_BLE" ]; then
     for c in "$SBC"/srce/*.c "$HERE/bt/bt_sbc.c"; do
       $CC $FP -Os -ffunction-sections -fno-builtin -w -I"$HERE/bt/sbc_port" -I"$HERE/inc" -I"$SBC/include" -I"$HERE/bt" -c "$c" -o "$O/sbc/$(basename "$c" .c).o"
     done
-    BLEOBJ="$BLEOBJ $O/bt_isr.o $O/sbc/*.o"
+    # the compiler runtime the classic stack needs and the toolchain lacks (64-bit division, a few double steps)
+    $CC -O2 -fno-builtin -Wall -c "$HERE/bt/bt_rt.c" -o "$O/bt_rt.o"
+    BLEOBJ="$BLEOBJ $O/bt_isr.o $O/bt_rt.o $O/sbc/*.o"
   fi
 fi
 # official JieLi I2S driver (LLVM bitcode from the AC79 SDK, Apache-2.0) -> pi32v2 object
