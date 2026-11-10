@@ -32,7 +32,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 5` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 6` (the number is the test build's).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
    as before. Nothing outside the application area is written.
 
@@ -91,7 +91,7 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 | `STUB` | calls of the stand-ins (functions this image leaves out) and the last one's name (the trace line lists them in order) |
 | `Q40` | seconds since IRQ 40 last rose. While a phone is searching it stays near 0; a large number means the scans have stopped |
 | `KICK` | times the pedal asked for its scans again because IRQ 40 had been silent for 5 s while visible (test build 4) |
-| `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations |
+| `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations. While a phone is linked, `RX` must rise: the phone's packets wait there (test builds 1 to 5 never used it, see below) |
 
 The trace line ends with `CR`, the last calls the library made into the firmware, oldest first (the stand-ins by name,
 `request_irq 40`, `low_power_get`, `kick: scan again`, `send pool full`...).
@@ -174,6 +174,10 @@ firmware/ble/                shared with the BLE image: the scheduler and heap, 
   and the Bluetooth heap come first in the RAM, as the SDK keeps them next to `bd_base` (its `btctler_lib_bss.ld`), and the link
   checks it (`firmware/bt/app-bt.ld`). Test build 1 had the send pool at the end of the RAM, 118 KB above: its assertion was
   the stall at 5.5 s.
+- **The radio pools' allocator** (`firmware/bt/bt_lbuf.h`) keeps each pool's header at the pool's first byte: the library
+  hands `lbuf_init` the pool and then uses the pool's own address as the pool, never the value returned. Test builds 1 to 5
+  aligned the header to 16 bytes; the receive pool (0x01C02DE4) is only 4-byte aligned, so every allocation from it failed and
+  a phone's link died after a few seconds (`RX 0/0`).
 
 ## Checked on a computer
 

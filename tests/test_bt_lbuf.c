@@ -18,16 +18,19 @@ static int fails;
 
 #define POOL 6000u
 #define LIVE 64
-static uint8_t pool[POOL + 64];
+static uint8_t pool[POOL + 64] __attribute__((aligned(16)));
 static struct { uint8_t *p; uint32_t n; uint8_t tag; int refs; } live[LIVE];
 
 int main(void)
 {
-    void *h = lbuf_init(pool + 3, POOL, 4, 0);           /* an odd start: the allocator aligns it */
+    uint8_t *const buf = pool + 4;                         /* 4-byte aligned, not 16: as acl_rx_pool (0x01C02DE4) */
+    void *const r = lbuf_init(buf, POOL, 4, 0);
+    void *const h = buf;                                   /* the library keeps buf as the pool, not the value returned */
     bt_lbuf_state_t st, st0;
     uint32_t i, ops = 0, allocs = 0, fails_alloc = 0, overlap = 0, outside = 0, corrupt = 0, dbl = 0, shrink_ok = 0;
     srand(7);
-    CHECK(h != 0, "a pool is set up in a %u-byte buffer at an odd address", POOL);
+    CHECK(r == buf, "a pool is set up in a %u-byte buffer at a 4-byte aligned address, its header at the buffer itself", POOL);
+    CHECK(lbuf_init(pool + 3, POOL, 4, 0) == 0 && lbuf_init(buf, POOL, 4, 0) == buf, "a start that is not 4-byte aligned is refused");
     lbuf_state(h, &st0);
     CHECK(st0.num == 1 && st0.avaliable == st0.max_continue_len && st0.avaliable > POOL - 200u, "it starts as one free block of %u bytes", st0.avaliable);
     for (ops = 0; ops < 100000u; ops++) {
@@ -37,7 +40,7 @@ int main(void)
             uint8_t *p = lbuf_alloc(h, n);
             if (!p) { fails_alloc++; continue; }
             allocs++;
-            if (p < pool || p + n > pool + sizeof pool) outside++;
+            if (p < buf || p + n > buf + POOL || ((uintptr_t)p & 3u)) outside++;
             if (lbuf_real_size(p) < (int)n) outside++;
             for (i = 0; i < LIVE; i++)
                 if (live[i].p && p < live[i].p + live[i].n && live[i].p < p + n) overlap++;
@@ -58,7 +61,7 @@ int main(void)
         }
     }
     CHECK(allocs > 20000u && fails_alloc > 0u, "%u allocations (%u refused when the pool was full: 64 blocks of up to 700 bytes share 6 KB)", allocs, fails_alloc);
-    CHECK(overlap == 0u && outside == 0u, "no live blocks overlap (%u), none leaves the pool or is short (%u)", overlap, outside);
+    CHECK(overlap == 0u && outside == 0u, "no live blocks overlap (%u), none leaves the pool, is short or is not 4-byte aligned (%u)", overlap, outside);
     CHECK(corrupt == 0u, "what is written in a block is still there when it is freed (%u corrupted)", corrupt);
     CHECK(dbl == 0u, "a block referenced n times needs n frees, the last one frees it (%u wrong)", dbl);
     CHECK(shrink_ok > 1000u, "a shrink gives its tail back (%u)", shrink_ok);

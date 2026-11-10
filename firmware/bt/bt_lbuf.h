@@ -43,16 +43,20 @@ static void bt_lbuf_merge(bt_lbuf_head_t *h)
         else b = n;
     }
 }
+/* The pool's header is at buf itself: the library keeps buf as the pool and never the value returned (link_bulk.c
+ * link_bulk_init: lbuf_init(acl_rx_pool, ...), then lbuf_alloc(rx_bulk = acl_rx_pool, ...)), as the SDK's lbuf places it.
+ * Test builds 1 to 5 aligned the header up to 16 bytes: the send pool happened to start 16-aligned, the receive pool
+ * (0x01C02DE4) did not, and every allocation from it failed, so no packet of a phone's could be received. buf must be 4-byte
+ * aligned (the alignment the library asks for); blocks are a multiple of 16 bytes, so each stays 4-byte aligned. */
 void *lbuf_init(void *buf, uint32_t len, int align, int priv_head_len)
 {
-    uintptr_t a = ((uintptr_t)buf + 15u) & ~(uintptr_t)15u;
-    bt_lbuf_head_t *h = (bt_lbuf_head_t *)a;
+    bt_lbuf_head_t *h = buf;
     bt_lbuf_blk_t *b;
-    (void)align; (void)priv_head_len;                           /* (every block is 16-byte aligned, more than the 4 asked) */
-    if (len < (uint32_t)(a - (uintptr_t)buf) + sizeof *h + 2u * BT_LBUF_HDR) return 0;
+    (void)align; (void)priv_head_len;
+    if (!buf || ((uintptr_t)buf & 3u) || len < sizeof *h + 2u * BT_LBUF_HDR) return 0;
     h->magic = BT_LBUF_MAGIC;
-    h->size = (len - (uint32_t)(a - (uintptr_t)buf) - (uint32_t)sizeof *h) & ~15u;
-    h->align = 16u; h->used = 0;
+    h->size = (len - (uint32_t)sizeof *h) & ~15u;
+    h->align = 4u; h->used = 0;
     b = bt_lbuf_first(h);
     b->h = h; b->size = h->size; b->busy = 0; b->ref = 0;
     bt_lbuf_stat_of(h, 1);
@@ -63,7 +67,12 @@ void *lbuf_alloc(void *head, uint32_t len)
     bt_lbuf_head_t *h = head;
     bt_lbuf_blk_t *b;
     uint32_t need = bt_lbuf_need(len);
-    if (!h || h->magic != BT_LBUF_MAGIC) return 0;
+    if (!h || h->magic != BT_LBUF_MAGIC) {
+#ifdef BT_CRUMB
+        BT_CRUMB("lbuf_alloc: not a pool");                     /* (the stall record, bt_stall.h) */
+#endif
+        return 0;
+    }
     local_irq_disable();
     for (b = bt_lbuf_first(h); bt_lbuf_in(h, b); b = bt_lbuf_next(b)) {
         if (b->busy || b->size < need) continue;
@@ -135,11 +144,11 @@ static void bt_lbuf_scan(bt_lbuf_head_t *h, uint32_t need, bt_lbuf_state_t *st, 
 uint32_t lbuf_free_space(void *h) { bt_lbuf_state_t st; int f; bt_lbuf_scan(h, 0, &st, &f); return st.max_continue_len; }
 int lbuf_avaliable(void *h, int size) { bt_lbuf_state_t st; int f; bt_lbuf_scan(h, bt_lbuf_need((uint32_t)size), &st, &f); return f; }
 void lbuf_state(void *h, void *state) { int f; bt_lbuf_scan(h, 0, (bt_lbuf_state_t *)state, &f); }
-void lbuf_dump(void *h)                                         /* (the library calls it when bt_malloc finds its pool full) */
+void lbuf_dump(void *h)                                         /* (the library calls it when an allocation from a pool fails) */
 {
     (void)h;
 #ifdef BT_CRUMB
-    BT_CRUMB("send pool full");                                 /* (the stall record, bt_stall.h) */
+    BT_CRUMB("lbuf_dump: a pool full");                         /* (the stall record, bt_stall.h) */
 #endif
 }
 void lbuf_free_check(void *p, uint32_t rets) { (void)p; (void)rets; }

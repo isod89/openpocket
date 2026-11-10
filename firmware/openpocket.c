@@ -681,8 +681,9 @@ static void app_main(void)
     lcd_rect(0,0,240,240,UI_BG);
     ft_box(0, 98, 240, "OPENPOCKET", &FT_MD, UI_ACC, UI_BG, 1);
 #if OP_BT_AUDIO
-    ft_box(0, 126, 240, OP_VERSION " BT AUDIO TEST 5", &FT_SM, UI_DIM, UI_BG, 1);   /* (2: the stall record; 3: the baseband's window, bt/app-bt.ld;
-                                                                                       * 4: its interrupts above the audio's, ble/ble_os.c; 5: their own entry, bt/bt_irq.c) */
+    ft_box(0, 126, 240, OP_VERSION " BT AUDIO TEST 6", &FT_SM, UI_DIM, UI_BG, 1);   /* (2: the stall record; 3: the baseband's window, bt/app-bt.ld;
+                                                                                       * 4: its interrupts above the audio's, ble/ble_os.c; 5: their own entry, bt/bt_irq.c;
+                                                                                       * 6: the radio pools' header at the pool, bt/bt_lbuf.h) */
 #elif OP_BLE_TEST
     ft_box(0, 126, 240, OP_VERSION " BLE TEST", &FT_SM, UI_DIM, UI_BG, 1);
 #else
