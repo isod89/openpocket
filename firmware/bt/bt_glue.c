@@ -86,6 +86,10 @@ static void bt_mac_make(void)
 uint8_t *bt_get_mac_addr(void) { return bt_mac; }               /* the library's is weak (hci_vendor.c) */
 const char *bt_get_local_name(void) { return "OpenPocket"; }   /* the library's is weak: the name a phone lists */
 
+/* the host's task calls this hook on each pass (a weak reference: left undefined it would be a call to address 0, out of the
+ * call range, which the linker refuses); the BLE image runs its GATT loop there, this one has nothing to do */
+void ble_profile_loop(void) { }
+
 /* the pairing records' store (database_file.c): none, so a pairing lasts until the power goes off (the phone then pairs again) */
 void *bt_vm_interface(void) { return 0; }
 
