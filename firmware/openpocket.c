@@ -601,7 +601,11 @@ static void ir_changed(uint32_t s)   /* v38: a user IR was written or erased: th
 }
 #if OP_BLE_TEST             /* the log channel (firmware/ble/ble_diag.h): only this image answers DIAG, the normal firmware does not change */
 #define ED_STATS 8u         /* PING also gives the Bluetooth heap's and tasks' lowest free bytes */
+#if OP_BT_AUDIO
+#define ED_DIAG_LINES 6u    /* (the Bluetooth audio image: a sixth, the controller's HCI events, bt/bt_a2dp.c bt_hci_line) */
+#else
 #define ED_DIAG_LINES 5u
+#endif
 #define ED_DIAG_LEN 224u
 static void ed_diag_line(uint32_t i, char *out);
 #endif
@@ -639,6 +643,9 @@ static void ed_diag_line(uint32_t i, char *out)
     else if (i == 1u) ble_last_text(out, &ble_last);
     else if (i == 2u) ble_test_line(out);
     else if (i == 3u) ble_midi_line(out);
+#if OP_BT_AUDIO
+    else if (i == 5u) bt_hci_line(out);
+#endif
     else ble_trace_line(out);
 }
 #endif
@@ -681,9 +688,10 @@ static void app_main(void)
     lcd_rect(0,0,240,240,UI_BG);
     ft_box(0, 98, 240, "OPENPOCKET", &FT_MD, UI_ACC, UI_BG, 1);
 #if OP_BT_AUDIO
-    ft_box(0, 126, 240, OP_VERSION " BT AUDIO TEST 6", &FT_SM, UI_DIM, UI_BG, 1);   /* (2: the stall record; 3: the baseband's window, bt/app-bt.ld;
+    ft_box(0, 126, 240, OP_VERSION " BT AUDIO TEST 7", &FT_SM, UI_DIM, UI_BG, 1);   /* (2: the stall record; 3: the baseband's window, bt/app-bt.ld;
                                                                                        * 4: its interrupts above the audio's, ble/ble_os.c; 5: their own entry, bt/bt_irq.c;
-                                                                                       * 6: the radio pools' header at the pool, bt/bt_lbuf.h) */
+                                                                                       * 6: the radio pools' header at the pool, bt/bt_lbuf.h;
+                                                                                       * 7: the HCI events in the log, bt/bt_a2dp.c) */
 #elif OP_BLE_TEST
     ft_box(0, 126, 240, OP_VERSION " BLE TEST", &FT_SM, UI_DIM, UI_BG, 1);
 #else

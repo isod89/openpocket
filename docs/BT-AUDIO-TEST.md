@@ -32,7 +32,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 6` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 7` (the number is the test build's).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
    as before. Nothing outside the application area is written.
 
@@ -92,6 +92,13 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 | `Q40` | seconds since IRQ 40 last rose. While a phone is searching it stays near 0; a large number means the scans have stopped |
 | `KICK` | times the pedal asked for its scans again because IRQ 40 had been silent for 5 s while visible (test build 4) |
 | `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations. While a phone is linked, `RX` must rise: the phone's packets wait there (test builds 1 to 5 never used it, see below) |
+
+The `hci` line (test build 7) is what the controller told the host: `EV` events, `NCP` the Number of Completed Packets among them
+(only counted), `ACL` data packets / bytes to the host, then the newest 11 events, each as its first 6 bytes in hex: the event
+code, the parameters' length, the parameters (`0E04010C0300`: Command Complete, opcode 0x0C03, status 00; `04`: Connection
+Request; `03`: Connection Complete, its status next; `05`: Disconnection Complete, status then handle then the reason; `31` IO
+Capability Request; `33` User Confirmation Request; `36` Simple Pairing Complete; `06` Authentication Complete; `08` Encryption
+Change).
 
 The trace line ends with `CR`, the last calls the library made into the firmware, oldest first (the stand-ins by name,
 `request_irq 40`, `low_power_get`, `kick: scan again`, `send pool full`...).

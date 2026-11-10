@@ -57,6 +57,7 @@ export function parseBle(raw) {
     return { state: "failed", raw, step: +m[1], code: +m[2], stepName: m[3] || null, stage: m[4] || null, wait: m[5] || null };
   }
   if ((m = /^STARTING (\d+)/.exec(raw))) return { state: "starting", raw, stage: +m[1] };
+  if (/^BT (VIS|START|OFF)\b/.test(raw)) return { state: "bt-audio", raw };   // the Bluetooth audio image (docs/BT-AUDIO-TEST.md)
   return { state: raw.startsWith("OFF") ? "off" : "unknown", raw };
 }
 
@@ -114,6 +115,10 @@ export function judge(readings, scan) {
     return { result: "fail", reason: `Bluetooth start-up failed: ${what} (code ${ble.code}${ble.stage ? `, stage ${ble.stage}` : ""}${ble.wait ? `, controller waiting on ${ble.wait}` : ""}).` };
   }
   if (ble.state === "starting" || boot.stage !== STAGE_OK) return { result: "pending", reason: `Still starting: boot stage ${boot.stageName}, Bluetooth ${ble.raw}.` };
+  if (ble.state === "bt-audio") {
+    const linked = /^BT (LINK|PLAY) n[1-9]/.test(now.link || "");
+    return { result: "running", reason: `The Bluetooth audio image runs (${linked ? "a phone is linked" : "visible, no phone linked"}). Its lines are read by hand: docs/BT-AUDIO-TEST.md, "What you should see".` };
+  }
   if (ble.state !== "advertising") return { result: "fail", reason: ble.state === "off" ? "Bluetooth is off although the boot was normal." : `The status line is not one this tool knows: ${ble.raw}` };
   if (ble.BEN !== null && !(ble.BEN & 1)) return { result: "fail", reason: "The controller says it advertises, but the BLE block is off (BEN bit 0 clear)." };
 
@@ -149,8 +154,8 @@ async function read(access, timing) {
     return dev ? { time, level: "identity", id: dev.id, port: dev.name } : { time, level: "silent", port: ports[0].name };
   }
   try {
-    const [boot, last, ble, link, trace] = await ed.diag();
-    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace };
+    const [boot, last, ble, link, trace, hci] = await ed.diag();   // (hci: the Bluetooth audio image's sixth line)
+    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci };
   } catch (e) {
     if (e.code !== "timeout") throw e;
     const r = await ed.request(C.PING).catch(() => null);
@@ -174,6 +179,7 @@ function show(r, prev, say) {
   say(`bluetooth  ${ble.raw}`);
   if (r.link) say(`link       ${r.link}`);
   if (r.trace) say(`trace      ${r.trace}`);
+  if (r.hci) say(`hci        ${r.hci}`);
   if (ble.state !== "advertising") return;
   const before = prev?.level === "full" && prev.ble.state === "advertising" ? prev.ble : null;
   for (const k of ["i", "e", "r", "t", "s"]) say(`  ${k.padEnd(5)}${String(ble[k]).padEnd(10)}${(before ? `+${ble[k] - before[k]}` : "").padEnd(9)}${MEANING[k]}`);
