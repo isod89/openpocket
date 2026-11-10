@@ -1,0 +1,166 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only
+     OpenPocket web editor: the pedal's presets, its current sound, its NAM models and cabinet IRs, and MIDI control,
+     live over USB-MIDI (Chrome / Edge). Protocol: EDITOR-PROTOCOL.md; transport: pxedit.js. No library, no build step:
+     editor.css, editor.js (start, connection, sections) and one module per section (edsound.js, edpresets.js,
+     edmodels.js, edmidi.js) on edcore.js. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0d0f0e">
+<title>OpenPocket Editor</title>
+<meta name="description" content="Edit a Donner Pocket X or M-VAVE BlackBox running OpenPocket from the browser, over USB.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="editor.css">
+</head>
+<body data-conn="idle" data-view="sound">
+<a class="skip" href="#main">Skip to the editor</a>
+
+<header class="bar">
+  <a class="brand" href="./" title="OpenPocket installer">OPEN<b>POCKET</b><span>Editor</span></a>
+  <nav class="tabs" id="tabs" aria-label="Sections">
+    <button type="button" data-go="presets" class="narrow-only"><svg class="ic"><use href="#i-list"/></svg><span>Presets</span></button>
+    <button type="button" data-go="sound"><svg class="ic"><use href="#i-sliders"/></svg><span>Sound</span></button>
+    <button type="button" data-go="models"><svg class="ic"><use href="#i-wave"/></svg><span>Models</span></button>
+    <button type="button" data-go="midi"><svg class="ic"><use href="#i-midi"/></svg><span>MIDI</span></button>
+  </nav>
+  <div class="bar-end">
+    <button type="button" class="meter" id="load" popovertarget="loadpop" hidden aria-label="DSP load">
+      <span class="meter-l">DSP</span><span class="meter-bar"><i id="loadbar"></i><b id="loadpeak"></b></span><span class="meter-v" id="loadv">–</span>
+    </button>
+    <button type="button" class="conn" id="conn" popovertarget="connpop" hidden><i class="dot"></i><span id="status">Not connected</span></button>
+  </div>
+</header>
+
+<div class="pop" id="loadpop" popover aria-label="DSP load details"></div>
+<div class="pop" id="connpop" popover aria-label="Connection"></div>
+<div class="pop menu" id="menu" popover role="menu"></div>
+
+<div class="lostbar" id="lostbar" hidden role="alert">
+  <svg class="ic"><use href="#i-alert"/></svg>
+  <span>The pedal stopped answering. Plug it back in: the editor reconnects by itself.</span>
+  <button type="button" class="btn small" id="reconnect">Reconnect now</button>
+</div>
+
+<div class="shell" id="shell">
+  <aside class="presets" id="presets" aria-labelledby="presets-h">
+    <div class="presets-head">
+      <h2 id="presets-h">Presets</h2>
+      <button type="button" class="btn small" id="imp" title="Import presets from a file">Import</button>
+      <button type="button" class="btn small" id="expall" title="Save all 52 presets in one file">Back up all</button>
+      <input type="file" id="file" accept=".json,application/json" hidden>
+    </div>
+    <label class="search"><svg class="ic"><use href="#i-search"/></svg>
+      <input type="search" id="psearch" placeholder="Search presets, amps, effects" autocomplete="off" spellcheck="false" aria-label="Search presets" aria-keyshortcuts="/"></label>
+    <div class="chips" id="pfilter" role="group" aria-label="Show">
+      <button type="button" data-f="all" aria-pressed="true">All</button>
+      <button type="button" data-f="user" aria-pressed="false">Yours</button>
+      <button type="button" data-f="factory" aria-pressed="false">Factory</button>
+    </div>
+    <div class="list" id="list" role="listbox" aria-label="Presets" tabindex="0"></div>
+    <p class="list-empty" id="listempty" hidden></p>
+  </aside>
+
+  <main id="main" tabindex="-1">
+    <!-- before a pedal answers: first run and every way it can fail -->
+    <section class="gate" id="gate" aria-live="polite"></section>
+
+    <section class="view" id="view-sound" aria-labelledby="sound-h">
+      <h1 class="vh" id="sound-h">Sound</h1>
+      <div class="phead">
+        <span class="num" id="num" aria-hidden="true">01</span>
+        <div class="pname">
+          <input id="name" maxlength="13" spellcheck="false" autocomplete="off" aria-label="Preset name">
+          <span class="state" id="star"></span>
+        </div>
+        <div class="pacts">
+          <button type="button" class="btn" id="compare" aria-pressed="false" title="Hear the saved preset, then come back to your changes">Compare</button>
+          <button type="button" class="btn" id="revert" title="Drop the changes and load the saved preset again">Revert</button>
+          <button type="button" class="btn" id="saveas">Save as…</button>
+          <button type="button" class="btn primary" id="save" aria-keyshortcuts="Control+S Meta+S">Save</button>
+          <button type="button" class="btn icon" id="pmore" aria-label="More for this preset" aria-haspopup="menu"><svg class="ic"><use href="#i-more"/></svg></button>
+        </div>
+      </div>
+
+      <div class="chain-wrap">
+        <span class="cap-io" aria-hidden="true">IN</span>
+        <div class="chain" id="tiles" role="group" aria-label="Signal chain, in the order the sound passes through"></div>
+        <span class="cap-io" aria-hidden="true">OUT</span>
+      </div>
+      <p class="hint" id="hint">Drag a block to move it. Arrow keys choose a block, Space switches it, Alt + arrows move it.</p>
+
+      <div class="block" id="block">
+        <div class="block-head">
+          <span class="swatch" aria-hidden="true"></span>
+          <h2 id="bname">AMP</h2>
+          <span class="pos" id="bpos"></span>
+          <span class="grow"></span>
+          <span class="mv">
+            <button type="button" class="btn icon small" id="mvl" aria-label="Move this block earlier in the chain"><svg class="ic"><use href="#i-left"/></svg></button>
+            <button type="button" class="btn icon small" id="mvr" aria-label="Move this block later in the chain"><svg class="ic"><use href="#i-right"/></svg></button>
+          </span>
+          <button type="button" class="switch" id="onoff" role="switch" aria-checked="false"><i></i><span>Off</span></button>
+        </div>
+        <div class="type">
+          <button type="button" id="tprev" aria-label="Previous type"><svg class="ic"><use href="#i-left"/></svg></button>
+          <select id="type" aria-label="Type"></select>
+          <button type="button" id="tnext" aria-label="Next type"><svg class="ic"><use href="#i-right"/></svg></button>
+        </div>
+        <div class="params" id="params"></div>
+        <div class="blocknote" id="blocknote" hidden></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-models" aria-labelledby="models-h">
+      <h1 class="vh" id="models-h">Models and cabinets</h1>
+      <div class="mgrid">
+        <div class="mcol">
+          <section class="card bank" id="nam" data-kind="nam"></section>
+          <section class="card bank" id="ir" data-kind="ir"></section>
+        </div>
+        <section class="card t3k" id="t3k" aria-label="TONE3000"></section>
+      </div>
+      <input type="file" id="namfile" accept=".nam,application/json" multiple hidden>
+      <input type="file" id="irfile" accept=".wav,audio/wav,audio/x-wav,audio/wave" multiple hidden>
+    </section>
+
+    <section class="view" id="view-midi" aria-labelledby="midi-h">
+      <h1 class="vh" id="midi-h">MIDI</h1>
+      <div class="midigrid">
+        <section class="card" id="midiconn" aria-labelledby="midiconn-h"></section>
+        <section class="card" id="midimon" aria-labelledby="midimon-h"></section>
+        <section class="card wide" id="midimap" aria-labelledby="midimap-h"></section>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<dialog class="dlg" id="dlg" aria-labelledby="dlg-h"></dialog>
+
+<svg hidden>
+  <defs>
+    <symbol id="i-list" viewBox="0 0 20 20"><path d="M7 5h10M7 10h10M7 15h10M3.25 5h.5M3.25 10h.5M3.25 15h.5"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 20 20"><path d="M5 3v5M5 12v5M10 3v2M10 9v8M15 3v8M15 15v2"/><circle cx="5" cy="10" r="2"/><circle cx="10" cy="7" r="2"/><circle cx="15" cy="13" r="2"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 20 20"><path d="M2 10h2.5l2-6 3.5 12 3-9 1.5 3H18"/></symbol>
+    <symbol id="i-midi" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.25"/><path d="M6 9.25h.01M14 9.25h.01M7.5 12.75h.01M12.5 12.75h.01M10 13.75h.01"/></symbol>
+    <symbol id="i-search" viewBox="0 0 20 20"><circle cx="9" cy="9" r="5.25"/><path d="M13 13l4 4"/></symbol>
+    <symbol id="i-more" viewBox="0 0 20 20"><path d="M4.5 10h.01M10 10h.01M15.5 10h.01"/></symbol>
+    <symbol id="i-left" viewBox="0 0 20 20"><path d="M12 5l-5 5 5 5"/></symbol>
+    <symbol id="i-right" viewBox="0 0 20 20"><path d="M8 5l5 5-5 5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
+    <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 20 20"><path d="M10 3.5l7.5 13h-15zM10 8.5v3.5M10 14.5h.01"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 20 20"><path d="M4.5 10h11"/></symbol>
+    <symbol id="i-ext" viewBox="0 0 20 20"><path d="M8 4.5H4.5v11h11V12M11 4.5h4.5V9M15.5 4.5L9 11"/></symbol>
+    <symbol id="i-usb" viewBox="0 0 20 20"><path d="M10 17V5M10 5L7.5 7.5M10 5l2.5 2.5M5.5 9v2.5L10 14M14.5 8v2.5L10 12.5"/></symbol>
+  </defs>
+</svg>
+
+<script type="module" src="editor.js"></script>
+</body>
+</html>

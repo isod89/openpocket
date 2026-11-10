@@ -1,0 +1,19 @@
+{
+  "version": 42,
+  "packages": [
+    {
+      "model": "PocketX",
+      "product": "PocketX_942",
+      "file": "PocketX_942.fwsc",
+      "size": 675968,
+      "sha256": "eefe109542fbd4d72fb6dd813f47e75fb1f9d330ff27b58ef6973490e5436e42"
+    },
+    {
+      "model": "BlackBox",
+      "product": "BlackBox_942",
+      "file": "BlackBox_942.fwsc",
+      "size": 675968,
+      "sha256": "998146cd0525965169d8f8256b16fcf9345f9f20bfe95ca5ce3eb2b885205ab2"
+    }
+  ]
+}
