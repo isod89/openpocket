@@ -272,6 +272,9 @@ int os_taskq_post_type(const char *name, int type, int argc, int *argv)
     if (t->state == T_WAIT_Q)
         t->state = T_READY;
     local_irq_enable();
+#if OP_BT_AUDIO
+    bt_taskq_spy(t->name, type, argc, argv);                    /* (the HCI conversation: the host's events, the controller's commands) */
+#endif
     return 0;
 }
 

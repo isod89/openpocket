@@ -67,38 +67,31 @@ static uint32_t bt_t_start, bt_t_init;
 static uint32_t bt_q40_n, bt_q40_t, bt_kicks;                  /* the baseband interrupt's last count and when it changed */
 extern uint8_t acl_tx_pool[], acl_tx_pool_end[], acl_rx_pool[], acl_rx_pool_end[];   /* app-bt.ld */
 
-/* ---- the controller's packets to the host, recorded on their way (the log's hci line): the controller sends every event and
- * ACL packet through one pointer, __h4_send_packet (hci_controller.c; h4_controller_interface.c sets it to the host's handler
- * when the host registers). ble_test_poll puts bt_h4_spy in front of it. Each event's first 6 bytes are kept (code, length,
- * parameters: a Command Complete's opcode and status, a Disconnection Complete's reason...), the newest 11; Number of Completed
- * Packets, which comes with every packet sent, is only counted. */
-int ble_task_info(uint32_t i, const char **name, uint32_t *state, const void **wait_on, uint32_t *queued);   /* ble/ble_os.c */
-typedef void (*bt_h4_fn)(int type, uint8_t *p, int len);
-extern bt_h4_fn __h4_send_packet;
-static bt_h4_fn bt_h4_host;
-#define BT_HCI_LOG 11u
-static uint8_t bt_hci_log[BT_HCI_LOG][6];
-static volatile uint32_t bt_hci_log_i, bt_hci_ev_n, bt_hci_ncp_n, bt_hci_acl_n, bt_hci_acl_bytes;
-static void bt_h4_spy(int type, uint8_t *p, int len)
+/* ---- the HCI conversation, recorded where it passes (the log's hci and hci0 lines). The integrated controller and host talk
+ * through the tasks' queues: the controller's events reach the host task ("btstack", type 0x400001) with the event's bytes
+ * inline (btstack_task.c hci_packet_handler; 0x400002 is an ACL packet, a pointer and a length), the host's commands reach the
+ * controller's task ("btctrler", 0x400002 and 0x400003 to a link) the same way (btctrler_task.c btctrler_hci_cmd_to_task).
+ * ble_os.c os_taskq_post_type calls bt_taskq_spy with every message: the first 12 and the newest 11 are kept, each as the
+ * task's initial, the type's low digit and the message's first 5 bytes; ACL packets and Number of Completed Packets events
+ * (0x13, with every packet sent) are only counted. */
+#define BT_MSG_FIRST 12u
+#define BT_MSG_LAST 11u
+typedef struct { char task, type; uint8_t b[5]; } bt_msg_t;
+static bt_msg_t bt_msg_first[BT_MSG_FIRST], bt_msg_last[BT_MSG_LAST];
+static volatile uint32_t bt_msg_n, bt_msg_kept, bt_msg_acl, bt_msg_ncp;
+static void bt_taskq_spy(const char *task, int type, int argc, const int *argv)
 {
-    if (type == 1 && p && len > 0) {
-        bt_hci_ev_n++;
-        if (p[0] == 0x13u) bt_hci_ncp_n++;
-        else {
-            uint8_t *e = bt_hci_log[bt_hci_log_i++ % BT_HCI_LOG];
-            int i;
-            for (i = 0; i < 6; i++) e[i] = i < len ? p[i] : 0;
-        }
-    } else if (type == 2) { bt_hci_acl_n++; bt_hci_acl_bytes += (uint32_t)len; }
-    bt_h4_host(type, p, len);
-}
-static void bt_h4_spy_install(void)
-{
-    const bt_h4_fn f = __h4_send_packet;
-    if (!f || f == bt_h4_spy) return;
-    bt_h4_host = f;                                             /* (first: the controller may send the moment the pointer changes) */
-    __h4_send_packet = bt_h4_spy;
-    BT_CRUMB("hci spy on");
+    bt_msg_t m;
+    uint32_t i;
+    bt_msg_n++;
+    if (task[0] == 'b' && task[2] == 's' && type == 0x400002) { bt_msg_acl++; return; }   /* btstack: an ACL packet */
+    if (task[0] == 'b' && task[2] == 's' && type == 0x400001 && argc > 0 && (argv[0] & 0xFF) == 0x13) { bt_msg_ncp++; return; }
+    m.task = task[2] == 's' ? 'S' : task[2] == 'c' ? 'C' : task[2] == 'e' ? 'E' : task[2] == 'a' ? 'A' : '?';   /* btStack btCtrler btEncry btApp */
+    m.type = (char)('0' + (type & 0xF));
+    for (i = 0; i < 5u; i++) m.b[i] = (int)(i / 4u) < argc ? (uint8_t)((uint32_t)argv[i / 4u] >> (8u * (i % 4u))) : 0;
+    if (bt_msg_kept < BT_MSG_FIRST) bt_msg_first[bt_msg_kept] = m;
+    bt_msg_last[bt_msg_kept % BT_MSG_LAST] = m;
+    bt_msg_kept++;
 }
 static uint8_t *bt_pkt;                                         /* the packet being decoded */
 static const uint8_t *bt_pp;
@@ -314,7 +307,6 @@ void ble_test_poll(void)
     ble_busy(1);
     ble_poll();
     ble_busy(0);
-    bt_h4_spy_install();                                        /* (again if the host registers a new handler) */
     now = fm1_uptime_ms();
     if (bt_st == BT_STARTING && !bt_t_init && now - bt_t_start > 10000u) {   /* btstack_init not back in 10 s (the radio start-up
                                                                          * replay takes a few; a call that hangs is the stall watch's) */
@@ -546,22 +538,30 @@ void ble_trace_line(char *out)
     *o = 0;
 }
 
-/* the controller's events to the host, oldest first: "HCI EV 40 NCP 3 ACL 12/1234 Q 3 LOST 0 0E04010C0300 0E0401130C00 ..."
- * (bt_h4_spy; each entry the event's first 6 bytes: code, length, then its parameters; Q the deepest a task's message queue has
- * been, of 16, LOST the messages posted to a full one or to no task) */
+/* the HCI conversation (bt_taskq_spy): "HCI n 120 ACL 4 NCP 2 Q 3 LOST 0 S1:0E04010C03 C2:030C000000 ..." the newest 11 (bt_hci_line)
+ * and "HCI0 S1:..." the first 12 since boot (bt_hci0_line); S1 = an event to the host (code, length, parameters), C2 / C3 = a
+ * command to the controller (as the controller's task receives it) */
+static char *bt_msg_text(char *o, const bt_msg_t *m)
+{
+    uint32_t j;
+    *o++ = ' '; *o++ = m->task; *o++ = m->type; *o++ = ':';
+    for (j = 0; j < 5u; j++) o = bt__hex(o, m->b[j], 2);
+    return o;
+}
 void bt_hci_line(char *out)
 {
-    char *o = ble__put(out, "HCI EV ");
-    const uint32_t k = bt_hci_log_i, m = k < BT_HCI_LOG ? k : BT_HCI_LOG;
-    uint32_t i, j;
-    o = bt__dec(o, bt_hci_ev_n); o = ble__put(o, " NCP "); o = bt__dec(o, bt_hci_ncp_n);
-    o = ble__put(o, " ACL "); o = bt__dec(o, bt_hci_acl_n); *o++ = '/'; o = bt__dec(o, bt_hci_acl_bytes);
+    char *o = ble__put(out, "HCI n ");
+    const uint32_t k = bt_msg_kept, m = k < BT_MSG_LAST ? k : BT_MSG_LAST;
+    uint32_t i;
+    o = bt__dec(o, bt_msg_n); o = ble__put(o, " ACL "); o = bt__dec(o, bt_msg_acl); o = ble__put(o, " NCP "); o = bt__dec(o, bt_msg_ncp);
     o = ble__put(o, " Q "); o = bt__dec(o, bt_q_peak); o = ble__put(o, " LOST "); o = bt__dec(o, bt_q_lost);
-    if (!bt_h4_host) o = ble__put(o, " (spy not on)");
-    for (i = k - m; i < k; i++) {
-        const uint8_t *e = bt_hci_log[i % BT_HCI_LOG];
-        *o++ = ' ';
-        for (j = 0; j < 6u; j++) o = bt__hex(o, e[j], 2);
-    }
+    for (i = k - m; i < k; i++) o = bt_msg_text(o, &bt_msg_last[i % BT_MSG_LAST]);
+    *o = 0;
+}
+void bt_hci0_line(char *out)
+{
+    char *o = ble__put(out, "HCI0");
+    uint32_t i;
+    for (i = 0; i < BT_MSG_FIRST && i < bt_msg_kept; i++) o = bt_msg_text(o, &bt_msg_first[i]);
     *o = 0;
 }

@@ -45,3 +45,5 @@ static uint32_t bt_heap_fails, bt_heap_fail_size;
 /* the tasks' message queues (ble/ble_os.c os_taskq_post_type): messages lost (a full queue, or no such task) and the deepest
  * a queue has been (of 16) */
 static uint32_t bt_q_lost, bt_q_peak;
+/* every message posted to a task (ble/ble_os.c os_taskq_post_type), for the log's hci lines (bt_a2dp.c) */
+static void bt_taskq_spy(const char *task, int type, int argc, const int *argv);

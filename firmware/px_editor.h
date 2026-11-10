@@ -31,7 +31,10 @@ enum { ED_INFO = 1, ED_CAT_BLOCK, ED_CAT_TYPE, ED_TEXTS, ED_STATE, ED_SET, ED_OR
        ED_NAM_LIST, ED_NAM_WRITE, ED_NAM_COMMIT, ED_NAM_ERASE, ED_DIAG,
        ED_IR_LIST, ED_IR_WRITE, ED_IR_COMMIT, ED_IR_ERASE };   /* v38: 24..27 */
 
-static uint8_t ed_out[1024];
+#ifndef ED_OUT_BYTES
+#define ED_OUT_BYTES 1024u   /* a reply's bytes at most (an image with longer DIAG lines sets more) */
+#endif
+static uint8_t ed_out[ED_OUT_BYTES];
 static uint32_t ed_n;
 static struct { uint8_t on; uint32_t last_ms, hash, push_ms; } ed_w;
 

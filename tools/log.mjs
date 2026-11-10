@@ -154,8 +154,8 @@ async function read(access, timing) {
     return dev ? { time, level: "identity", id: dev.id, port: dev.name } : { time, level: "silent", port: ports[0].name };
   }
   try {
-    const [boot, last, ble, link, trace, hci] = await ed.diag();   // (hci: the Bluetooth audio image's sixth line)
-    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci };
+    const [boot, last, ble, link, trace, hci, hci0] = await ed.diag();   // (hci, hci0: the Bluetooth audio image's HCI lines)
+    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0 };
   } catch (e) {
     if (e.code !== "timeout") throw e;
     const r = await ed.request(C.PING).catch(() => null);
@@ -180,6 +180,7 @@ function show(r, prev, say) {
   if (r.link) say(`link       ${r.link}`);
   if (r.trace) say(`trace      ${r.trace}`);
   if (r.hci) say(`hci        ${r.hci}`);
+  if (r.hci0) say(`hci0       ${r.hci0}`);
   if (ble.state !== "advertising") return;
   const before = prev?.level === "full" && prev.ble.state === "advertising" ? prev.ble : null;
   for (const k of ["i", "e", "r", "t", "s"]) say(`  ${k.padEnd(5)}${String(ble[k]).padEnd(10)}${(before ? `+${ble[k] - before[k]}` : "").padEnd(9)}${MEANING[k]}`);

@@ -32,7 +32,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 8` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 9` (the number is the test build's).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
    as before. Nothing outside the application area is written.
 
@@ -98,13 +98,15 @@ Q q0, btstack R q2, btencry Q q0`, each task's state (`R` ready, `Q` waiting for
 mutex at that address, `=` its count, `D` sleeping, `X` ended) and `q` its queued messages. A task that stays `S` while its `q`
 grows is the stuck one: look its address up in `build-bt/symbols.txt`.
 
-The `hci` line (test build 7) is what the controller told the host: `EV` events, `NCP` the Number of Completed Packets among them
-(only counted), `ACL` data packets / bytes to the host, `Q` the deepest a task's message queue has been (of 16) and `LOST` the
-messages posted to a full queue (the full task's name is then among the crumbs), then the newest 11 events, each as its first 6 bytes in hex: the event
-code, the parameters' length, the parameters (`0E04010C0300`: Command Complete, opcode 0x0C03, status 00; `04`: Connection
-Request; `03`: Connection Complete, its status next; `05`: Disconnection Complete, status then handle then the reason; `31` IO
-Capability Request; `33` User Confirmation Request; `36` Simple Pairing Complete; `06` Authentication Complete; `08` Encryption
-Change).
+The `hci` and `hci0` lines (test build 9) are the HCI conversation between the controller and the host, which in this
+integrated stack travels through the tasks' queues: `hci` the newest 11 messages, `hci0` the first 12 since boot (the host's
+start-up). `n` all messages posted to a task, `ACL` data packets to the host and `NCP` Number of Completed Packets events
+(only counted), `Q` the deepest a task's queue has been and `LOST` the messages posted to a full one. Each entry: the task
+(`S` the host, btstack; `C` the controller, btctrler; `E` btencry; `A` btapp), the message's type digit, then its first 5
+bytes in hex. `S1` is an event to the host: the event code, the parameters' length, the parameters (`S1:0E04010C03`: Command
+Complete, 1 command allowed, opcode 0x0C03; `S1:04..` Connection Request; `S1:03..` Connection Complete, status next; `S1:05..`
+Disconnection Complete; `S1:31` IO Capability Request; `S1:33` User Confirmation Request; `S1:36` Simple Pairing Complete).
+`C2` / `C3` are commands to the controller as its task receives them.
 
 The trace line ends with `CR`, the last calls the library made into the firmware, oldest first (the stand-ins by name,
 `request_irq 40`, `low_power_get`, `kick: scan again`, `send pool full`...).
