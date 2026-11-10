@@ -29,6 +29,9 @@ static const volatile char OP_PRODUCT[32] __attribute__((used, aligned(4))) = "O
 #include "fm1_timer.h"
 #if OP_BLE_TEST
 static int ble_stall_tick(void);                /* ble/ble_status.h, included after this file */
+#if OP_BT_AUDIO
+static void bt_stall_tick(int firing);          /* bt/bt_a2dp.c: the stall record's samples (bt/bt_stall.h) */
+#endif
 #endif
 #include "fm1_flash.h"
 #include "fm1_cpu1_stop.h"
@@ -44,8 +47,14 @@ void fm1_timer5_irq(void)                       /* 10 kHz; USB at 2 kHz */
 {
     fm1_timer5_ack();
 #if OP_BLE_TEST                                 /* a ble_poll that does not return: the crash screen says where (ble_status.h) */
-    if (ble_stall_tick())
-        FM1_VEC[FM1_IRQ_TIMER5] = (uint32_t)(uintptr_t)(fm1_fatal_stubs + 6u * FM1_IRQ_TIMER5);
+    {
+        const int stalled = ble_stall_tick();
+#if OP_BT_AUDIO
+        bt_stall_tick(stalled);                 /* (its last second sampled, the record completed when it fires) */
+#endif
+        if (stalled)
+            FM1_VEC[FM1_IRQ_TIMER5] = (uint32_t)(uintptr_t)(fm1_fatal_stubs + 6u * FM1_IRQ_TIMER5);
+    }
 #endif
     if (++px_t5_sub >= 5u) {
         px_t5_sub = 0;

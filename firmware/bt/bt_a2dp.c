@@ -108,7 +108,9 @@ static void bt_app_task(void *arg)
     int rc;
     (void)arg;
     ble_stage_set(BLE_STAGE_INIT);                              /* (BLE_STAGE_RF: ble_rf.c, inside the init) */
+    BT_CRUMB("btstack_init");
     rc = btstack_init();
+    BT_CRUMB("btstack_init returned");
     if (rc) { ble_judge_start(rc, 1); bt_st = BT_FAILED; return; }
     ble_stage_set(BLE_STAGE_READY);
     bt_max_pwr_set(10, 5, 8, 9);                                /* after the controller's own init (the SDK's values) */
@@ -117,6 +119,7 @@ static void bt_app_task(void *arg)
         os_sem_pend(bt_cmd_sem, 0);
         if (bt_cmd_bits & 1u) {
             bt_cmd_bits &= ~1u;
+            BT_CRUMB("scan enable");
             user_send_cmd_prepare(USER_CTRL_WRITE_SCAN_ENABLE, 0, 0);
             user_send_cmd_prepare(USER_CTRL_WRITE_CONN_ENABLE, 0, 0);
             bt_scans++;
@@ -124,8 +127,104 @@ static void bt_app_task(void *arg)
     }
 }
 
+/* ---- the stall record (bt_stall.h): the 10 kHz tick (px_usb.h) calls this on every tick, with firing = 1 when the stall watch
+ * fires. Nothing happens until a ble_poll has run for 3 s. */
+#define BT_STALL_WINDOW 10000u                                  /* the last second before the watch fires: sampled */
+static uint32_t bt_stall_on;                                    /* 1: sampling, 2: fired */
+
+static void bt_stall_begin(void)
+{
+    uint32_t i;
+    bt_stall.magic = 0;
+    bt_stall.samples = bt_stall.other = 0;
+    for (i = 0; i < BT_STALL_N; i++) bt_stall.pc[i] = bt_stall.rets[i] = bt_stall.cnt[i] = 0;
+    bt_stall.dmin = 0xFFFFFFFFu; bt_stall.dmax = 0;
+}
+
+/* one sample: the PC and RETS the outermost interrupt saved, at the top of the interrupt stack. Interrupts run on the system
+ * stack (crt0's ssp, fm1_guard.h fm1_sp_in_isr) and every OpenPocket interrupt entry starts with [--sp] = {psr, rets, reti}
+ * (bsp/chip/fm1_isr.S; the same order the fault frame shows, bsp/chip/fm1_vec.S): reti, the interrupted code's PC, at the top
+ * minus 12, its rets at minus 8. When this tick interrupted another interrupt, the top is still that interrupt's frame, so it
+ * names the code under both: the stuck task. (The classic baseband's interrupts enter the library's own entry, whose frame is
+ * not known: a sample taken under one of them is counted like any other and stands out as a pair that is not code.) */
+static void bt_stall_sample(void)
+{
+    const uint32_t *top = (const uint32_t *)(uintptr_t)_sstack_top;
+    uint32_t sp, d, pc, rets, i;
+    __asm__ volatile("%0 = sp" : "=r"(sp));
+    d = (uint32_t)(uintptr_t)top - sp;
+    if (d < bt_stall.dmin) bt_stall.dmin = d;
+    if (d > bt_stall.dmax) bt_stall.dmax = d;
+    pc = top[-3];
+    rets = top[-2];
+    bt_stall.samples++;
+    for (i = 0; i < BT_STALL_N; i++) {
+        if (!bt_stall.cnt[i]) { bt_stall.pc[i] = pc; bt_stall.rets[i] = rets; bt_stall.cnt[i] = 1; return; }
+        if (bt_stall.pc[i] == pc && bt_stall.rets[i] == rets) { bt_stall.cnt[i]++; return; }
+    }
+    bt_stall.other++;
+}
+
+/* the classic baseband's native clock, latched as the library's READ_SLOT_CLK does (write 1 to 0x2001C, wait for 0, read
+ * 0x20020), but with a bound: -> the clock, *polls = the reads the latch took (0xFFFF: it never cleared, the clock is not
+ * running) */
+static uint32_t bt_stall_clkn(uint32_t *polls)
+{
+    uint32_t n = 0;
+    *(volatile uint32_t *)0x2001Cu = 1u;
+    while (*(volatile uint32_t *)0x2001Cu && ++n < 0xFFFFu) ;
+    *polls = n;
+    return *(volatile uint32_t *)0x20020u;
+}
+
+/* the watch fires: everything but the registers first, then the magic, then the registers (a read that never comes back
+ * leaves regs_ok at 0, and the watchdog's reset keeps the rest). reg: 0x20000 (the baseband's control), 0x2000C, 0x20014
+ * (the slot's pending bits), 0x20018, 0x2001C as found (1: a latch the library asked for is still pending), the native
+ * clock latched twice 1 ms apart, the reads each latch took (low and high half), 0x2FC40, 0x2FC6C (the BT domain's
+ * power and clock words that the classic code polls), 0x10010 (bits 14-15: the BT domain's power / reset) */
+static void bt_stall_fire(void)
+{
+    static const uint32_t regs[5] = { 0x20000u, 0x2000Cu, 0x20014u, 0x20018u, 0x2001Cu };
+    const char *t = os_current_task();
+    uint32_t p1, p2;
+    uint32_t i;
+    for (i = 0; i < sizeof bt_stall.task - 1u && t && t[i]; i++) bt_stall.task[i] = t[i];
+    bt_stall.task[i] = 0;
+    bt_stall.stage = ble_stage;
+    bt_stall.heap_min = heap_min_free; bt_stall.heap_free = heap_free_bytes;
+    bt_stall.mfail = bt_heap_fails; bt_stall.mfail_size = bt_heap_fail_size;
+    bt_stall.irq40 = bt_cnt_irq_br; bt_stall.irq41 = bt_cnt_irq_slot;
+    bt_stall.ev = bt_ev_n; bt_stall.ev_i = bt_ev_i;
+    for (i = 0; i < 4u; i++) bt_stall.ev_last[i] = bt_ev_i >= 4u - i ? bt_ev_hist[(bt_ev_i - 4u + i) % 6u] : 0;
+    bt_stall.stub = bt_stub_calls; bt_stall.stub_last = bt_stub_last;
+    for (i = 0; i < BT_STALL_CRUMBS; i++) bt_stall.crumb[i] = bt_crumb[i];
+    bt_stall.crumb_i = bt_crumb_i;
+    bt_stall.regs_ok = 0;
+    bt_stall.magic = BT_STALL_MAGIC;
+    for (i = 0; i < 5u; i++) bt_stall.reg[i] = *(volatile uint32_t *)(uintptr_t)regs[i];
+    bt_stall.reg[5] = bt_stall_clkn(&p1);
+    fm1_delay_us(1000u);                                        /* (3.2 ticks of the native clock: does it run?) */
+    bt_stall.reg[6] = bt_stall_clkn(&p2);
+    bt_stall.reg[7] = p1 | p2 << 16;
+    bt_stall.reg[8] = *(volatile uint32_t *)0x2FC40u;
+    bt_stall.reg[9] = *(volatile uint32_t *)0x2FC6Cu;
+    bt_stall.reg[10] = *(volatile uint32_t *)0x10010u;
+    bt_stall.regs_ok = 1;
+}
+
+static void bt_stall_tick(int firing)
+{
+    if (ble_busy_ticks <= BLE_STALL_TICKS - BT_STALL_WINDOW) { bt_stall_on = 0; return; }
+    if (!bt_stall_on) { bt_stall_begin(); bt_stall_on = 1; }
+    if (!firing) bt_stall_sample();
+    else if (bt_stall_on == 1) { bt_stall_fire(); bt_stall_on = 2; }
+}
+
+static int bt_stall_valid(void) { return bt_stall.magic == BT_STALL_MAGIC && bt_stall.crumb_i < 0x100000u; }
+
 void ble_test_start(void)
 {
+    bt_stall.magic = 0;                                         /* (a stall record is shown until Bluetooth starts again) */
     ble_vm_load();                                              /* the stored radio records, read once before the controller runs */
     __crc16_mutex_init();                                       /* else thread_create waits for ever in crc_get_32bit */
     bt_mac_make();                                              /* this pedal's address, from the flash's unique ID */
@@ -220,11 +319,72 @@ void ble_test_state(char *out)
     *o = 0;
 }
 
+/* ---- the stall record's three lines, shown instead of the usual ones while Bluetooth is off (the safe-mode boot after a stall):
+ *   STALL btctrler S8 BB 00000107 0000FE02 00000000 0000FFFF 00000001 CLKN 00001234 00001240 L 3/3 PW 00000400 00000000 0000C000
+ *   STALL HEAP 1234 MIN 567 MF 1 2560 IRQ 0/0 EV 3 3:03 3:06 STUB 0 CR btctrler, request_irq 40, request_irq 41, low_power_get
+ *   STALL PC 02012345/02011111*9876 ... N 10000+0 D 28-160 SP 01C7BF80
+ * (out: ED_DIAG_LEN, 224 bytes: each line stops at 220) */
+static char *bt__lim(char *o, const char *s, const char *end) { while (*s && o < end) *o++ = *s++; return o; }
+
+static void bt_stall_line_regs(char *out)
+{
+    char *o = ble__put(out, "STALL ");
+    uint32_t i;
+    o = bt__lim(o, bt_stall.task[0] ? bt_stall.task : "main", out + 40);
+    o = ble__put(o, " S"); o = bt__dec(o, bt_stall.stage);
+    if (!bt_stall.regs_ok) { o = ble__put(o, " REGS NOT READ (the watchdog reset first)"); *o = 0; return; }
+    o = ble__put(o, " BB");
+    for (i = 0; i < 5u; i++) { *o++ = ' '; o = bt__hex(o, bt_stall.reg[i], 8); }
+    o = ble__put(o, " CLKN "); o = bt__hex(o, bt_stall.reg[5], 8); *o++ = ' '; o = bt__hex(o, bt_stall.reg[6], 8);
+    o = ble__put(o, " L "); o = bt__dec(o, bt_stall.reg[7] & 0xFFFFu); *o++ = '/'; o = bt__dec(o, bt_stall.reg[7] >> 16);
+    o = ble__put(o, " PW");
+    for (i = 8; i < 11u; i++) { *o++ = ' '; o = bt__hex(o, bt_stall.reg[i], 8); }
+    *o = 0;
+}
+
+static void bt_stall_line_state(char *out)
+{
+    char *o = ble__put(out, "STALL HEAP "), *const end = out + 220;
+    uint32_t i, n;
+    o = bt__dec(o, bt_stall.heap_free); o = ble__put(o, " MIN "); o = bt__dec(o, bt_stall.heap_min);
+    o = ble__put(o, " MF "); o = bt__dec(o, bt_stall.mfail); *o++ = ' '; o = bt__dec(o, bt_stall.mfail_size);
+    o = ble__put(o, " IRQ "); o = bt__dec(o, bt_stall.irq40); *o++ = '/'; o = bt__dec(o, bt_stall.irq41);
+    o = ble__put(o, " EV "); o = bt__dec(o, bt_stall.ev);
+    n = bt_stall.ev_i < 4u ? bt_stall.ev_i : 4u;
+    for (i = 4u - n; i < 4u; i++) { *o++ = ' '; o = bt__dec(o, bt_stall.ev_last[i] >> 12); *o++ = ':'; o = bt__hex(o, (bt_stall.ev_last[i] >> 4) & 0xFFu, 2); }
+    o = ble__put(o, " STUB "); o = bt__dec(o, bt_stall.stub);
+    if (bt_stall.stub && bt_stall.stub_last) { *o++ = ' '; o = bt__lim(o, bt_stall.stub_last, o + 32); }
+    o = ble__put(o, " CR");                                     /* the crumbs, oldest first */
+    n = bt_stall.crumb_i < BT_STALL_CRUMBS ? bt_stall.crumb_i : BT_STALL_CRUMBS;
+    for (i = bt_stall.crumb_i - n; i < bt_stall.crumb_i && o < end - 2; i++) {
+        const char *c = bt_stall.crumb[i % BT_STALL_CRUMBS];
+        *o++ = i == bt_stall.crumb_i - n ? ' ' : ',';
+        if (i != bt_stall.crumb_i - n) *o++ = ' ';
+        o = bt__lim(o, c ? c : "?", end);
+    }
+    *o = 0;
+}
+
+static void bt_stall_line_pcs(char *out)
+{
+    char *o = ble__put(out, "STALL PC");
+    uint32_t i;
+    for (i = 0; i < BT_STALL_N && bt_stall.cnt[i]; i++) {
+        *o++ = ' '; o = bt__hex(o, bt_stall.pc[i], 8); *o++ = '/'; o = bt__hex(o, bt_stall.rets[i], 8);
+        *o++ = '*'; o = bt__dec(o, bt_stall.cnt[i]);
+    }
+    o = ble__put(o, " N "); o = bt__dec(o, bt_stall.samples); *o++ = '+'; o = bt__dec(o, bt_stall.other);
+    o = ble__put(o, " D "); o = bt__dec(o, bt_stall.dmin); *o++ = '-'; o = bt__dec(o, bt_stall.dmax);
+    if (fm1_crash.magic == FM1_CRASH_MAGIC) { o = ble__put(o, " SP "); o = bt__hex(o, fm1_crash.sp, 8); }
+    *o = 0;
+}
+
 /* visible, no link: "BT VIS IRQ 40:123 41:4567 EV 9 SCAN 1 V F BD 0B0B ADDR 024F1A2B3C4D UID 1 STUB 0" (out: 160 bytes) */
 void ble_test_line(char *out)
 {
     char *o = out;
     uint32_t i;
+    if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_regs(out); return; }
     if (bt_st == BT_FAILED || bt_st == BT_STARTING) { ble_status_full(out); return; }
     o = ble__put(o, "BT VIS IRQ 40:"); o = bt__dec(o, bt_cnt_irq_br);
     o = ble__put(o, " 41:"); o = bt__dec(o, bt_cnt_irq_slot);
@@ -246,7 +406,9 @@ void ble_test_line(char *out)
 void ble_midi_line(char *out)
 {
     char *o = out;
-    int ms = bt_st == BT_PLAYING ? a2dp_media_get_remain_play_time(0) : 0;
+    int ms;
+    if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_state(out); return; }
+    ms = bt_st == BT_PLAYING ? a2dp_media_get_remain_play_time(0) : 0;
     const int32_t base = (int32_t)(bt_ring.base ? bt_ring.base : 1u);   /* (32-bit: the firmware has no 64-bit division) */
     int32_t pm = ((int32_t)bt_ring.step - base) * 10000 / base;   /* 0.01 %; |step - base| <= 0.5 % of base */
     o = ble__put(o, bt_st == BT_PLAYING ? "BT PLAY n" : "BT LINK n"); o = bt__dec(o, bt_links);
@@ -270,8 +432,10 @@ void ble_midi_line(char *out)
 /* the last events and the stand-ins called: "EV 3:03 3:06 3:27 ... STUB 2 name" */
 void ble_trace_line(char *out)
 {
-    char *o = ble__put(out, "EV");
+    char *o;
     uint32_t i, n = bt_ev_i < 6u ? bt_ev_i : 6u;
+    if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_pcs(out); return; }
+    o = ble__put(out, "EV");
     for (i = 0; i < n; i++) {
         uint32_t v = bt_ev_hist[(bt_ev_i - n + i) % 6u];
         *o++ = ' '; o = bt__dec(o, v >> 12); *o++ = ':'; o = bt__dec(o, (v >> 4) & 0xFFu);

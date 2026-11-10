@@ -13,6 +13,12 @@
 #include "fm1_time.h"
 #include "ble_os.h"
 #include "ble_status.h"
+#if OP_BT_AUDIO
+#include "bt_stall.h"                               /* the stall record and the crumbs (firmware/bt) */
+#define BT_CRUMB_OS(s) BT_CRUMB(s)
+#else
+#define BT_CRUMB_OS(s) ((void)0)
+#endif
 
 enum { OS_NO_ERR = 0, OS_TIMEOUT = 11, OS_TASKQ = 13, OS_TASK_NOT_EXIST = 14, OS_Q_FULL = 21, OS_Q_EMPTY = 22 };
 enum { OS_TICK_MS = 10 };                    /* OS_TICKS_PER_SEC is 100 in the SDK */
@@ -73,6 +79,10 @@ void *malloc(size_t n)
         local_irq_enable();
         return p + sizeof(blk_t);
     }
+#if OP_BT_AUDIO
+    bt_heap_fails++; bt_heap_fail_size = (uint32_t)n;  /* (the library stops in a loop on a failed allocation: the stall record says) */
+    BT_CRUMB("malloc FAILED");
+#endif
     local_irq_enable();
     return 0;
 }
@@ -175,6 +185,7 @@ uint32_t ble_stack_min_free(void)                    /* bytes never used at the 
 int task_create(void (*fn)(void *), void *arg, const char *name)
 {
     int i;
+    BT_CRUMB_OS(name);                               /* (the task names are the library's constant strings) */
     for (i = 0; i < MAXTASK; i++)
         if (tasks[i].state == T_FREE || tasks[i].state == T_DEAD)
             break;
@@ -368,8 +379,9 @@ void request_irq(uint8_t idx, uint8_t prio, void (*handler)(void), uint8_t cpu)
     if (idx == 45u) { ble_irq_target_ev = handler; handler = ble_isr_ev; }   /* ble_isr.S counts, then runs the library's entry */
     else if (idx == 29u) { ble_irq_target_rx = handler; handler = ble_isr_rx; }
 #if OP_BT_AUDIO                                     /* the classic baseband's two lines, counted the same way (bt/bt_isr.S) */
-    else if (idx == 40u) { bt_irq_target_br = handler; handler = bt_isr_br; }
-    else if (idx == 41u) { bt_irq_target_slot = handler; handler = bt_isr_slot; }
+    else if (idx == 40u) { bt_irq_target_br = handler; handler = bt_isr_br; BT_CRUMB("request_irq 40"); }
+    else if (idx == 41u) { bt_irq_target_slot = handler; handler = bt_isr_slot; BT_CRUMB("request_irq 41"); }
+    else BT_CRUMB("request_irq");
 #endif
     fm1_irq_attach(idx, handler, prio);
 }

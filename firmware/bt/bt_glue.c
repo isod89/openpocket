@@ -12,12 +12,15 @@ void local_irq_disable(void);
 void local_irq_enable(void);
 
 #include "bt_lbuf.h"                                          /* the radio pools' allocator (tests/test_bt_lbuf.c) */
+#ifndef BT_CRUMB
+#define BT_CRUMB(s) ((void)0)                                    /* (the stall record's crumbs: bt_stall.h, through ble/ble_os.c) */
+#endif
 
 /* ---- low power: the radio never sleeps here (the SDK's low-power service is not linked); a handle that is not NULL, as the
  * library asserts on one (the BLE image found it on hardware, docs/BLE-TEST.md) */
-void *low_power_get(void *priv, void *ops) { static uint32_t handle[4]; (void)priv; (void)ops; return handle; }
+void *low_power_get(void *priv, void *ops) { static uint32_t handle[4]; (void)priv; (void)ops; BT_CRUMB("low_power_get"); return handle; }
 void low_power_put(void *p) { (void)p; }
-void low_power_request(void *p) { (void)p; }
+void low_power_request(void *p) { (void)p; BT_CRUMB("low_power_request"); }
 void low_power_exit_request(void) { }
 uint8_t low_power_get_default_osc_type(void) { return 0; }
 uint8_t low_power_get_osc_type(void) { return 0; }
@@ -26,22 +29,22 @@ int low_power_trace_drift(int us) { (void)us; return 0; }
 void wf_deepsl_reg_pop(void *p) { (void)p; }
 
 /* ---- the Wi-Fi front end's helpers (its library is not linked: ble_rf.c replays its start-up) and the radio's AGC switch */
-void rf_dc_set_max(void) { }
+void rf_dc_set_max(void) { BT_CRUMB("rf_dc_set_max"); }
 void rf_dc_set_reload(void) { }
-int wf_get_phcom_cnt(void) { return 0; }
+int wf_get_phcom_cnt(void) { BT_CRUMB("wf_get_phcom_cnt"); return 0; }
 void wifi_det_change_channel_classification(void *a, void *b) { (void)a; (void)b; }
 void bt_sfr_pop(void) { }
-void btagc_enalbe(uint8_t on) { (void)on; }
+void btagc_enalbe(uint8_t on) { (void)on; BT_CRUMB("btagc_enalbe"); }
 
 /* ---- JieLi's private test commands and the update over Bluetooth (never used here) */
-int clk_get_osc_cap(void) { return 0; }
+int clk_get_osc_cap(void) { BT_CRUMB("clk_get_osc_cap"); return 0; }
 void doe(uint16_t key, void *p, int n, int x) { (void)key; (void)p; (void)n; (void)x; }
 void bredr_esco_standard_tws_link_open(void *a, void *b, int c, uint8_t d) { (void)a; (void)b; (void)c; (void)d; }
 void bredr_esco_standard_tws_link_close(void *a) { (void)a; }
 void __BT_UPDATA_JUMP(void) { }
 void spi_cache_way_switch(uint8_t on) { (void)on; }            /* (the Bluetooth update's path: not taken) */
 int sdfile_get_disk_capacity(void) { return 0; }
-const char *sdk_version_info_get(void) { return "OPENPOCKET BT AUDIO"; }
+const char *sdk_version_info_get(void) { BT_CRUMB("sdk_version_info_get"); return "OPENPOCKET BT AUDIO"; }
 void usr_timer_del(uint16_t id) { sys_timer_del(id); }
 
 /* ---- the flash's factory unique ID (fm1_flash.h fl_uid_ram, built with FL_UID): the source of this pedal's own address */
@@ -57,6 +60,7 @@ int norflash_ioctl(void *dev, int cmd, int arg)                 /* 100: the flas
 {
     uint32_t i;
     (void)dev;
+    BT_CRUMB("norflash_ioctl");
     if (cmd != 100 || !arg || !bt_uid_ok) return -1;
     for (i = 0; i < 16u; i++) ((uint8_t *)(uintptr_t)arg)[i] = bt_uid[i];
     return 0;
@@ -83,15 +87,15 @@ static void bt_mac_make(void)
     bt_mac[0] = (uint8_t)c; bt_mac[1] = (uint8_t)(c >> 8); bt_mac[2] = (uint8_t)(c >> 16); bt_mac[3] = (uint8_t)(c >> 24);
     bt_mac[4] = 0x4F; bt_mac[5] = 0x02;                          /* (the library keeps addresses least significant byte first) */
 }
-uint8_t *bt_get_mac_addr(void) { return bt_mac; }               /* the library's is weak (hci_vendor.c) */
-const char *bt_get_local_name(void) { return "OpenPocket"; }   /* the library's is weak: the name a phone lists */
+uint8_t *bt_get_mac_addr(void) { BT_CRUMB("bt_get_mac_addr"); return bt_mac; }               /* the library's is weak (hci_vendor.c) */
+const char *bt_get_local_name(void) { BT_CRUMB("bt_get_local_name"); return "OpenPocket"; }   /* the library's is weak: the name a phone lists */
 
 /* the host's task calls this hook on each pass (a weak reference: left undefined it would be a call to address 0, out of the
  * call range, which the linker refuses); the BLE image runs its GATT loop there, this one has nothing to do */
 void ble_profile_loop(void) { }
 
 /* the pairing records' store (database_file.c): none, so a pairing lasts until the power goes off (the phone then pairs again) */
-void *bt_vm_interface(void) { return 0; }
+void *bt_vm_interface(void) { BT_CRUMB("bt_vm_interface"); return 0; }
 
 /* ---- the SDP record: the library's own A2DP sink record (sdp_util.c, "JL_A2DP", the stock firmware's), registered in the table
  * the SDP server reads (firmware/bt/app-bt.ld brackets .sdp_record_item as sdp_record_item_begin..end; it links the items, so
