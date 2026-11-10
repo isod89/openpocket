@@ -10,7 +10,11 @@
 
 bt_sbc_info_t bt_sbc_info;
 static OI_CODEC_SBC_DECODER_CONTEXT ctx;
+#if BT_SBC_LO2   /* the firmware: in the SRAM below the RAM, beside the ring (app-bt.ld .bss_lo2; 1,888 bytes, set up by bt_sbc_reset) */
+static uint32_t ctx_data[CODEC_DATA_WORDS(2, SBC_CODEC_FAST_FILTER_BUFFERS)] __attribute__((section(".bss.lo2.sbc")));
+#else
 static uint32_t ctx_data[CODEC_DATA_WORDS(2, SBC_CODEC_FAST_FILTER_BUFFERS)];
+#endif
 static int16_t pcm[2u * BT_SBC_MAX_SAMPLES];
 static int ready;
 

@@ -84,7 +84,7 @@ if [ -n "$OP_BLE" ]; then
     $CC -c "$HERE/bt/bt_isr.S" -o "$O/bt_isr.o"
     SBC="$HERE/../third_party/sbc-android/decoder"; mkdir -p "$O/sbc"
     for c in "$SBC"/srce/*.c "$HERE/bt/bt_sbc.c"; do
-      $CC $FP -Os -ffunction-sections -fno-builtin -w -I"$HERE/bt/sbc_port" -I"$HERE/inc" -I"$SBC/include" -I"$HERE/bt" -c "$c" -o "$O/sbc/$(basename "$c" .c).o"
+      $CC $FP -Os -ffunction-sections -fno-builtin -w -DBT_SBC_LO2=1 -I"$HERE/bt/sbc_port" -I"$HERE/inc" -I"$SBC/include" -I"$HERE/bt" -c "$c" -o "$O/sbc/$(basename "$c" .c).o"
     done
     # the compiler runtime the classic stack needs and the toolchain lacks (64-bit division, a few double steps)
     $CC -O2 -fno-builtin -Wall -c "$HERE/bt/bt_rt.c" -o "$O/bt_rt.o"

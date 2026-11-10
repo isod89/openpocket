@@ -93,8 +93,8 @@ the BLE image, and after a failed boot Bluetooth stays off for that boot, so the
 1. **The pairing is forgotten at power-off.** Afterwards the phone says it cannot connect: forget `OpenPocket` in its Bluetooth
    settings and pair again.
 2. **Saving a preset while the music plays** gives a short gap (interrupts are off while the flash is written).
-3. **The decoded music sits in 7.5 KB of SRAM** (`0x01C06000..0x01C07E00`) that OpenPocket never used before. If anything else
-   writes there, you would hear clicks in the music, nothing worse.
+3. **The decoded music, the SBC decoder's state and the mix buffer sit in 7.5 KB of SRAM** (`0x01C06000..0x01C07E00`) that
+   OpenPocket never used before. If anything else writes there, you would hear clicks or noise in the music, nothing worse.
 4. **The flash window is larger in this image** (the package's whole app slot, `0x9D740` bytes, instead of `0x8DFBC`): the classic
    stack is bigger than the LE one. The packages and the update loader already used that slot size.
 5. **Pedals that ran BlackBox_021** before OpenPocket may have lost part of their stored radio calibration (021 kept it at
@@ -128,7 +128,7 @@ firmware/ble/                shared with the BLE image: the scheduler and heap, 
   (the two differ by about 0.04 %) with a backlog of 150 ms, by linear interpolation. Nothing of the stack runs in the audio
   interrupt: it only reads the ring.
 - **Memory** (beyond the BLE image's): four task stacks of 2.75 KB in NOINIT, the baseband's table (4.2 KB) and the receive pool in
-  the SRAM below the RAM, the ring above it.
+  the SRAM below the RAM, the ring, the decoder's state and the mix buffer above it.
 
 ## Checked on a computer
 

@@ -122,7 +122,7 @@ static int a_running;
 #include "px_bt_ring.h"
 static bt_ring_t bt_ring;
 static const float bt_gain = 0.5f;                     /* -6 dB: the phone's own volume does the rest */
-static float bt_mix[A_FR];
+static float bt_mix[A_FR] __attribute__((section(".bss.lo2.bt_mix")));   /* (beside the ring: app-bt.ld .bss_lo2) */
 #endif
 /* DSP work for one block: a_in -> a_res (gain, clipping) + load measurement. Runs on the 2nd core (CPU1)
  * when available, otherwise on CPU0 in the interrupt. */
