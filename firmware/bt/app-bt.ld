@@ -4,7 +4,8 @@
  *  - the flash window up to the package's app.bin slot (0x9D740 bytes; app.ld keeps 0x8DFBC, a figure from the first release):
  *    the classic stack is bigger than the LE one;
  *  - the classic stack's own sections: the A2DP host's handler tables (flash), the SDP records (RAM, the server links them),
- *    the baseband's table .bd_base and the radio's receive pool (in the SRAM below the RAM), its send pool (in the RAM);
+ *    the baseband's table .bd_base and the radio's receive pool (in the SRAM below the RAM), its send pool, the controller's
+ *    variables and the Bluetooth heap (first in the RAM: the baseband reaches 64 KB above .bd_base, see .bss);
  *  - .bss_lo2: 7.5 KB more of the SRAM below the RAM, for the decoded music.
  * The release image and the BLE image still link with firmware/app.ld. */
 PROVIDE(op_guard_stack = 1);   /* build.sh passes --defsym op_guard_stack=0 with OP_GUARD_STACK=0 */
@@ -55,9 +56,23 @@ SECTIONS
               . = ALIGN(4); sdp_record_item_begin = .; KEEP(*(.sdp_record_item)) sdp_record_item_end = .;   /* (the SDP server links them) */
               . = ALIGN(4); _data_end = .; } > RAM AT > XIP
     _data_load = LOADADDR(.data);
-    .bss (NOLOAD) : { _bss_start = .; *(.bss*) *(.sbss*) *(.*_bss) *(COMMON)
-                      . = ALIGN(4); acl_tx_pool = .; . += 2048; acl_tx_pool_end = .;   /* the radio's send pool: a sink sends little */
+    /* The classic baseband addresses memory as 16-bit offsets from its base register 0x2FC44, which bredr_bd_init sets to
+     * bd_base: every buffer the library hands it must lie less than 64 KB above bd_base. The library asserts it
+     * (__write_reg_txericntl and its siblings) and a failed assertion stops in a loop: the first test build's stall, with the
+     * send pool at the end of the RAM, 118 KB above bd_base. So, first in the RAM, as the SDK's btctler_lib_bss.ld keeps them
+     * next to bd_base: the send pool (bt_malloc's page and inquiry scan buffers come from it too: a sink sends little), the
+     * controller's own variables, and the Bluetooth heap (ble_os.c). The check below the sections holds the line. */
+    .bss (NOLOAD) : { _bss_start = .;
+                      . = ALIGN(4); acl_tx_pool = .; . += 2048; acl_tx_pool_end = .;
+                      *(.bt_rf_bss) *(.hci_controller_bss) *(.hci_interface_bss) *(.device_manager_bss) *(.vendor_manager_bss)
+                      *(.ble_hci_bss) *(.ble_ll_bss) *(.ble_rf_bss) *(.classic_*_bss)
+                      . = ALIGN(8); *(.bss.bt_heap)
+                      _bt_window_end = .;
+                      *(.bss*) *(.sbss*) *(.*_bss) *(COMMON)
                       . = ALIGN(4); _bss_end = .; } > RAM
+    ASSERT(acl_rx_pool >= bd_base && acl_tx_pool >= bd_base && acl_rx_pool_end - bd_base < 0xFFFF
+           && _bt_window_end - bd_base < 0xFFFF && _data_end - bd_base < 0xFFFF,
+           "the classic baseband's memory (its pools, the controller's variables, the Bluetooth heap) must lie within 64 KB above bd_base")
     .noinit (NOLOAD) : { *(.noinit) *(.noinit.ble) . = ALIGN(8); _ble_stack_lo = .; *(.noinit.ble_stack) _ble_stack_hi = .; *(.noinit*) } > NOINIT
     .cram (NOLOAD) : { _cram_lo = .; *(.cram*) . = ALIGN(8); _cram_hi = .; } > CRAM   /* CPU-only data, zeroed by pxc_init */
     .pool (NOLOAD) : { . = ALIGN(8); *(.pool) . = ALIGN(8); _pool_tail_start = .; *(.pool.tail.*) . = ALIGN(4); _pool_tail_end = .; } > POOL

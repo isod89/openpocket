@@ -117,6 +117,12 @@ static void bt_lbuf_scan(bt_lbuf_head_t *h, uint32_t need, bt_lbuf_state_t *st, 
 uint32_t lbuf_free_space(void *h) { bt_lbuf_state_t st; int f; bt_lbuf_scan(h, 0, &st, &f); return st.max_continue_len; }
 int lbuf_avaliable(void *h, int size) { bt_lbuf_state_t st; int f; bt_lbuf_scan(h, bt_lbuf_need((uint32_t)size), &st, &f); return f; }
 void lbuf_state(void *h, void *state) { int f; bt_lbuf_scan(h, 0, (bt_lbuf_state_t *)state, &f); }
-void lbuf_dump(void *h) { (void)h; }
+void lbuf_dump(void *h)                                         /* (the library calls it when bt_malloc finds its pool full) */
+{
+    (void)h;
+#ifdef BT_CRUMB
+    BT_CRUMB("send pool full");                                 /* (the stall record, bt_stall.h) */
+#endif
+}
 void lbuf_free_check(void *p, uint32_t rets) { (void)p; (void)rets; }
 

@@ -32,7 +32,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 2` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 3` (the number is the test build's).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
    as before. Nothing outside the application area is written.
 
@@ -155,6 +155,12 @@ firmware/ble/                shared with the BLE image: the scheduler and heap, 
   interrupt: it only reads the ring.
 - **Memory** (beyond the BLE image's): four task stacks of 2.75 KB in NOINIT, the baseband's table (4.2 KB) and the receive pool in
   the SRAM below the RAM, the ring, the decoder's state and the mix buffer above it.
+- **The baseband's 64 KB window.** The classic baseband reaches memory as 16-bit offsets from its table (`bd_base`, register
+  0x2FC44): everything the library hands it must lie less than 64 KB above `bd_base`, and the library asserts it (a failed
+  assertion stops in a loop). So the send pool (2 KB, also the page and inquiry scan buffers), the controller's own variables
+  and the Bluetooth heap come first in the RAM, as the SDK keeps them next to `bd_base` (its `btctler_lib_bss.ld`), and the link
+  checks it (`firmware/bt/app-bt.ld`). Test build 1 had the send pool at the end of the RAM, 118 KB above: its assertion was
+  the stall at 5.5 s.
 
 ## Checked on a computer
 

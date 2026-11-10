@@ -42,7 +42,11 @@ int cpu_in_irq(void) { return 0; }
 #define HEAP_BYTES (24u * 1024u)                    /* (the Bluetooth audio image sets its own, firmware/bt/bt_a2dp.c) */
 #endif
 typedef struct blk { uint32_t size; uint32_t used; } blk_t;       /* size includes this header */
+#if OP_BT_AUDIO     /* (bt/app-bt.ld places it in the classic baseband's 64 KB window, with the controller's own memory) */
+static uint8_t heap[HEAP_BYTES] __attribute__((aligned(8), section(".bss.bt_heap")));
+#else
 static uint8_t heap[HEAP_BYTES] __attribute__((aligned(8)));
+#endif
 static int heap_ready;
 static uint32_t heap_free_bytes, heap_min_free;
 
