@@ -16,6 +16,9 @@
 #if OP_BT_AUDIO
 #include "bt_stall.h"                               /* the stall record and the crumbs (firmware/bt) */
 #define BT_CRUMB_OS(s) BT_CRUMB(s)
+#ifndef BT_IRQ_PRIO
+#define BT_IRQ_PRIO 5u                              /* the classic baseband's interrupts: above audio (3) and the timer (4), request_irq */
+#endif
 #else
 #define BT_CRUMB_OS(s) ((void)0)
 #endif
@@ -383,8 +386,13 @@ void request_irq(uint8_t idx, uint8_t prio, void (*handler)(void), uint8_t cpu)
     if (idx == 45u) { ble_irq_target_ev = handler; handler = ble_isr_ev; }   /* ble_isr.S counts, then runs the library's entry */
     else if (idx == 29u) { ble_irq_target_rx = handler; handler = ble_isr_rx; }
 #if OP_BT_AUDIO                                     /* the classic baseband's two lines, counted the same way (bt/bt_isr.S) */
-    else if (idx == 40u) { bt_irq_target_br = handler; handler = bt_isr_br; BT_CRUMB("request_irq 40"); }
-    else if (idx == 41u) { bt_irq_target_slot = handler; handler = bt_isr_slot; BT_CRUMB("request_irq 41"); }
+    /* ... and above the audio interrupt. The library asks for 2, stock's number, but stock's audio interrupt only moves DMA
+     * buffers (its DSP is a task), while OpenPocket's runs the whole DSP block at 3 (px_audio.h ALNK0), up to 2.9 ms. The
+     * classic handlers have slot deadlines (625 us: the page response, the alarm the link scheduler arms for its next task);
+     * one handled late arms the next alarm in the past and the baseband falls silent (test build 3: IRQ 40 stopped, no link).
+     * Above the 10 kHz timer (4) too: its USB poll can take a while. The handlers are short. */
+    else if (idx == 40u) { bt_irq_target_br = handler; handler = bt_isr_br; prio = BT_IRQ_PRIO; BT_CRUMB("request_irq 40"); }
+    else if (idx == 41u) { bt_irq_target_slot = handler; handler = bt_isr_slot; prio = BT_IRQ_PRIO; BT_CRUMB("request_irq 41"); }
     else BT_CRUMB("request_irq");
 #endif
     fm1_irq_attach(idx, handler, prio);

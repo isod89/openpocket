@@ -63,6 +63,9 @@ static volatile uint32_t bt_init_ok, bt_links, bt_enc, bt_a2dp_ch, bt_media, bt_
 static volatile uint32_t bt_cmd_bits, bt_scans;                 /* for the app task: bit 0 = visible and connectable */
 static uint32_t bt_cmd_sem[4];
 static uint32_t bt_t_start, bt_t_init;
+#define BT_QUIET_MS 5000u
+static uint32_t bt_q40_n, bt_q40_t, bt_kicks;                  /* the baseband interrupt's last count and when it changed */
+extern uint8_t acl_tx_pool[], acl_tx_pool_end[], acl_rx_pool[], acl_rx_pool_end[];   /* app-bt.ld */
 static uint8_t *bt_pkt;                                         /* the packet being decoded */
 static const uint8_t *bt_pp;
 static uint32_t bt_pn, bt_pkts, bt_frames_in, bt_t_steer;
@@ -289,6 +292,14 @@ void ble_test_poll(void)
         bt_st = BT_VISIBLE; ble_state = BLE_ADV;                /* no "ready" event within 2 s of the init: make it visible anyway */
         bt_cmd(1u);
     }
+    if (bt_cnt_irq_br != bt_q40_n) { bt_q40_n = bt_cnt_irq_br; bt_q40_t = now; }
+    else if (bt_st == BT_VISIBLE && now - bt_q40_t > BT_QUIET_MS) {
+        /* visible, no link, and the baseband's interrupt has been silent for 5 s: the scans have stopped (test build 3 after a
+         * failed pairing). Ask for them again (the link scheduler arms its alarm anew); KICK counts it */
+        bt_q40_t = now; bt_kicks++;
+        BT_CRUMB("kick: scan again");
+        bt_cmd(1u);
+    }
     if (bt_st >= BT_LINKED && bt_st != BT_FAILED) {
         bt_decode();
         if (now - bt_t_steer >= 4u) {                           /* (the remaining time walks the packet list with interrupts off) */
@@ -325,6 +336,20 @@ void ble_test_state(char *out)
  *   STALL PC 02012345/02011111*9876 ... N 10000+0 D 28-160 SP 01C7BF80
  * (out: ED_DIAG_LEN, 224 bytes: each line stops at 220) */
 static char *bt__lim(char *o, const char *s, const char *end) { while (*s && o < end) *o++ = *s++; return o; }
+
+/* a radio pool (bt_lbuf.h): " TX used/peak/size Ffails" */
+static char *bt_pool_text(char *o, const char *tag, const uint8_t *lo, const uint8_t *hi)
+{
+    uint32_t i;
+    for (i = 0; i < BT_LBUF_POOLS; i++) {
+        const bt_lbuf_head_t *h = bt_lbuf_stat[i].h;
+        if (!h || (const uint8_t *)h < lo || (const uint8_t *)h >= hi) continue;
+        o = ble__put(o, tag); o = bt__dec(o, h->used); *o++ = '/'; o = bt__dec(o, bt_lbuf_stat[i].peak);
+        *o++ = '/'; o = bt__dec(o, h->size); o = ble__put(o, " F"); o = bt__dec(o, bt_lbuf_stat[i].fails);
+        return o;
+    }
+    return o;
+}
 
 static void bt_stall_line_regs(char *out)
 {
@@ -379,10 +404,12 @@ static void bt_stall_line_pcs(char *out)
     *o = 0;
 }
 
-/* visible, no link: "BT VIS IRQ 40:123 41:4567 EV 9 SCAN 1 V F BD 0B0B ADDR 024F1A2B3C4D UID 1 STUB 0" (out: 160 bytes) */
+/* visible, no link: "BT VIS IRQ 40:123 41:4567 EV 9 SCAN 1 V F BD 0B0B ADDR 024F1A2B3C4D UID 1 HEAP 9120 STUB 0 Q40 0 KICK 0
+ * TX 0/592/2032 F0 RX 0/0/12272 F0" (out: 224 bytes) */
 void ble_test_line(char *out)
 {
-    char *o = out;
+    static char t[400];                                         /* (built here, then cut to the 223 characters out holds) */
+    char *o = t;
     uint32_t i;
     if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_regs(out); return; }
     if (bt_st == BT_FAILED || bt_st == BT_STARTING) { ble_status_full(out); return; }
@@ -398,8 +425,14 @@ void ble_test_line(char *out)
     o = ble__put(o, " UID "); o = bt__dec(o, (uint32_t)bt_uid_ok);
     o = ble__put(o, " HEAP "); o = bt__dec(o, ble_heap_min_free());
     o = ble__put(o, " STUB "); o = bt__dec(o, bt_stub_calls);
-    if (bt_stub_last) { *o++ = ' '; o = ble__put(o, bt_stub_last); }
+    if (bt_stub_last) { *o++ = ' '; o = bt__lim(o, bt_stub_last, o + 40); }
+    o = ble__put(o, " Q40 "); o = bt__dec(o, (fm1_uptime_ms() - bt_q40_t) / 1000u);
+    o = ble__put(o, " KICK "); o = bt__dec(o, bt_kicks);
+    o = bt_pool_text(o, " TX ", acl_tx_pool, acl_tx_pool_end);
+    o = bt_pool_text(o, " RX ", acl_rx_pool, acl_rx_pool_end);
     *o = 0;
+    for (i = 0; i < 223u && t[i]; i++) out[i] = t[i];
+    out[i] = 0;
 }
 
 /* a link: "BT LINK n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 1234 ER 0 PK 200 BUF 148 MS UND 0 RATE -0.04% DISC 0" */
@@ -443,6 +476,16 @@ void ble_trace_line(char *out)
     o = ble__put(o, " IRQ 40:"); o = bt__dec(o, bt_cnt_irq_br);
     o = ble__put(o, " 41:"); o = bt__dec(o, bt_cnt_irq_slot);
     o = ble__put(o, " STUB "); o = bt__dec(o, bt_stub_calls);
-    if (bt_stub_last) { *o++ = ' '; o = ble__put(o, bt_stub_last); }
+    o = ble__put(o, " CR");                                     /* the last calls into the firmware, oldest first */
+    {
+        char *const end = out + 220;
+        const uint32_t k = bt_crumb_i, m = k < BT_STALL_CRUMBS ? k : BT_STALL_CRUMBS;
+        for (i = k - m; i < k && o < end - 2; i++) {
+            const char *c = bt_crumb[i % BT_STALL_CRUMBS];
+            *o++ = i == k - m ? ' ' : ',';
+            if (i != k - m) *o++ = ' ';
+            o = bt__lim(o, c ? c : "?", end);
+        }
+    }
     *o = 0;
 }

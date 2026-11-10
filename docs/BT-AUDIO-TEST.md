@@ -32,7 +32,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 3` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 4` (the number is the test build's).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
    as before. Nothing outside the application area is written.
 
@@ -78,7 +78,7 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 
 ### The visible line
 
-`BT VIS IRQ 40:1234 41:56789 EV 4 RDY SCAN 1 V F BD 0B0B ADDR 024F1A2B3C4D UID 1 HEAP 9120 STUB 0`
+`BT VIS IRQ 40:1234 41:56789 EV 4 RDY SCAN 1 V F BD 0B0B ADDR 024F1A2B3C4D UID 1 HEAP 9120 STUB 0 Q40 0 KICK 0 TX 0/592/2032 F0 RX 0/0/12272 F0`
 
 | Field | Meaning |
 | --- | --- |
@@ -88,7 +88,13 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 | `V` | the stored radio calibration: found records (`F` = all four), the VM area (flash / 4096), the crystal trim (as the BLE image) |
 | `ADDR` | this pedal's Bluetooth address, made from the flash chip's unique ID (`UID 1`; `UID 0`: not read, the fixed BLE address is used) |
 | `HEAP` | the Bluetooth heap's lowest free bytes |
-| `STUB` | calls of the stand-ins (functions this image leaves out) and the last one's name: should stay 0 |
+| `STUB` | calls of the stand-ins (functions this image leaves out) and the last one's name (the trace line lists them in order) |
+| `Q40` | seconds since IRQ 40 last rose. While a phone is searching it stays near 0; a large number means the scans have stopped |
+| `KICK` | times the pedal asked for its scans again because IRQ 40 had been silent for 5 s while visible (test build 4) |
+| `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations |
+
+The trace line ends with `CR`, the last calls the library made into the firmware, oldest first (the stand-ins by name,
+`request_irq 40`, `low_power_get`, `kick: scan again`, `send pool full`...).
 
 ### The link line
 
@@ -115,6 +121,10 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 - By ear: clicks or gaps in the music (and whether `UND` rises), hum or buzz in the guitar sound while the music plays.
 
 ## Known limits and risks
+
+0. **The radio's interrupts run above the audio's** (test build 4): the classic baseband's handlers have slot deadlines
+   (625 µs) and OpenPocket's audio interrupt runs the whole DSP block (stock runs its DSP in a task, below the radio). A
+   heavy preset may run late more often while Bluetooth is busy: `op.mjs dsp` with and without music tells.
 
 1. **The pairing is forgotten at power-off.** Afterwards the phone says it cannot connect: forget `OpenPocket` in its Bluetooth
    settings and pair again.

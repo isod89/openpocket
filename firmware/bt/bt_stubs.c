@@ -11,8 +11,12 @@
 
 uint32_t bt_stub_calls;
 const char *bt_stub_last;
-#define BT_STUB(ret, name) ret name(void) { bt_stub_calls++; bt_stub_last = #name; return (ret)0; }
-#define BT_STUB_V(name) void name(void) { bt_stub_calls++; bt_stub_last = #name; }
+#ifndef BT_CRUMB
+#define BT_CRUMB(s) ((void)0)
+#endif
+/* (each call also leaves a crumb, firmware/bt/bt_stall.h: the log's trace line names the stand-ins called, in order) */
+#define BT_STUB(ret, name) ret name(void) { bt_stub_calls++; bt_stub_last = #name; BT_CRUMB(#name); return (ret)0; }
+#define BT_STUB_V(name) void name(void) { bt_stub_calls++; bt_stub_last = #name; BT_CRUMB(#name); }
 
 /* btstack: a2dp_source.c */
 BT_STUB_V(a2dp_media_packet_info)

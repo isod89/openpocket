@@ -16,6 +16,21 @@ typedef struct { uint32_t avaliable, fragment, max_continue_len; int num; } bt_l
 #define BT_LBUF_MAGIC 0x4C425546u
 #define BT_LBUF_HDR ((uint32_t)sizeof(bt_lbuf_blk_t))
 static uint32_t bt_lbuf_need(uint32_t len) { return (len + BT_LBUF_HDR + 15u) & ~15u; }
+
+/* each pool's highest use and its failed allocations, for the log (bt_a2dp.c): kept beside the pools, not in their header */
+#define BT_LBUF_POOLS 4u
+typedef struct { bt_lbuf_head_t *h; uint32_t peak, fails; } bt_lbuf_stat_t;
+static bt_lbuf_stat_t bt_lbuf_stat[BT_LBUF_POOLS];
+static bt_lbuf_stat_t *bt_lbuf_stat_of(bt_lbuf_head_t *h, int add)   /* add: a new pool (lbuf_init) takes a free entry */
+{
+    uint32_t i;
+    for (i = 0; i < BT_LBUF_POOLS; i++)
+        if (bt_lbuf_stat[i].h == h) { if (add) bt_lbuf_stat[i].peak = bt_lbuf_stat[i].fails = 0; return &bt_lbuf_stat[i]; }
+    if (!add) return 0;
+    for (i = 0; i < BT_LBUF_POOLS; i++)
+        if (!bt_lbuf_stat[i].h) { bt_lbuf_stat[i].h = h; bt_lbuf_stat[i].peak = bt_lbuf_stat[i].fails = 0; return &bt_lbuf_stat[i]; }
+    return 0;
+}
 static bt_lbuf_blk_t *bt_lbuf_first(bt_lbuf_head_t *h) { return (bt_lbuf_blk_t *)(void *)(h + 1); }
 static bt_lbuf_blk_t *bt_lbuf_next(bt_lbuf_blk_t *b) { return (bt_lbuf_blk_t *)(void *)((uint8_t *)b + b->size); }
 static int bt_lbuf_in(bt_lbuf_head_t *h, bt_lbuf_blk_t *b) { return (uint8_t *)b < (uint8_t *)bt_lbuf_first(h) + h->size; }
@@ -40,6 +55,7 @@ void *lbuf_init(void *buf, uint32_t len, int align, int priv_head_len)
     h->align = 16u; h->used = 0;
     b = bt_lbuf_first(h);
     b->h = h; b->size = h->size; b->busy = 0; b->ref = 0;
+    bt_lbuf_stat_of(h, 1);
     return h;
 }
 void *lbuf_alloc(void *head, uint32_t len)
@@ -58,9 +74,11 @@ void *lbuf_alloc(void *head, uint32_t len)
         }
         b->h = h; b->busy = 1; b->ref = 1;
         h->used += b->size;
+        { bt_lbuf_stat_t *s = bt_lbuf_stat_of(h, 0); if (s && h->used > s->peak) s->peak = h->used; }
         local_irq_enable();
         return b + 1;
     }
+    { bt_lbuf_stat_t *s = bt_lbuf_stat_of(h, 0); if (s) s->fails++; }
     local_irq_enable();
     return 0;
 }
