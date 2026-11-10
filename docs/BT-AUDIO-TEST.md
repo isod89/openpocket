@@ -32,7 +32,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 9` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 10` (the number is the test build's).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
    as before. Nothing outside the application area is written.
 

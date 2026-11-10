@@ -3,7 +3,8 @@
  * library's message sizes: the host task's events are posted inline, (length + 3) / 4 words, and read 32 words at a time
  * (btstack_task.c); the controller's task reads 14. Checks: a message comes back whole, type first, up to 32 words; a longer
  * one is cut at 32; the reader gets only the words it has room for and the next message is not disturbed; a full queue says
- * so (OS_Q_FULL) and keeps what it holds; thousands of messages of every size through the ring, wrapping, in order. */
+ * so (OS_Q_FULL) and keeps what it holds; thousands of messages of every size through the ring, wrapping, in order.
+ * And the mutexes, recursive as the SDK's (the library takes one it holds: remote_device_db.c updata_last_link_key). */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -104,6 +105,19 @@ int main(void)
     }
     CHECK(bad == 0 && posted == 20000 && got == 20000 && task_find("btstack")->qw == 0,
           "20000 messages of every size through the ring, in order (%d posted, %d read, %d wrong)", posted, got, bad);
+    {
+        static uint32_t mx[20], sm[20];                     /* (the SDK's OS_MUTEX / OS_SEM: 80 bytes) */
+        sem_t *const x = (sem_t *)(void *)mx;
+        os_mutex_create(mx);
+        k = os_mutex_pend(mx, 0) == 0 && os_mutex_pend(mx, 0) == 0 && os_mutex_pend(mx, 0) == 0 && x->count == 0 && x->depth == 3u;
+        CHECK(k, "the task that holds a mutex takes it again, three deep (count %d, depth %u)", (int)x->count, (unsigned)x->depth);
+        os_mutex_post(mx); os_mutex_post(mx);
+        k = x->count == 0 && x->depth == 1u;
+        os_mutex_post(mx);
+        CHECK(k && x->count == 1 && x->depth == 0u && x->owner == 0, "it is free again only after as many gives as takes");
+        os_sem_create(sm, 1);
+        CHECK(os_sem_pend(sm, 0) == 0 && ((sem_t *)(void *)sm)->count == 0, "a semaphore is not a mutex: one take empties it");
+    }
     printf(fails ? "ble taskq: %d FAILED\n" : "ble taskq: all passed\n", fails);
     return fails != 0;
 }

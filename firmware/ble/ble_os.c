@@ -319,7 +319,7 @@ void os_time_dly(int ticks)
 
 /* ---- semaphores and mutexes. The SDK's OS_SEM / OS_MUTEX are opaque and at least 16 bytes: the first word is the
  * count (a mutex: 1 free, 0 taken), the second the owner for the mutex. */
-typedef struct { volatile int32_t count; void *owner; } sem_t;
+typedef struct { volatile int32_t count; void *owner; uint32_t depth; } sem_t;   /* (depth: a mutex taken again by its owner) */
 
 int os_sem_create(void *s, int cnt) { ((sem_t *)s)->count = cnt; ((sem_t *)s)->owner = 0; return 0; }
 int os_sem_set(void *s, uint16_t cnt) { ((sem_t *)s)->count = cnt; return 0; }
@@ -358,10 +358,29 @@ int os_sem_pend(void *s, int timeout)
     }
 }
 
-int os_mutex_create(void *m) { return os_sem_create(m, 1); }
+/* The SDK's mutexes are recursive: the task that holds one may take it again, and gives it back as often. The library relies
+ * on it (remote_device_db.c updata_last_link_key takes the device database's mutex, then calls get_link_key and put_link_key,
+ * which take it again). Up to test build 9 a mutex was a plain semaphore here, so the host task blocked itself for good the
+ * first time a phone's link key was stored, right after the link came up. The main loop (no task) counts as one owner. */
+int os_mutex_create(void *m) { sem_t *x = m; os_sem_create(m, 1); x->depth = 0; return 0; }
 int os_mutex_del(void *m, int force) { (void)m; (void)force; return 0; }
-int os_mutex_pend(void *m, int timeout) { return os_sem_pend(m, timeout); }
-int os_mutex_post(void *m) { return os_sem_post(m); }
+int os_mutex_pend(void *m, int timeout)
+{
+    sem_t *x = m;
+    void *const me = cur ? (void *)cur : (void *)&sched_sp;
+    int r;
+    if (x->depth && x->owner == me) { x->depth++; return 0; }
+    r = os_sem_pend(m, timeout);
+    if (r == 0) { x->owner = me; x->depth = 1; }
+    return r;
+}
+int os_mutex_post(void *m)
+{
+    sem_t *x = m;
+    if (x->depth > 1u) { x->depth--; return 0; }
+    x->depth = 0; x->owner = 0;
+    return os_sem_post(m);
+}
 
 /* ---- software timers (sys_timer_add: periodic, sys_timeout_add: once), run from ble_poll */
 #define MAXTIMER 16
