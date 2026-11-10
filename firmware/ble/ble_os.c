@@ -229,13 +229,23 @@ int os_taskq_post_type(const char *name, int type, int argc, int *argv)
     task_t *t = task_find(name);
     msg_t *m;
     int i;
-    if (!t)
+    if (!t) {
+#if OP_BT_AUDIO
+        bt_q_lost++; BT_CRUMB("taskq: no such task");
+#endif
         return OS_TASK_NOT_EXIST;
+    }
     local_irq_disable();
     if (t->qn == QDEPTH) {
+#if OP_BT_AUDIO
+        bt_q_lost++; BT_CRUMB(t->name);                         /* (a message lost: the full task's name in the crumbs) */
+#endif
         local_irq_enable();
         return OS_Q_FULL;
     }
+#if OP_BT_AUDIO
+    if (t->qn + 1u > bt_q_peak) bt_q_peak = t->qn + 1u;
+#endif
     m = &t->q[(t->qh + t->qn++) % QDEPTH];
     m->v[0] = type;
     for (i = 0; i < argc && i < QARGS - 1; i++)

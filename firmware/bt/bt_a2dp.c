@@ -523,8 +523,9 @@ void ble_trace_line(char *out)
     *o = 0;
 }
 
-/* the controller's events to the host, oldest first: "HCI EV 40 NCP 3 ACL 12/1234 0E04010C0300 0E0401130C00 ..." (bt_h4_spy; each
- * entry the event's first 6 bytes: code, length, then its parameters) */
+/* the controller's events to the host, oldest first: "HCI EV 40 NCP 3 ACL 12/1234 Q 3 LOST 0 0E04010C0300 0E0401130C00 ..."
+ * (bt_h4_spy; each entry the event's first 6 bytes: code, length, then its parameters; Q the deepest a task's message queue has
+ * been, of 16, LOST the messages posted to a full one or to no task) */
 void bt_hci_line(char *out)
 {
     char *o = ble__put(out, "HCI EV ");
@@ -532,6 +533,7 @@ void bt_hci_line(char *out)
     uint32_t i, j;
     o = bt__dec(o, bt_hci_ev_n); o = ble__put(o, " NCP "); o = bt__dec(o, bt_hci_ncp_n);
     o = ble__put(o, " ACL "); o = bt__dec(o, bt_hci_acl_n); *o++ = '/'; o = bt__dec(o, bt_hci_acl_bytes);
+    o = ble__put(o, " Q "); o = bt__dec(o, bt_q_peak); o = ble__put(o, " LOST "); o = bt__dec(o, bt_q_lost);
     if (!bt_h4_host) o = ble__put(o, " (spy not on)");
     for (i = k - m; i < k; i++) {
         const uint8_t *e = bt_hci_log[i % BT_HCI_LOG];

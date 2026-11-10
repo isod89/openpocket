@@ -94,7 +94,8 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 | `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations. While a phone is linked, `RX` must rise: the phone's packets wait there (test builds 1 to 5 never used it, see below) |
 
 The `hci` line (test build 7) is what the controller told the host: `EV` events, `NCP` the Number of Completed Packets among them
-(only counted), `ACL` data packets / bytes to the host, then the newest 11 events, each as its first 6 bytes in hex: the event
+(only counted), `ACL` data packets / bytes to the host, `Q` the deepest a task's message queue has been (of 16) and `LOST` the
+messages posted to a full queue (the full task's name is then among the crumbs), then the newest 11 events, each as its first 6 bytes in hex: the event
 code, the parameters' length, the parameters (`0E04010C0300`: Command Complete, opcode 0x0C03, status 00; `04`: Connection
 Request; `03`: Connection Complete, its status next; `05`: Disconnection Complete, status then handle then the reason; `31` IO
 Capability Request; `33` User Confirmation Request; `36` Simple Pairing Complete; `06` Authentication Complete; `08` Encryption

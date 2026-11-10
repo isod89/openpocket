@@ -42,3 +42,6 @@ static void bt_crumb_add(const char *s)                  /* (a call repeated bac
 
 /* the heap's failures (ble/ble_os.c malloc): the library's own reaction to one is to stop in a loop (P33_SYSTEM_RESET) */
 static uint32_t bt_heap_fails, bt_heap_fail_size;
+/* the tasks' message queues (ble/ble_os.c os_taskq_post_type): messages lost (a full queue, or no such task) and the deepest
+ * a queue has been (of 16) */
+static uint32_t bt_q_lost, bt_q_peak;
