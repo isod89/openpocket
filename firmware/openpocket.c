@@ -17,6 +17,11 @@
 #define DSP_CPU1 0
 #endif
 #define FELUCCA_ID "FM-1_900"
+/* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
+#define BT_TEST_BUILD 11
+#define BT_STR_(x) #x
+#define BT_STR(x) BT_STR_(x)
+#define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
 #include "fm1_time.h"
 #include "fm1_sys.h"
 #include "fm1_irq.h"
@@ -446,6 +451,7 @@ static int keys_decode(int32_t v)
     for (int i = 0; i < 3; i++) { int32_t e = v - REF[i]; if (e < 0) e = -e; if (e < bd) { bd = e; best = i; } }
     return (bd <= 42) ? best + 1 : KEY_NONE;
 }
+static int keys_held_at_boot;           /* the analog button held while the pedal started: 1 CAB, 2 DLY, 3 REV, 0 none */
 static void keys_capture_idle(void)
 {
     fm1_delay_ms(20);
@@ -454,7 +460,7 @@ static void keys_capture_idle(void)
     static const int32_t REF[3] = { 617, 706, 788 };
     for (int i = 0; i < 3 && keys_idle >= 0; i++) {
         int32_t e = keys_idle - REF[i]; if (e < 0) e = -e;
-        if (e <= 45) { keys_idle = 1023; break; }
+        if (e <= 45) { keys_idle = 1023; keys_held_at_boot = i + 1; break; }
     }
 }
 #if ADC_PROBE
@@ -602,8 +608,9 @@ static void ir_changed(uint32_t s)   /* v38: a user IR was written or erased: th
 #if OP_BLE_TEST             /* the log channel (firmware/ble/ble_diag.h): only this image answers DIAG, the normal firmware does not change */
 #define ED_STATS 8u         /* PING also gives the Bluetooth heap's and tasks' lowest free bytes */
 #if OP_BT_AUDIO
-#define ED_DIAG_LINES 7u    /* (the Bluetooth audio image: the HCI conversation, the newest and the first, bt/bt_a2dp.c) */
-#define ED_OUT_BYTES 1536u  /* (its seven lines can pass 1,024 bytes, px_editor.h's reply buffer) */
+#define ED_DIAG_LINES 8u    /* (the Bluetooth audio image: the HCI conversation, the newest and the first, and the interrupts'
+                             * times against the audio's, bt/bt_a2dp.c) */
+#define ED_OUT_BYTES 1824u  /* (its eight lines of up to 223 characters: 8 x 225 and the reply's head; px_editor.h's is 1,024) */
 #else
 #define ED_DIAG_LINES 5u
 #endif
@@ -638,6 +645,11 @@ static void ed_diag_line(uint32_t i, char *out);
 #include "ble/ble_midi.c"
 #endif
 #include "ble/ble_diag.h"
+#if OP_BT_AUDIO
+#define BT_OFF_BY_KEY bt_off_by_key      /* (bt/bt_a2dp.c: REV held at power-on) */
+#else
+#define BT_OFF_BY_KEY 0
+#endif
 static void ed_diag_line(uint32_t i, char *out)
 {
     if (i == 0u) ble_boot_text(out, ms_now(), op_diag.safe, op_diag.stage, op_pwr.rst, guard.failed);
@@ -647,6 +659,7 @@ static void ed_diag_line(uint32_t i, char *out)
 #if OP_BT_AUDIO
     else if (i == 5u) bt_hci_line(out);
     else if (i == 6u) bt_hci0_line(out);
+    else if (i == 7u) bt_isr_line(out);
 #endif
     else ble_trace_line(out);
 }
@@ -682,7 +695,14 @@ static void app_main(void)
     }
 #endif
 #if DSP_CPU1
+#if OP_BT_AUDIO
+    /* each Bluetooth test build its own id: test build 4's crash barred the second core with the release's id, 402, and every
+     * test build after it passed 402 again, so the bar stayed (NOINIT survives a flash) and builds 5 to 10 most likely ran the
+     * whole DSP on one core, until a real power-off */
+    fm1_cpu1_bar_build(0x42540000u + BT_TEST_BUILD);
+#else
     fm1_cpu1_bar_build(402u);            /* a new build gives the 2nd core another chance (v40.2: its NAM routines changed) */
+#endif
     fm1_cpu1_start();                    /* at boot, before audio and interrupts (Felucca) */
 #endif
     lcd_init();
@@ -690,13 +710,15 @@ static void app_main(void)
     lcd_rect(0,0,240,240,UI_BG);
     ft_box(0, 98, 240, "OPENPOCKET", &FT_MD, UI_ACC, UI_BG, 1);
 #if OP_BT_AUDIO
-    ft_box(0, 126, 240, OP_VERSION " BT AUDIO TEST 10", &FT_SM, UI_DIM, UI_BG, 1);   /* (2: the stall record; 3: the baseband's window, bt/app-bt.ld;
+    ft_box(0, 126, 240, OP_VERSION " BT AUDIO TEST " BT_TEST_BUILD_TEXT, &FT_SM, UI_DIM, UI_BG, 1);   /* (2: the stall record; 3: the baseband's window, bt/app-bt.ld;
                                                                                        * 4: its interrupts above the audio's, ble/ble_os.c; 5: their own entry, bt/bt_irq.c;
                                                                                        * 6: the radio pools' header at the pool, bt/bt_lbuf.h;
                                                                                        * 7: the HCI events in the log, bt/bt_a2dp.c;
                                                                                        * 8: whole task messages, ble/ble_os.c;
                                                                                        * 9: the HCI conversation from the queues;
-                                                                                       * 10: recursive mutexes, ble/ble_os.c) */
+                                                                                       * 10: recursive mutexes, ble/ble_os.c;
+                                                                                * 11: the pairing's four walls, the second core's bar,
+                                                                                *     the clock, the waits in an interrupt, the isr line) */
 #elif OP_BLE_TEST
     ft_box(0, 126, 240, OP_VERSION " BLE TEST", &FT_SM, UI_DIM, UI_BG, 1);
 #else
@@ -815,7 +837,10 @@ static void app_main(void)
 #endif
 #if OP_BLE_TEST
     ble_os_init();                       /* the task table, before the main loop polls it (ble_os.c: it lives in NOINIT) */
-    if (!safe)                           /* after a failed boot Bluetooth stays off: the pedal runs, and can be re-flashed */
+#if OP_BT_AUDIO
+    if (keys_held_at_boot == 3) bt_off_by_key = 1;   /* REV held at power-on: this boot without Bluetooth (an A/B by ear) */
+#endif
+    if (!safe && !BT_OFF_BY_KEY)         /* after a failed boot Bluetooth stays off: the pedal runs, and can be re-flashed */
         ble_test_start();                /* radio on, controller and host up, advertising (the pedal keeps working) */
 #endif
     enc_last = (uint8_t)(PC_IN & ENC_MASK);
@@ -855,8 +880,12 @@ static void app_main(void)
                 {   /* "STARTING 4 C1 42%": the Bluetooth state first; FAILED and ADVERTISING scroll their long lines instead (ble_status.h) */
                     char b[48], full[224]; int k, j;   /* (ED_DIAG_LEN: the Bluetooth audio image's lines are longer) */
                     static uint32_t scroll;
+                    const int late = a_xrun && a_blocks - a_xrun_at < 700u;
                     ble_test_state(b);
-                    if (ble_state == BLE_FAILED || ble_state == BLE_ADV) {   /* longer than the status area: scroll it (ble_status.h) */
+                    if (a_bypass || late) {  /* (test build 11: the DSP's text, red, for 2 s after a late block, as the release shows it) */
+                        for (j = 0; c[j]; j++) b[j] = c[j];
+                        b[j] = 0;
+                    } else if (ble_state == BLE_FAILED || ble_state == BLE_ADV) {   /* longer than the status area: scroll it (ble_status.h) */
                         if (ble_conn) ble_midi_line(full); else ble_test_line(full);
                         ble_marquee(full, scroll++, 11, b);
                     } else {
@@ -865,7 +894,7 @@ static void app_main(void)
                         for (j = 0; c[j]; j++) b[k++] = c[j];
                         b[k] = 0;
                     }
-                    ui_status(b, a_bypass);
+                    ui_status(b, a_bypass || late);
                 }
 #else
                 ui_status(c, a_bypass || (a_xrun && a_blocks - a_xrun_at < 700u));   /* (red: bypassed, or a late block) */

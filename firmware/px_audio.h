@@ -158,6 +158,13 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
             if (tg > 0.5f ? a_mg > 0.999f : a_mg < 0.0005f) a_mg = tg;
         } else if (tg == 0.0f) for (uint32_t i = 0; i < A_FR; i++) a_out[i] = 0.0f;
     }
+#if OP_BT_AUDIO
+    /* the phone's music: through the change fade below with the guitar (up to test build 10 it was added after it, so a full
+     * preset change cut the guitar but left the music at full level in the blocks the DMA then repeats while the interrupt is
+     * held, audio_apply). Not read while the fade sits at silence, or after a NaN: the music waits, it does not skip */
+    for (uint32_t i = 0; i < A_FR; i++) bt_mix[i] = 0.0f;
+    if (!a_mute && !a_nan && !(a_xft == 0 && a_xf == 0.0f)) bt_ring_mix(&bt_ring, bt_mix, A_FR, bt_gain);
+#endif
     /* the output: a soft knee from 0.8 of full scale (the same slope there, then bending towards full scale, which it
      * never reaches) instead of a hard clip, whose corners crackle on the loudest notes */
     {   /* v38: the change fade, linear, 256 samples (5.8 ms) each way */
@@ -169,17 +176,22 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
                 xf += st;
                 if (st > 0.0f ? xf > 1.0f : xf < 0.0f) xf = tg;
                 a_out[i] *= xf;
+#if OP_BT_AUDIO
+                bt_mix[i] *= xf;
+#endif
             }
             a_xf = xf;
-        } else if (tg == 0.0f) for (uint32_t i = 0; i < A_FR; i++) a_out[i] = 0.0f;
+        } else if (tg == 0.0f) {
+            for (uint32_t i = 0; i < A_FR; i++) a_out[i] = 0.0f;
+#if OP_BT_AUDIO
+            for (uint32_t i = 0; i < A_FR; i++) bt_mix[i] = 0.0f;   /* (already 0, unless the gate above read a_xft / a_xf
+                                                                     * otherwise: a change between the reads, a CPU1 misread) */
+#endif
+        }
     }
     const float g = a_gain;                            /* v38: the volume glides there (~3 ms), no zipper */
     float gv = a_gv;
     int clip = 0;
-#if OP_BT_AUDIO
-    for (uint32_t i = 0; i < A_FR; i++) bt_mix[i] = 0.0f;
-    if (!a_mute) bt_ring_mix(&bt_ring, bt_mix, A_FR, bt_gain);
-#endif
     for (uint32_t i = 0; i < A_FR; i++) {
         gv += (g - gv) * 0.008f;
 #if OP_BT_AUDIO
@@ -535,7 +547,32 @@ static void a_dec(void *priv, uint8_t *data, int len, uint8_t ch)     /* output 
     if (n > A_FR) n = A_FR;
     for (uint32_t i = 0; i < n; i++) d[2u * i] = d[2u * i + 1u] = a_res[i];
 }
+#if OP_BLE_TEST
+/* the Bluetooth test images time the audio interrupt (the log's isr line, bt/bt_a2dp.c): the longest gap between two entries
+ * (2.9 ms when on time: more is an interrupt that started late, which a_xrun, timing the DSP alone, does not see) and the
+ * longest stay, this second (the main loop turns it over) and since boot; in TIMER4 ticks. A gap across a hold of the interrupt
+ * (a preset change, a flash write) is not counted: a_irq_gap_skip() before each unmask */
+static volatile uint32_t a_irq_t0, a_irq_gap_s, a_irq_gap, a_irq_in_s, a_irq_in;
+static inline void a_irq_gap_skip(void) { a_irq_t0 = 0; }
+void fm1_alnk0_irq(void)
+{
+    const uint32_t t0 = fm1_ticks();
+    uint32_t d;
+    if (a_irq_t0) {
+        d = t0 - a_irq_t0;
+        if (d > a_irq_gap_s) a_irq_gap_s = d;
+        if (d > a_irq_gap) a_irq_gap = d;
+    }
+    a_irq_t0 = t0 ? t0 : 1u;
+    iis_irq_handler(0);
+    d = fm1_ticks() - t0;
+    if (d > a_irq_in_s) a_irq_in_s = d;
+    if (d > a_irq_in) a_irq_in = d;
+}
+#else
+static inline void a_irq_gap_skip(void) { }
 void fm1_alnk0_irq(void) { iis_irq_handler(0); }
+#endif
 extern void isr_alnk0(void);
 
 /* ===================== UI -> engine: same structure (px_preset_t), plain copy ===================== */
@@ -551,6 +588,18 @@ static int a_wait(volatile uint8_t *v, uint8_t until, uint32_t ms)   /* 1 = *v r
 {
     for (uint32_t t = 0; *v != until; t++) { if (t >= ms * 10u) return 0; fm1_delay_us(100); }
     return 1;
+}
+/* Before the audio interrupt is held for a recompute: wait until silent blocks fill both halves of the output DMA, which keeps
+ * playing its two halves over and over while the interrupt is held. A block reaches the DMA one interrupt after it is computed
+ * (the output's callback runs before the input's, handbook section 5), and the fade can read 0 before its block is counted:
+ * a model of each audio path (one core, the chain on the second core, the NAM network pipelined or split) needs 3 or 4 counted
+ * blocks; 5, 14.5 ms, for margin, bounded at 30. Up to test build 10 the hold began as soon as the fade read 0, while the halves
+ * still held the last full-level block and a half-faded one: a buzz at the DMA's 172 Hz for the length of the recompute, on
+ * every full preset change (every image) */
+static void a_quiet_dma(void)
+{
+    const uint32_t b0 = a_blocks;
+    for (uint32_t t = 0; a_blocks - b0 < 5u && t < 300u; t++) fm1_delay_us(100);
 }
 static void audio_apply(void)                          /* the preset to the engine (main loop) */
 {
@@ -572,7 +621,11 @@ static void audio_apply(void)                          /* the preset to the engi
     a_full = 0;
     /* anything else: the output fades out, the engine is set (the interrupt held off meanwhile: a late block now only
      * repeats silence), and the output fades back in */
-    if (live) { a_xft = 0; for (uint32_t t = 0; a_xf != 0.0f && t < 400u; t++) fm1_delay_us(100); }   /* (40 ms at most) */
+    if (live) {
+        a_xft = 0;
+        for (uint32_t t = 0; a_xf != 0.0f && t < 400u; t++) fm1_delay_us(100);   /* (40 ms at most) */
+        a_quiet_dma();
+    }
     if (a_running) fm1_irq_mask(FM1_IRQ_ALNK0);
     a_collect();                                       /* CPU1 must not process during the recompute */
 #if DSP_CPU1
@@ -587,6 +640,7 @@ static void audio_apply(void)                          /* the preset to the engi
     a_nbv = 0;                                         /* (the pipeline restarts from silence) */
 #endif
     a_bypass = 0; a_over = 0; a_peak = 0; a_cpk[0] = a_cpk[1] = 0;
+    a_irq_gap_skip();
     if (a_running) fm1_irq_unmask(FM1_IRQ_ALNK0);
     a_xft = 1;
 }
@@ -594,6 +648,7 @@ static void audio_reset(void)                          /* after a NaN: engine re
 {
     px_preset_t pp;
     ui_to_px(&pp);
+    if (a_running) a_quiet_dma();                      /* (a_nan: the blocks since are silent, the music too) */
     if (a_running) fm1_irq_mask(FM1_IRQ_ALNK0);
     a_collect();
     px_engine_init(&g_eng, 44100.0f);
@@ -606,6 +661,7 @@ static void audio_reset(void)                          /* after a NaN: engine re
 #endif
     a_kpend = 0; a_xf = 0.0f; a_xft = 1;               /* (back from silence) */
     a_nan = 0; a_nan_count++;
+    a_irq_gap_skip();
     if (a_running) fm1_irq_unmask(FM1_IRQ_ALNK0);
 }
 static void audio_volume(uint32_t vol)                 /* 0..100 -> gain (quadratic curve, ~logarithmic) */

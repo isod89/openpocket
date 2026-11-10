@@ -4,7 +4,11 @@
  * (btstack_task.c); the controller's task reads 14. Checks: a message comes back whole, type first, up to 32 words; a longer
  * one is cut at 32; the reader gets only the words it has room for and the next message is not disturbed; a full queue says
  * so (OS_Q_FULL) and keeps what it holds; thousands of messages of every size through the ring, wrapping, in order.
- * And the mutexes, recursive as the SDK's (the library takes one it holds: remote_device_db.c updata_last_link_key). */
+ * And the mutexes, recursive as the SDK's (the library takes one it holds: remote_device_db.c updata_last_link_key).
+ * And the scheduler's clock across TIMER4's wrap (every 178.957 s): a periodic timer keeps firing, a one-shot armed before the wrap
+ * fires after it, a task asleep across it wakes on time (up to test build 10 all three stopped for good at the first wrap).
+ * Built a second time with OP_BT_AUDIO (the Bluetooth audio image's scheduler): inside one of the baseband's interrupts
+ * (bt_isr_depth) cpu_in_irq() is 1 and no wait waits; each task's queue peak, stack depth and red zone. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,6 +36,11 @@
 #define section(x) used                                 /* (Mach-O takes no ELF section names; Linux, the CI, keeps them) */
 #endif
 #include "../firmware/ble/ble_os.c"
+#if OP_BT_AUDIO
+static void bt_taskq_spy(const char *task, int type, int argc, const int *argv) { (void)task; (void)type; (void)argc; (void)argv; }
+void bt_isr_br(void) { }
+void bt_isr_slot(void) { }
+#endif
 void *ble_t_memset(void *d, int c, unsigned n) { uint8_t *p = d; while (n--) *p++ = (uint8_t)c; return d; }
 void *ble_t_memcpy(void *d, const void *s, unsigned n) { uint8_t *p = d; const uint8_t *q = s; while (n--) *p++ = *q++; return d; }
 size_t ble_t_strlen(const char *s) { size_t n = 0; while (s[n]) n++; return n; }
@@ -42,8 +51,14 @@ int ble_t_memcmp(const void *a, const void *b, unsigned n) { const uint8_t *p = 
 void *ble_t_memmove(void *d, const void *s, size_t n) { uint8_t *p = d; const uint8_t *q = s; if (p < q) while (n--) *p++ = *q++; else for (p += n, q += n; n--;) *--p = *--q; return d; }
 #undef memset
 #undef memcpy
-void ble_ctx_swap(uint32_t **save, uint32_t *load) { (void)save; (void)load; }
-void ble_ctx_enter(uint32_t **save, uint32_t *top, void (*fn)(void)) { (void)save; (void)top; (void)fn; }
+/* the context switches, for a PC: a task the scheduler runs (cur) is taken to have run and then waited for a message; a task
+ * that gives up the processor (task_yield) comes straight back */
+static int runs;
+static uint32_t ran_at;
+static uint32_t *run_paint_at;                                  /* (if set, the "task" writes this word of its stack: a deep call) */
+static void ran(void) { runs++; ran_at = ble_ms(); if (run_paint_at) *run_paint_at = 0; cur->state = T_WAIT_Q; }
+void ble_ctx_swap(uint32_t **save, uint32_t *load) { (void)load; if (save == &sched_sp) ran(); }
+void ble_ctx_enter(uint32_t **save, uint32_t *top, void (*fn)(void)) { (void)save; (void)top; (void)fn; ran(); }
 void (*ble_irq_target_ev)(void), (*ble_irq_target_rx)(void);
 void ble_isr_ev(void) { }
 void ble_isr_rx(void) { }
@@ -52,6 +67,9 @@ static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL "); printf(__VA_ARGS__); printf("\n"); } else { printf("ok   "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 static void body(void *a) { (void)a; }
+static int fired_p, fired_o;
+static void tick_p(void *a) { (void)a; fired_p++; }
+static void tick_o(void *a) { (void)a; fired_o++; }
 static int words(int n, int seed, int *w) { int i; for (i = 0; i < n; i++) w[i] = seed * 1000 + i; return n; }
 
 int main(void)
@@ -118,6 +136,73 @@ int main(void)
         os_sem_create(sm, 1);
         CHECK(os_sem_pend(sm, 0) == 0 && ((sem_t *)(void *)sm)->count == 0, "a semaphore is not a mutex: one take empties it");
     }
+    {   /* the clock across TIMER4's wrap: 1 ms steps from 0.5 s before it to 1.5 s after */
+        task_t *t = task_find("btstack");
+        uint32_t m0, i, woke_at, slept_at;
+        while (t->qn) os_taskq_pend(0, out, 33);
+        t->state = T_WAIT_Q;
+        cur = 0;
+        shim_t4 = 0xFFFFFFFFu - 24000u * 500u;
+        m0 = ble_ms();
+        CHECK(sys_timer_add(0, tick_p, 100) != 0 && sys_timeout_add(0, tick_o, 700) != 0, "a periodic timer (100 ms) and a one-shot (700 ms)");
+        cur = t; os_time_dly(80); cur = 0;                     /* (the task: 800 ms asleep, across the wrap) */
+        slept_at = ble_ms();
+        k = t->state == T_SLEEP;
+        runs = 0; woke_at = 0;
+        for (i = 0; i < 2000u; i++) {
+            shim_t4 += 24000u;
+            ble_poll();
+            if (runs && !woke_at) woke_at = ran_at;
+        }
+        CHECK(ble_ms() - m0 == 2000u, "the clock counts 2000 ms across the wrap (%u)", (unsigned)(ble_ms() - m0));
+        CHECK(fired_p == 20, "the periodic timer fired 20 times in 2 s, the wrap in between (%d)", fired_p);
+        CHECK(fired_o == 1, "the one-shot armed before the wrap fired after it (%d)", fired_o);
+        CHECK(k && runs == 1 && woke_at - slept_at == 800u, "the task asleep across the wrap woke once, 800 ms later (%d, %u)", runs, (unsigned)(woke_at - slept_at));
+    }
+#if OP_BT_AUDIO
+    {   /* inside one of the baseband's interrupts nothing waits; outside, as before */
+        static uint32_t sm[20], mx[20];
+        task_t *t = task_find("btstack");
+        uint32_t w0;
+        CHECK(cpu_in_irq() == 0, "outside an interrupt cpu_in_irq() is 0");
+        bt_isr_depth = 1;
+        CHECK(cpu_in_irq() == 1, "inside the baseband's interrupt it is 1 (the library's \"do not wait\")");
+        cur = t; t->state = T_READY; t->wake_ms = 0;            /* (the interrupt cut into this task) */
+        w0 = bt_wait_irq;
+        os_time_dly(2);
+        CHECK(t->state == T_READY && t->wake_ms == 0u, "os_time_dly in the interrupt returns at once and leaves the task as it was");
+        os_sem_create(sm, 0);
+        CHECK(os_sem_pend(sm, 0) == OS_TIMEOUT && t->state == T_READY, "os_sem_pend on an empty semaphore: OS_TIMEOUT at once");
+        os_sem_post(sm);
+        CHECK(os_sem_pend(sm, 0) == 0 && ((sem_t *)(void *)sm)->count == 0, "a semaphore that is free is still taken");
+        bt_isr_depth = 0;
+        os_mutex_create(mx); os_mutex_pend(mx, 0);             /* (the task holds the mutex) */
+        bt_isr_depth = 1;
+        CHECK(os_mutex_pend(mx, 0) == OS_TIMEOUT && ((sem_t *)(void *)mx)->depth == 1u, "the mutex the cut task holds is not the interrupt's to take again");
+        words(3, 1, in); os_taskq_post_type("btstack", 7, 3, in);
+        CHECK(os_taskq_pend(0, out, 33) == OS_Q_EMPTY && t->qn == 1u, "os_taskq_pend in the interrupt takes nothing from the cut task's queue");
+        CHECK(bt_wait_irq - w0 == 4u, "the four refusals are counted (%u)", (unsigned)(bt_wait_irq - w0));
+        bt_isr_depth = 0;
+        os_mutex_post(mx);
+        while (t->qn) os_taskq_pend(0, out, 33);
+        cur = 0;
+        w0 = bt_wait_main;
+        os_time_dly(1);
+        CHECK(bt_wait_main == w0 + 1u, "a wait asked by the main loop (a timer's callback) is counted");
+    }
+    {   /* each task's queue peak, stack depth and red zone */
+        task_t *t = task_find("btstack");
+        ble_task_info_t r;
+        t->qpeak = 0;
+        for (i = 0; i < 5; i++) os_taskq_post_type("btstack", 1, 1, in);
+        cur = t; while (t->qn) os_taskq_pend(0, out, 33); cur = 0;
+        CHECK(ble_task_info(0, &r) && r.qpeak == 5u && r.free == STACK_WORDS * 4u && !r.ovf, "the queue's peak (5), the stack untouched (%u B)", (unsigned)r.free);
+        t->state = T_READY; run_paint_at = &t->stack[3];        /* (the task's run writes the fourth word: 16 bytes from its end) */
+        ble_poll();
+        run_paint_at = 0;
+        CHECK(ble_task_info(0, &r) && r.free == 12u && r.ovf && bt_stack_ovf == 1u, "a write into the red zone is caught (free %u B, OVF %u)", (unsigned)r.free, (unsigned)r.ovf);
+    }
+#endif
     printf(fails ? "ble taskq: %d FAILED\n" : "ble taskq: all passed\n", fails);
     return fails != 0;
 }

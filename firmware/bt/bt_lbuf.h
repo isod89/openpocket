@@ -144,12 +144,19 @@ static void bt_lbuf_scan(bt_lbuf_head_t *h, uint32_t need, bt_lbuf_state_t *st, 
 uint32_t lbuf_free_space(void *h) { bt_lbuf_state_t st; int f; bt_lbuf_scan(h, 0, &st, &f); return st.max_continue_len; }
 int lbuf_avaliable(void *h, int size) { bt_lbuf_state_t st; int f; bt_lbuf_scan(h, bt_lbuf_need((uint32_t)size), &st, &f); return f; }
 void lbuf_state(void *h, void *state) { int f; bt_lbuf_scan(h, 0, (bt_lbuf_state_t *)state, &f); }
-void lbuf_dump(void *h)                                         /* (the library calls it when an allocation from a pool fails) */
+/* The library calls it after an allocation from a pool failed, and also as a plain report of the receive pool's state, at every
+ * link's close (bredr_link.c link_connection_close -> link_bulk.c bredr_rx_bulk_state): "a pool full" only when a pool's failed
+ * allocations rose since the last call (test build 9's crumb was a link closing, with no pool full) */
+static uint32_t bt_lbuf_fails_seen;
+void lbuf_dump(void *h)
 {
+    uint32_t i, f = 0;
     (void)h;
+    for (i = 0; i < BT_LBUF_POOLS; i++) f += bt_lbuf_stat[i].fails;
 #ifdef BT_CRUMB
-    BT_CRUMB("lbuf_dump: a pool full");                         /* (the stall record, bt_stall.h) */
+    BT_CRUMB(f != bt_lbuf_fails_seen ? "lbuf_dump: a pool full" : "lbuf_dump: pool state (a link closed)");   /* (bt_stall.h) */
 #endif
+    bt_lbuf_fails_seen = f;
 }
 void lbuf_free_check(void *p, uint32_t rets) { (void)p; (void)rets; }
 

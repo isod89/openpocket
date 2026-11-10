@@ -106,6 +106,9 @@ static inline void fm1_cpu1_bar_set(void)
     fm1_cpu1_bar.magic = FM1_CPU1_BAR_MAGIC;
     fm1_cpu1_bar.barred = 1;
 }
+/* set just before a crash that is no fault of either core's (the Bluetooth test images' stall watch, px_usb.h): CPU0's crash
+ * report follows, and the second core is not barred for it */
+static volatile uint8_t fm1_cpu1_nobar;
 /* at boot: a bar set by another build (another id) is lifted, as it was for that build's sake */
 static void fm1_cpu1_bar_build(uint32_t build)
 {
@@ -364,7 +367,7 @@ static int fm1_cpu1_fault_c(const uint32_t *f)
         fm1_cpu1_failure(FM1_CPU1_FAULT, f[16], dbg);
     return 1;
 own:
-    if (FM1_CPU1_FALLBACK && fm1_cpu1_on)
+    if (FM1_CPU1_FALLBACK && fm1_cpu1_on && !fm1_cpu1_nobar)
         fm1_cpu1_bar_set();
     return 0;
 }

@@ -58,6 +58,15 @@ ok(b.state === "failed" && b.step === 5 && b.code === 3 && b.stage === "radio-in
 ok(parseBle("FAILED 2 -7  step btctrler_task_init stage init").code === -7, "failure line, negative code");
 ok(parseBle("STARTING 4").stage === 4 && parseBle("OFF").state === "off", "starting and off");
 ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know stays unknown");
+{ // the Bluetooth audio image (docs/BT-AUDIO-TEST.md): visible, Bluetooth off by REV at power-on, an earlier stall's record
+  const boot = { stage: 8, clockMs: 9000, safe: false }, at = (ble, link = "TASKS") => [{ level: "full", time: "2026-11-10T20:00:00Z", boot, ble: parseBle(ble), link }];
+  let v = judge(at("BT VIS IRQ 40:1234 41:567 EV 4 RDY SCAN 1"));
+  ok(v.result === "running" && /visible, no phone linked/.test(v.reason), "Bluetooth audio image, visible: running");
+  v = judge(at("BT OFF: REV HELD AT POWER-ON (THIS BOOT WITHOUT BLUETOOTH)"));
+  ok(v.result === "running" && /REV held/.test(v.reason) && !/visible/.test(v.reason), `REV held at power-on: Bluetooth off, said so: ${v.reason}`);
+  v = judge(at("STALL btctrler S8 BB 00000107 0000FE02 00000000 0000FFFF 00000001"));
+  ok(v.result === "running" && /earlier stall/.test(v.reason), "an earlier stall's record while Bluetooth is off is named, not unknown");
+}
 b = parseBoot("UP 12345 SAFE 1 STAGE 7 RST 44 GUARD 1");
 ok(b.clockMs === 12345 && b.safe && b.stageName === "FIRST 6 S" && b.resetBy.join() === "WATCHDOG,SOFT" && b.failedBoots === 1, "boot line");
 b = parseLast("LAST FAILED STAGE 7 BLOCKS 9 LOAD 42 PEAK 61 NAN 0 CPU1 1 LOOPS 0 CRASH VEC 3F PC 2000DC8 RETS 2001234 DBG 0 EMU 8 UP 4100");

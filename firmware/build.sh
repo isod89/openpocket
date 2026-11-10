@@ -29,8 +29,9 @@ fi
 GUARD_STACK=1; [ -n "$OP_BLE" ] && GUARD_STACK="${OP_GUARD_STACK:-0}"
 LDS="$HERE/app.ld"
 if [ -n "$OP_BT" ]; then O="$HERE/build-bt"; APP="$HERE/openpocket-bt.bin"; PKG="$HERE/../build/bt"; LDS="$HERE/bt/app-bt.ld"
-  # four tasks (the app's, the controller's, the host's, the pairing crypto's) of 2.75 KB in NOINIT; the flash's unique ID for the address
-  BLEDEF="-DOP_BLE_TEST=1 -DOP_BT_AUDIO=1 -DFL_UID -DMAXTASK=4 -DSTACK_WORDS=704u -I$HERE/ble -I$HERE/bt"
+  # three tasks (the controller's, the host's, the app's: the pairing's crypto runs in the controller's, config_bt_function 0) of
+  # 4 KB in NOINIT (ble_os.c's sizes; test builds 1 to 10 had four of 2.75 KB, the fourth never used); the flash's unique ID for the address
+  BLEDEF="-DOP_BLE_TEST=1 -DOP_BT_AUDIO=1 -DFL_UID -I$HERE/ble -I$HERE/bt"
 elif [ -n "$OP_BLE" ]; then O="$HERE/build-ble"; APP="$HERE/openpocket-ble.bin"; PKG="$HERE/../build/ble"; BLEDEF="-DOP_BLE_TEST=1 -I$HERE/ble"
 else O="$HERE/build"; APP="$HERE/openpocket.bin"; PKG="$HERE/../docs/firmware"; BLEDEF=""; fi
 rm -rf "$O"; mkdir -p "$O"

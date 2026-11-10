@@ -16,6 +16,7 @@ void *malloc(size_t n);
 void free(void *p);
 
 void ble_os_init(void);              /* at boot, before the first ble_poll: the task table (in NOINIT) cleared, the stacks painted */
+uint32_t ble_ms(void);               /* the scheduler's milliseconds: wrap at 2^32 (49.7 days), not at TIMER4's 178.9 s. Main loop and tasks only */
 uint32_t ble_stack_min_free(void);   /* the bytes never used at the bottom of the deepest task's stack */
 void ble_poll(void);                 /* the main loop calls this often: runs the controller's timers and tasks */
 uint32_t ble_heap_free(void);

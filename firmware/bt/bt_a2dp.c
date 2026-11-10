@@ -36,12 +36,17 @@ extern int a2dp_media_get_remain_play_time(uint8_t include_tws);
 extern int os_sem_create(void *s, int cnt);
 extern int os_sem_pend(void *s, int timeout);
 extern int os_sem_post(void *s);
+extern void hci_user_confirmation_request(uint8_t yes, uint8_t *addr);   /* (hci_vendor.c: the reply to HCI 0x33, to that address) */
 extern uint32_t bt_stub_calls;
 extern const char *bt_stub_last;
 
 /* the SDK's numbers (include_lib/btstack/avctp_user.h, include_lib/utils/event/bt_event.h, Apache-2.0) */
 enum { USER_CTRL_WRITE_SCAN_ENABLE = 13, USER_CTRL_WRITE_CONN_ENABLE = 15 };
 enum { BT_EVENT_FROM_CTRLER = 1, BT_EVENT_FROM_HCI = 2, BT_EVENT_FROM_CON = 3 };
+enum { HCI_EV_CONNECTION_COMPLETE = 0x03, HCI_EV_DISCONNECTION_COMPLETE = 0x05, HCI_EV_USER_CONFIRMATION_REQUEST = 0x33 };
+/* what the stack hands bt_event_notify (bt_event.h struct bt_event, user_interface.c bt_event_update_to_user): the event, the
+ * phone's address (6 bytes, as HCI sends it) and a value (a status or a reason) */
+typedef struct { uint8_t event; uint8_t args[7]; uint32_t value; } bt_event_t;
 enum { BT_STATUS_INIT_OK = 3, BT_STATUS_START_CONNECTED = 5, BT_STATUS_FIRST_CONNECTED = 6, BT_STATUS_SECOND_CONNECTED = 7,
        BT_STATUS_ENCRY_COMPLETE = 8, BT_STATUS_FIRST_DISCONNECT = 9, BT_STATUS_SECOND_DISCONNECT = 10, BT_STATUS_CONN_A2DP_CH = 39,
        BT_STATUS_A2DP_MEDIA_START = 48, BT_STATUS_A2DP_MEDIA_STOP = 49 };
@@ -56,6 +61,7 @@ static int16_t bt_ring_mem[BT_RING_N] __attribute__((aligned(4), section(".bss.l
 /* the state, for the screen and the log */
 enum { BT_OFF, BT_STARTING, BT_VISIBLE, BT_LINKED, BT_PLAYING, BT_FAILED };
 static volatile uint32_t bt_st;
+static int bt_off_by_key;                                       /* REV held at power-on: Bluetooth off this boot (openpocket.c) */
 static uint16_t ble_conn;                                       /* (openpocket.c: a link is up, scroll the link line) */
 volatile uint32_t bt_cnt_irq_br, bt_cnt_irq_slot;               /* bt_irq.c: IRQ 40 and 41 */
 static volatile uint32_t bt_ev_n, bt_ev_hist[6], bt_ev_i;       /* the events, the last six: from << 12 | code << 4 */
@@ -81,24 +87,43 @@ static bt_msg_t bt_msg_first[BT_MSG_FIRST], bt_msg_last[BT_MSG_LAST];
 static volatile uint32_t bt_msg_n, bt_msg_kept, bt_msg_acl, bt_msg_ncp;
 static void bt_taskq_spy(const char *task, int type, int argc, const int *argv)
 {
+    const int host = task[0] == 'b' && task[2] == 's';
     bt_msg_t m;
-    uint32_t i;
-    bt_msg_n++;
-    if (task[0] == 'b' && task[2] == 's' && type == 0x400002) { bt_msg_acl++; return; }   /* btstack: an ACL packet */
-    if (task[0] == 'b' && task[2] == 's' && type == 0x400001 && argc > 0 && (argv[0] & 0xFF) == 0x13) { bt_msg_ncp++; return; }
+    uint32_t i, k;
     m.task = task[2] == 's' ? 'S' : task[2] == 'c' ? 'C' : task[2] == 'e' ? 'E' : task[2] == 'a' ? 'A' : '?';   /* btStack btCtrler btEncry btApp */
     m.type = (char)('0' + (type & 0xF));
     for (i = 0; i < 5u; i++) m.b[i] = (int)(i / 4u) < argc ? (uint8_t)((uint32_t)argv[i / 4u] >> (8u * (i % 4u))) : 0;
-    if (bt_msg_kept < BT_MSG_FIRST) bt_msg_first[bt_msg_kept] = m;
-    bt_msg_last[bt_msg_kept % BT_MSG_LAST] = m;
-    bt_msg_kept++;
+    /* (in one piece, interrupts off: the tasks post, and so do the baseband's interrupts, through the same call. Up to test
+     * build 11's review the count was read twice, and a post between the reads could write one entry past bt_msg_first) */
+    local_irq_disable();
+    bt_msg_n++;
+    if (host && type == 0x400002) bt_msg_acl++;                 /* btstack: an ACL packet */
+    else if (host && type == 0x400001 && argc > 0 && (argv[0] & 0xFF) == 0x13) bt_msg_ncp++;
+    else {
+        k = bt_msg_kept;
+        if (k < BT_MSG_FIRST) bt_msg_first[k] = m;
+        bt_msg_last[k % BT_MSG_LAST] = m;
+        bt_msg_kept = k + 1u;
+    }
+    local_irq_enable();
 }
 static uint8_t *bt_pkt;                                         /* the packet being decoded */
 static const uint8_t *bt_pp;
 static uint32_t bt_pn, bt_pkts, bt_frames_in, bt_t_steer;
+static uint32_t bt_pkt_dropped;                                 /* packets held at a link's end that could not be given back */
+static uint32_t bt_confirms, bt_hci_disc, bt_conn_fail;         /* the pairing confirmations sent, the links that ended (HCI) */
+static uint32_t bt_end;                                         /* the last link's end: HCI event << 8 | its reason or status */
 static int16_t bt_frame[BT_SBC_MAX_SAMPLES];
 
 static void bt_cmd(uint32_t bit) { bt_cmd_bits |= bit; os_sem_post(bt_cmd_sem); }
+
+/* the packet bt_decode holds, given back while its channel is still open (the stack frees only the packets the app has not
+ * taken: lmp.c __lmp_private_clear_a2dp_packet; up to test build 10 every stop lost one, about 1 KB of the receive pool) */
+static void bt_pkt_release(void)
+{
+    if (bt_pkt) { a2dp_media_free_packet(bt_pkt); bt_pkt = 0; }
+    bt_pn = 0;
+}
 
 /* the stack's events (its tasks call this) */
 int bt_event_notify(int from, void *e)
@@ -107,6 +132,42 @@ int bt_event_notify(int from, void *e)
     const uint8_t code = ev ? ev[0] : 0xFFu;
     bt_ev_hist[bt_ev_i++ % 6u] = (uint32_t)from << 12 | (uint32_t)code << 4;
     bt_ev_n++;
+    if (from == BT_EVENT_FROM_HCI && ev) {
+        bt_event_t *const b = e;
+        switch (code) {
+        case HCI_EV_USER_CONFIRMATION_REQUEST:
+            /* Secure Simple Pairing asks the host to confirm (Just Works: nothing to compare). The host leaves the answer to the
+             * application (hci_vendor.c, case 0x33), as the SDK's demo does (bt_music.c: bt_send_pair(1)); until test build 10
+             * nothing answered, and the controller waited until the phone gave up. To the address of the event, through the
+             * same call the SDK's USER_CTRL_PAIR ends in. It posts the reply to the controller's task; while that queue is full
+             * the library tries again after os_time_dly(2) (btctrler_task.c __cmd_to_lmp_conn), a real sleep of 20 ms or more
+             * in this task, the host's, as the host's own IO-capability reply (case 0x31, which sleeps 100 ms first); each
+             * refused try counts in the hci line's LOST, though the reply is not lost. (A PIN code request, 0x16, the host
+             * answers itself, with "0000": hci_vendor.c bt_get_pin_code) */
+            hci_user_confirmation_request(1u, b->args);
+            bt_confirms++;
+            BT_CRUMB("pairing confirmed");
+            break;
+        case HCI_EV_DISCONNECTION_COMPLETE:
+        case HCI_EV_CONNECTION_COMPLETE:
+            if (code == HCI_EV_CONNECTION_COMPLETE && b->value == 0u) break;   /* (a link that came up) */
+            /* a link that ended, or one that failed to come up: the controller turned the scans off when it made the link and
+             * does not turn them on again (lmp.c lmp_detach_check: only in its test modes), so the pedal must, as the SDK's
+             * demo does on these two events. A link that ends before any profile opened gives no FIRST_DISCONNECT below, and
+             * the KICK runs only while BT_VISIBLE: without this a failed pairing left the pedal invisible until power-off */
+            if (code == HCI_EV_DISCONNECTION_COMPLETE) bt_hci_disc++; else bt_conn_fail++;
+            bt_end = (uint32_t)code << 8 | (b->value & 0xFFu);  /* the reason (05) or the status (03): the log's END */
+            ble_conn = 0;
+            if (bt_st == BT_LINKED || bt_st == BT_PLAYING) bt_st = BT_VISIBLE;
+            if (bt_pkt) bt_pkt_dropped++;                       /* (the link is gone: its packet is not given back here, see
+                                                                 * bt_pkt_release; MEDIA_STOP came first if the music played) */
+            bt_pkt = 0; bt_pn = 0;
+            if (bt_st == BT_VISIBLE) bt_cmd(1u);                /* visible and connectable again */
+            break;
+        default: break;
+        }
+        return 0;
+    }
     if (from != BT_EVENT_FROM_CON) return 0;
     switch (code) {
     case BT_STATUS_INIT_OK:
@@ -120,10 +181,13 @@ int bt_event_notify(int from, void *e)
     case BT_STATUS_ENCRY_COMPLETE: bt_enc++; break;
     case BT_STATUS_CONN_A2DP_CH: bt_a2dp_ch++; break;
     case BT_STATUS_A2DP_MEDIA_START: bt_st = BT_PLAYING; bt_media++; break;
-    case BT_STATUS_A2DP_MEDIA_STOP: if (bt_st == BT_PLAYING) bt_st = BT_LINKED; break;
+    case BT_STATUS_A2DP_MEDIA_STOP:
+        bt_pkt_release();                                       /* (sbc_codec_stop sends this before it closes the channel) */
+        if (bt_st == BT_PLAYING) bt_st = BT_LINKED;
+        break;
     case BT_STATUS_FIRST_DISCONNECT: case BT_STATUS_SECOND_DISCONNECT:
+        bt_pkt_release();                                       /* (a stop that did not come first) */
         bt_disc++; ble_conn = 0; bt_st = BT_VISIBLE;
-        bt_pkt = 0; bt_pn = 0;                                  /* (the link's packets go with it: the stack clears its queue) */
         bt_cmd(1u);                                             /* visible again for the next phone */
         break;
     default: break;
@@ -144,7 +208,7 @@ static void bt_app_task(void *arg)
     if (rc) { ble_judge_start(rc, 1); bt_st = BT_FAILED; return; }
     ble_stage_set(BLE_STAGE_READY);
     bt_max_pwr_set(10, 5, 8, 9);                                /* after the controller's own init (the SDK's values) */
-    bt_t_init = fm1_uptime_ms();
+    bt_t_init = ble_ms();
     for (;;) {
         os_sem_pend(bt_cmd_sem, 0);
         if (bt_cmd_bits & 1u) {
@@ -270,7 +334,7 @@ void ble_test_start(void)
     ble_state = BLE_STARTING;
     bt_st = BT_STARTING;
     ble_stage_set(BLE_STAGE_TASK);
-    bt_t_start = fm1_uptime_ms();
+    bt_t_start = ble_ms();
     if (task_create(bt_app_task, 0, "btapp")) { ble_fail(BLE_FAIL_TASK_CREATE, -1); bt_st = BT_FAILED; }
 }
 
@@ -291,7 +355,7 @@ static void bt_decode(void)
             bt_pkts++;
             off = bt_sbc_payload(p, (uint32_t)len);
             bt_pp = p + off;
-            bt_pn = (uint32_t)len - off;
+            bt_pn = off < (uint32_t)len ? (uint32_t)len - off : 0u;   /* (a header longer than the packet: nothing to decode) */
         }
         k = bt_sbc_frame(&bt_pp, &bt_pn, bt_frame);
         if (k <= 0) { bt_pn = 0; continue; }                    /* the packet is done (or refused: the rest is dropped) */
@@ -301,13 +365,35 @@ static void bt_decode(void)
     if (bt_pkt && !bt_pn) { a2dp_media_free_packet(bt_pkt); bt_pkt = 0; }
 }
 
+/* ---- the isr line's figures (bt_isr_line): the interrupts keep the longest and the sum of the current second, the main loop
+ * turns the second over here (the interrupts off for a few loads and stores) and keeps the last whole second's */
+static uint32_t bt_isr_t_s;
+static struct { uint32_t br_max, br_sum, slot_max, slot_sum, t5, gap, in; } bt_isr_last;
+static uint32_t bt_rng[2];                                      /* the random source (0x13B00), read once a second while visible */
+static void bt_isr_second(uint32_t now)
+{
+    if (now - bt_isr_t_s < 1000u) return;
+    bt_isr_t_s = now;
+    local_irq_disable();
+    bt_isr_last.br_max = bt_isr_t_br.max_s; bt_isr_last.br_sum = bt_isr_t_br.sum_s; bt_isr_t_br.max_s = bt_isr_t_br.sum_s = 0;
+    bt_isr_last.slot_max = bt_isr_t_slot.max_s; bt_isr_last.slot_sum = bt_isr_t_slot.sum_s; bt_isr_t_slot.max_s = bt_isr_t_slot.sum_s = 0;
+    bt_isr_last.t5 = px_t5_in_s; px_t5_in_s = 0;
+    bt_isr_last.gap = a_irq_gap_s; a_irq_gap_s = 0;
+    bt_isr_last.in = a_irq_in_s; a_irq_in_s = 0;
+    local_irq_enable();
+    /* the pairing's keys and numbers come from this register (lmp.c get_random_number, uECC's default): one that reads 0 or never
+     * changes would make the key exchange fail silently, and the pairing stop in an assertion's loop */
+    if (bt_st >= BT_VISIBLE && bt_st != BT_FAILED) { bt_rng[1] = bt_rng[0]; bt_rng[0] = *(volatile uint32_t *)0x13B00u; }
+}
+
 void ble_test_poll(void)
 {
     uint32_t now;
     ble_busy(1);
     ble_poll();
     ble_busy(0);
-    now = fm1_uptime_ms();
+    now = ble_ms();
+    bt_isr_second(now);
     if (bt_st == BT_STARTING && !bt_t_init && now - bt_t_start > 10000u) {   /* btstack_init not back in 10 s (the radio start-up
                                                                          * replay takes a few; a call that hangs is the stall watch's) */
         ble_wait = ble_task_waiting("btctrler");
@@ -432,12 +518,23 @@ static void bt_stall_line_pcs(char *out)
 
 /* visible, no link: "BT VIS IRQ 40:123 41:4567 EV 9 SCAN 1 V F BD 0B0B ADDR 024F1A2B3C4D UID 1 HEAP 9120 STUB 0 Q40 0 KICK 0
  * TX 0/592/2032 F0 RX 0/0/12272 F0" (out: 224 bytes) */
+/* the long lines are built here, then cut to the 223 characters out holds (ED_DIAG_LEN 224, the marquee's full[224]). One
+ * buffer for them all: they are built in the main loop only, one at a time, each copied out before it returns */
+static char bt_line_t[400];
+static void bt_line_out(char *out, const char *t)
+{
+    uint32_t i;
+    for (i = 0; i < 223u && t[i]; i++) out[i] = t[i];
+    out[i] = 0;
+}
+
 void ble_test_line(char *out)
 {
-    static char t[400];                                         /* (built here, then cut to the 223 characters out holds) */
+    char *const t = bt_line_t;
     char *o = t;
     uint32_t i;
     if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_regs(out); return; }
+    if (bt_st == BT_OFF) { o = ble__put(out, bt_off_by_key ? "BT OFF: REV HELD AT POWER-ON (THIS BOOT WITHOUT BLUETOOTH)" : "BT OFF"); *o = 0; return; }
     if (bt_st == BT_FAILED || bt_st == BT_STARTING) { ble_status_full(out); return; }
     o = ble__put(o, "BT VIS IRQ 40:"); o = bt__dec(o, bt_cnt_irq_br);
     o = ble__put(o, " 41:"); o = bt__dec(o, bt_cnt_irq_slot);
@@ -452,40 +549,58 @@ void ble_test_line(char *out)
     o = ble__put(o, " HEAP "); o = bt__dec(o, ble_heap_min_free());
     o = ble__put(o, " STUB "); o = bt__dec(o, bt_stub_calls);
     if (bt_stub_last) { *o++ = ' '; o = bt__lim(o, bt_stub_last, o + 40); }
-    o = ble__put(o, " Q40 "); o = bt__dec(o, (fm1_uptime_ms() - bt_q40_t) / 1000u);
+    o = ble__put(o, " Q40 "); o = bt__dec(o, (ble_ms() - bt_q40_t) / 1000u);
     o = ble__put(o, " KICK "); o = bt__dec(o, bt_kicks);
     o = bt_pool_text(o, " TX ", acl_tx_pool, acl_tx_pool_end);
     o = bt_pool_text(o, " RX ", acl_rx_pool, acl_rx_pool_end);
+    o = ble__put(o, " RNG "); o = bt__hex(o, bt_rng[0], 8); *o++ = '/'; o = bt__hex(o, bt_rng[1], 8);
     *o = 0;
-    for (i = 0; i < 223u && t[i]; i++) out[i] = t[i];
-    out[i] = 0;
+    bt_line_out(out, t);
 }
 
-/* a link: "BT LINK n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 1234 ER 0 PK 200 BUF 148 MS UND 0 RATE -0.04% DISC 0" */
-/* no phone linked: the tasks instead, "TASKS btapp S 01C0A1B0=0 q0, btctrler Q q0, btstack R q2, btencry Q q0" (state: R ready,
- * Q waiting for a message, S waiting on the semaphore or mutex at that address (= its count), D sleeping, X ended; q the
- * messages queued). A task that stays S with its queue growing is the one that is stuck */
+/* a link: "BT LINK n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 1234 ER 0 PK 200 BUF 148 MS UND 0 RATE -0.04% DISC 0 PD 0
+ * F A3012/C2344/S1876" (F: each task's stack never used, in bytes, after its initial: btApp, btCtrler, btStack) */
+/* no phone linked: the tasks instead, "TASKS btapp S 01C0A1B0=0 q0 F3012 P0, btctrler Q q0 F2344 P3, btstack R q2 F1876 P7"
+ * (state: R ready, Q waiting for a message, S waiting on the semaphore or mutex at that address (= its count), D sleeping,
+ * X ended; q the messages queued, F the bytes of its stack never used, P the most messages it had queued, OVF its stack's
+ * red zone was written: it nearly overflowed). A task that stays S with its queue growing is the one that is stuck */
 static void bt_tasks_line(char *out)
 {
     static const char st_ch[] = "FRQSDX";
     char *o = ble__put(out, "TASKS");
-    const char *name;
-    const void *w;
-    uint32_t i, st, qn;
-    for (i = 0; ble_task_info(i, &name, &st, &w, &qn); i++) {
-        if (!st) continue;
-        if (o > out + 180) break;
-        o = ble__put(o, i ? ", " : " "); o = bt__lim(o, name, o + 12);
-        *o++ = ' '; *o++ = st < 6u ? st_ch[st] : '?';
-        if (st == 3u && w) { *o++ = ' '; o = bt__hex(o, (uint32_t)(uintptr_t)w, 8); *o++ = '='; o = ble__num(o, *(const volatile int32_t *)w); }
-        o = ble__put(o, " q"); o = bt__dec(o, qn);
+    ble_task_info_t t;
+    uint32_t i;
+    for (i = 0; ble_task_info(i, &t); i++) {
+        if (!t.state) continue;
+        if (o > out + 160) break;
+        o = ble__put(o, i ? ", " : " "); o = bt__lim(o, t.name, o + 12);
+        *o++ = ' '; *o++ = t.state < 6u ? st_ch[t.state] : '?';
+        if (t.state == 3u && t.wait_on) { *o++ = ' '; o = bt__hex(o, (uint32_t)(uintptr_t)t.wait_on, 8); *o++ = '='; o = ble__num(o, *(const volatile int32_t *)t.wait_on); }
+        o = ble__put(o, " q"); o = bt__dec(o, t.queued);
+        o = ble__put(o, " F"); o = bt__dec(o, t.free);
+        o = ble__put(o, " P"); o = bt__dec(o, t.qpeak);
+        if (t.ovf) o = ble__put(o, " OVF");
     }
     *o = 0;
+}
+static char *bt_stacks_text(char *o)                            /* " F A3012/C2344/S1876": each task's stack never used */
+{
+    ble_task_info_t t;
+    uint32_t i, n = 0;
+    o = ble__put(o, " F");
+    for (i = 0; ble_task_info(i, &t); i++) {
+        if (!t.state) continue;
+        *o++ = n++ ? '/' : ' ';
+        *o++ = t.name[2] == 'a' ? 'A' : t.name[2] == 'c' ? 'C' : t.name[2] == 's' ? 'S' : t.name[2] == 'e' ? 'E' : '?';   /* btApp btCtrler btStack btEncry */
+        o = bt__dec(o, t.free);
+        if (t.ovf) *o++ = '!';
+    }
+    return o;
 }
 
 void ble_midi_line(char *out)
 {
-    char *o = out;
+    char *o = bt_line_t;
     int ms;
     if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_state(out); return; }
     if (bt_st < BT_LINKED) { bt_tasks_line(out); return; }     /* (the link's figures are all 0 until a phone is linked) */
@@ -507,7 +622,10 @@ void ble_midi_line(char *out)
     o = ble__put(o, " RATE "); if (pm < 0) { *o++ = '-'; pm = -pm; } o = bt__dec(o, (uint32_t)pm / 100u); *o++ = '.';
     *o++ = (char)('0' + (pm / 10) % 10); *o++ = (char)('0' + pm % 10); *o++ = '%';
     o = ble__put(o, " DISC "); o = bt__dec(o, bt_disc);
+    o = ble__put(o, " PD "); o = bt__dec(o, bt_pkt_dropped);
+    o = bt_stacks_text(o);
     *o = 0;
+    bt_line_out(out, bt_line_t);
 }
 
 /* the last events and the stand-ins called: "EV 3:03 3:06 3:27 ... STUB 2 name" */
@@ -548,13 +666,23 @@ static char *bt_msg_text(char *o, const bt_msg_t *m)
     for (j = 0; j < 5u; j++) o = bt__hex(o, m->b[j], 2);
     return o;
 }
+/* (test build 11: then WI, the waits refused inside an interrupt, WM, the waits the main loop asked for (a timer's callback:
+ * it cannot wait), CNF, the pairing confirmations sent, END, the last link's end: 05:rr a Disconnection Complete and its reason
+ * (13 the phone ended it, 08 supervision timeout, 22 LMP response timeout, 05 authentication failure), 03:ss a link that failed
+ * to come up and its status; and as many of the newest messages as fit) */
 void bt_hci_line(char *out)
 {
     char *o = ble__put(out, "HCI n ");
-    const uint32_t k = bt_msg_kept, m = k < BT_MSG_LAST ? k : BT_MSG_LAST;
-    uint32_t i;
+    const uint32_t k = bt_msg_kept;
+    uint32_t i, m, fit;
     o = bt__dec(o, bt_msg_n); o = ble__put(o, " ACL "); o = bt__dec(o, bt_msg_acl); o = ble__put(o, " NCP "); o = bt__dec(o, bt_msg_ncp);
     o = ble__put(o, " Q "); o = bt__dec(o, bt_q_peak); o = ble__put(o, " LOST "); o = bt__dec(o, bt_q_lost);
+    o = ble__put(o, " WI "); o = bt__dec(o, bt_wait_irq); o = ble__put(o, " WM "); o = bt__dec(o, bt_wait_main);
+    o = ble__put(o, " CNF "); o = bt__dec(o, bt_confirms);
+    if (bt_end) { o = ble__put(o, " END "); o = bt__hex(o, bt_end >> 8, 2); *o++ = ':'; o = bt__hex(o, bt_end & 0xFFu, 2); }
+    fit = o < out + 220 ? (uint32_t)(out + 220 - o) / 14u : 0u; /* (14 characters a message; the line holds 223) */
+    m = k < BT_MSG_LAST ? k : BT_MSG_LAST;
+    if (m > fit) m = fit;
     for (i = k - m; i < k; i++) o = bt_msg_text(o, &bt_msg_last[i % BT_MSG_LAST]);
     *o = 0;
 }
@@ -564,4 +692,40 @@ void bt_hci0_line(char *out)
     uint32_t i;
     for (i = 0; i < BT_MSG_FIRST && i < bt_msg_kept; i++) o = bt_msg_text(o, &bt_msg_first[i]);
     *o = 0;
+}
+
+/* the interrupts against the audio (test build 11): "ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2905/3120 AI 1710/2620 C1 1 G 0
+ * NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0". Times in microseconds: for the baseband's two interrupts
+ * (40, 41) the longest in the last second, the longest since boot and the time they took in the last second; T5 the 10 kHz
+ * timer's longest (last second / since boot); AG the longest gap between two audio interrupts (2,902 when on time: more means the
+ * audio interrupt started late) and AI its longest stay (last second / since boot). Then the DSP: C1 the second core runs (0: one
+ * core), G why it is off (fm1_cpu1.h FM1_CPU1_*: 0 it is not; 1 a misread, 2 a job not back within 8 ms, 4 a fault: these three
+ * retired it in this boot and bar it at every start until a power-off; 3 barred at start; 5 no answer at start), NAM 1 the NAM
+ * amp runs on both cores, LD the load and PK its peak (since the last full preset change / since boot) in %, XR the late blocks,
+ * CL the clipped ones, WC the wet lane's cut blocks, BYP bypassed (over 85 % for 8 blocks), then the library's timers fired (TM),
+ * the pairing store's reads and writes (VM) and the stacks' red zones written (OVF) */
+static uint32_t bt_us(uint32_t ticks) { return ticks / FM1_TICKS_PER_US; }
+void bt_isr_line(char *out)
+{
+    char *o = ble__put(bt_line_t, "ISR 40:");
+    o = bt__dec(o, bt_us(bt_isr_last.br_max)); *o++ = '/'; o = bt__dec(o, bt_us(bt_isr_t_br.max)); *o++ = '/'; o = bt__dec(o, bt_us(bt_isr_last.br_sum));
+    o = ble__put(o, " 41:");
+    o = bt__dec(o, bt_us(bt_isr_last.slot_max)); *o++ = '/'; o = bt__dec(o, bt_us(bt_isr_t_slot.max)); *o++ = '/'; o = bt__dec(o, bt_us(bt_isr_last.slot_sum));
+    o = ble__put(o, " T5 "); o = bt__dec(o, bt_us(bt_isr_last.t5)); *o++ = '/'; o = bt__dec(o, bt_us(px_t5_in));
+    o = ble__put(o, " AG "); o = bt__dec(o, bt_us(bt_isr_last.gap)); *o++ = '/'; o = bt__dec(o, bt_us(a_irq_gap));
+    o = ble__put(o, " AI "); o = bt__dec(o, bt_us(bt_isr_last.in)); *o++ = '/'; o = bt__dec(o, bt_us(a_irq_in));
+    o = ble__put(o, " C1 "); o = bt__dec(o, a_c1);
+    o = ble__put(o, " G "); o = bt__dec(o, fm1_cpu1_gave_up);
+    o = ble__put(o, " NAM "); o = bt__dec(o, a_c1 ? (uint32_t)px_nam_dual(&g_eng) : 0u);
+    o = ble__put(o, " LD "); o = bt__dec(o, a_load);
+    o = ble__put(o, " PK "); o = bt__dec(o, a_peak); *o++ = '/'; o = bt__dec(o, a_peak_all);
+    o = ble__put(o, " XR "); o = bt__dec(o, a_xrun);
+    o = ble__put(o, " CL "); o = bt__dec(o, a_clip);
+    o = ble__put(o, " WC "); o = bt__dec(o, a_wcut);
+    o = ble__put(o, " BYP "); o = bt__dec(o, a_bypass);
+    o = ble__put(o, " TM "); o = bt__dec(o, ble_cnt_timer);
+    o = ble__put(o, " VM "); o = bt__dec(o, bt_vm_reads); *o++ = '/'; o = bt__dec(o, bt_vm_writes);
+    o = ble__put(o, " OVF "); o = bt__dec(o, bt_stack_ovf);
+    *o = 0;
+    bt_line_out(out, bt_line_t);
 }

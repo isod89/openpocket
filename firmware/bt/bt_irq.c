@@ -12,8 +12,12 @@
  * btctrler.a, Apache-2.0): the work stays in the library's own functions, which are ordinary ones (bredr_link_rx_irq_handler,
  * bredr_link_timeout_irq_handler, link_conn_super_timeout, and the slot timers' callbacks). The offsets are those of the
  * library's types (struct bredr_table = bd_base, 4,196 bytes; struct bredr_link_var = bredr_link_v, 104 bytes), the same as
- * bsp/chip/fm1_bredr.h's independent reading (frame n at 368 + 180 n, rx_clkn at 52 and 54 in the frame). */
+ * bsp/chip/fm1_bredr.h's independent reading (frame n at 368 + 180 n, rx_clkn at 52 and 54 in the frame).
+ *
+ * Since test build 11 each handler also counts itself in bt_isr_depth (ble/ble_os.c: the library's cpu_in_irq(), so nothing it
+ * runs here waits) and times itself (the log's isr line, bt_a2dp.c: the longest, and the time a second, against the audio's) */
 #include <stdint.h>
+#include "fm1_time.h"
 
 extern uint8_t bd_base[];                                       /* struct bredr_table (bredr_frame.c, .bd_base) */
 extern uint8_t bredr_link_v[];                                  /* struct bredr_link_var (bredr_link.c) */
@@ -21,6 +25,8 @@ extern void bredr_link_rx_irq_handler(void *frame);
 extern void bredr_link_timeout_irq_handler(void);
 extern void link_conn_super_timeout(void *link);
 extern volatile uint32_t bt_cnt_irq_br, bt_cnt_irq_slot;        /* bt_a2dp.c (the log's IRQ 40 and 41) */
+extern volatile uint32_t bt_isr_depth;                          /* ble/ble_os.c */
+/* (bt_isr_t_br, bt_isr_t_slot, bt_isr_took: bt/bt_stall.h) */
 
 #define BT_BR_IPND (*(volatile uint32_t *)0x20010u)             /* IRQ 40's pending bits */
 #define BT_BR_IACK (*(volatile uint32_t *)0x20018u)             /* acknowledged by setting them (the library ORs them in) */
@@ -36,7 +42,9 @@ extern volatile uint32_t bt_cnt_irq_br, bt_cnt_irq_slot;        /* bt_a2dp.c (th
  * alarm (bit 9) runs the link layer's timeout handler */
 void bt_br_irq(void)
 {
+    const uint32_t t0 = fm1_ticks();
     uint32_t n;
+    bt_isr_depth++;
     bt_cnt_irq_br++;
     if (BT_BR_IPND & 1u) BT_BR_IACK |= 1u;
     if (BT_BR_IPND & 2u) {
@@ -55,13 +63,17 @@ void bt_br_irq(void)
     if (BT_BR_IPND & 512u) { BT_BR_IACK |= 512u; bredr_link_timeout_irq_handler(); }
     if (BT_BR_IPND & 2048u) BT_BR_IACK |= 2048u;
     if (BT_BR_IPND & 4u) BT_BR_IACK |= 4u;
+    bt_isr_depth--;
+    bt_isr_took(&bt_isr_t_br, fm1_ticks() - t0);
 }
 
 /* IRQ 41 (slot_timer_irq_handler): the link supervision check, then each slot timer that is pending: acknowledged; if it was
  * enabled, disabled and its callback run (a one-shot one also leaves the one-shot set) */
 void bt_slot_irq(void)
 {
+    const uint32_t t0 = fm1_ticks();
     uint32_t k;
+    bt_isr_depth++;
     bt_cnt_irq_slot++;
     link_conn_super_timeout(0);
     for (k = 0; k < 8u; k++) {
@@ -76,4 +88,6 @@ void bt_slot_irq(void)
         ((void (*)(void *))(uintptr_t)(fn & ~1u))((void *)(uintptr_t)t[0]);
         if (t[1] & 1u) BT_LV_ONESHOT = (uint8_t)(BT_LV_ONESHOT & ~(1u << k));   /* (read again: the callback may have re-armed it) */
     }
+    bt_isr_depth--;
+    bt_isr_took(&bt_isr_t_slot, fm1_ticks() - t0);
 }

@@ -6,7 +6,9 @@
  *
  * Tasks never run by themselves: ble_poll() (called from the main loop) resumes every task that is ready and returns
  * when all of them are waiting again. A task gives up the processor only inside os_taskq_pend, os_sem_pend,
- * os_mutex_pend or os_time_dly; interrupts only post messages and semaphores. */
+ * os_mutex_pend or os_time_dly. The library's interrupt code (the classic baseband's, bt/bt_irq.c) posts messages and
+ * semaphores, deletes timers and allocates and frees memory; it never waits here: inside it cpu_in_irq() is 1, the
+ * library's own test for "do not wait", and the waits refuse (the SDK's os_time_dly must not be called in an interrupt). */
 #include <stdint.h>
 #include <stddef.h>
 #include "fm1_irq.h"
@@ -38,11 +40,46 @@ void __local_irq_enable(void) { local_irq_enable(); }
 void sys_local_irq_disable(void) { local_irq_disable(); }
 void sys_local_irq_enable(void) { local_irq_enable(); }
 int cpu_irq_disabled(void) { return !(fm1_icfg() & 0x200u); }   /* icfg bit 9: the global enable that cli and sti clear and set */
+#if OP_BT_AUDIO
+/* The library asks cpu_in_irq() before each wait it may make (bredr_link_event: a full controller queue, retried after
+ * os_time_dly(2); __cmd_to_lmp_conn, lmp_malloc, bredr_tx_bulk_alloc, hci_packet_handler) and takes its "do not wait" path when it
+ * is 1. The classic baseband's interrupts run library code that reaches those waits (bt/bt_irq.c), so they count themselves
+ * here. Up to test build 10 this was always 0: a full queue in the interrupt would have spun for ever at its priority, above the
+ * audio and the stall watch (a watchdog reset, no record), or switched tasks inside the interrupt (an audio gap of 20 ms or
+ * more). The BLE image keeps 0: no interrupt of its calls the library's waits. */
+volatile uint32_t bt_isr_depth;
+int cpu_in_irq(void) { return bt_isr_depth != 0u; }
+static uint32_t bt_wait_irq, bt_wait_main;                      /* waits refused inside an interrupt; waits asked by the main loop */
+#define BLE_IN_IRQ() (bt_isr_depth != 0u)
+#define BLE_WAIT_IRQ() (bt_wait_irq++, BT_CRUMB("wait in irq"))
+#define BLE_WAIT_MAIN() (bt_wait_main++)
+#else
 int cpu_in_irq(void) { return 0; }
+#define BLE_IN_IRQ() 0
+#define BLE_WAIT_IRQ() ((void)0)
+#define BLE_WAIT_MAIN() ((void)0)
+#endif
+
+/* ---- the scheduler's clock. TIMER4 / 24000 (fm1_uptime_ms) jumps from 178,956 back to 0 every 178.957 s (a 32-bit count at
+ * 24 MHz), and a deadline set above 178,956 is never reached: up to test build 10 every periodic timer stopped for good at the
+ * first wrap, and a task asleep across it never woke. This one extends TIMER4 at each call (ble_poll calls it far more often
+ * than every 178 s) and wraps at 2^32 ms. Main loop and tasks only (no interrupt calls it: no lock) */
+static uint32_t ble_ms_t4, ble_ms_n, ble_ms_rem;
+uint32_t ble_ms(void)
+{
+    const uint32_t t = FM1_T4_CNT, d = t - ble_ms_t4;
+    ble_ms_t4 = t;
+    ble_ms_n += d / 24000u;
+    ble_ms_rem += d % 24000u;
+    if (ble_ms_rem >= 24000u) { ble_ms_rem -= 24000u; ble_ms_n++; }
+    return ble_ms_n;
+}
+static uint32_t ble_deadline(uint32_t ms) { const uint32_t d = ble_ms() + ms; return d ? d : 1u; }   /* (0 means none) */
 
 /* ---- heap: first fit with coalescing on free, 8-byte aligned, one static pool */
 #ifndef HEAP_BYTES
-#define HEAP_BYTES (24u * 1024u)                    /* (the Bluetooth audio image sets its own, firmware/bt/bt_a2dp.c) */
+#define HEAP_BYTES (24u * 1024u)                    /* (both images: the Bluetooth audio image's use, I2S's 4 KB included, was under 5 KB in
+                                                     * test build 9; a build may pass -DHEAP_BYTES) */
 #endif
 typedef struct blk { uint32_t size; uint32_t used; } blk_t;       /* size includes this header */
 #if OP_BT_AUDIO     /* (bt/app-bt.ld places it in the classic baseband's 64 KB window, with the controller's own memory) */
@@ -147,8 +184,14 @@ typedef struct {
     int timed_out;
     uint32_t q[QWORDS];
     uint32_t qh, qw, qn;                             /* the next message's first word, the words queued, the messages queued */
+#if OP_BT_AUDIO
+    uint32_t qpeak, ovf;                             /* the most messages queued; the red zone found written (an overflow) */
+    const char *cname;                               /* the name task_create was given: a constant string, so a crumb of it is
+                                                      * still valid after a reset (the stall record; name[] is cleared at boot) */
+#endif
     uint32_t stack[STACK_WORDS] __attribute__((aligned(8)));
 } task_t;
+#define BLE_RED_WORDS 16u                            /* the stack's lowest words: written only by a task about to overflow */
 static task_t tasks[MAXTASK] __attribute__((section(".noinit.ble_stack")));   /* in NOINIT, out of the 96 KB RAM (app.ld brackets it as _ble_stack_lo.._hi) */
 static task_t *cur;                                  /* the task being run, 0 in the scheduler */
 static uint32_t *sched_sp;
@@ -182,15 +225,22 @@ void ble_os_init(void)
     memset(tasks, 0, sizeof tasks);
     for (i = 0; i < MAXTASK; i++)
         for (k = 0; k < STACK_WORDS; k++) tasks[i].stack[k] = BLE_PAINT;
+    (void)ble_ms();                                  /* (the clock's start: TIMER4 now) */
+}
+static uint32_t ble_task_free(const task_t *t)       /* bytes never used at the bottom of a task's stack */
+{
+    uint32_t k;
+    for (k = 0; k < STACK_WORDS && t->stack[k] == BLE_PAINT; k++) ;
+    return k * 4u;
 }
 uint32_t ble_stack_min_free(void)                    /* bytes never used at the bottom of the deepest task's stack */
 {
-    uint32_t i, k, m = STACK_WORDS;
+    uint32_t i, k, m = STACK_WORDS * 4u;
     for (i = 0; i < MAXTASK; i++) {
-        for (k = 0; k < STACK_WORDS && tasks[i].stack[k] == BLE_PAINT; k++) ;
+        k = ble_task_free(&tasks[i]);
         if (tasks[i].state != T_FREE && k < m) m = k;
     }
-    return m * 4u;
+    return m;
 }
 
 int task_create(void (*fn)(void *), void *arg, const char *name)
@@ -204,6 +254,9 @@ int task_create(void (*fn)(void *), void *arg, const char *name)
         return -1;
     memset(&tasks[i], 0, sizeof(task_t) - sizeof(tasks[i].stack));
     strncpy(tasks[i].name, name, sizeof(tasks[i].name) - 1);
+#if OP_BT_AUDIO
+    tasks[i].cname = name;
+#endif
     tasks[i].fn = fn;
     tasks[i].arg = arg;
     tasks[i].sp = 0;                                 /* 0: not started, ble_poll enters task_body on first run */
@@ -222,13 +275,17 @@ int task_kill(const char *name)
 
 const char *os_current_task(void) { return cur ? cur->name : "main"; }
 #if OP_BT_AUDIO
-/* task i for the log (bt_a2dp.c): its name, state (T_*), what it waits on (a semaphore or mutex) and its queued messages */
-int ble_task_info(uint32_t i, const char **name, uint32_t *state, const void **wait_on, uint32_t *queued)
+/* task i for the log (bt_a2dp.c): its name, state (T_*), what it waits on (a semaphore or mutex), its queued messages, the
+ * bytes of its stack never used, the most messages it had queued, and whether its red zone was written */
+typedef struct { const char *name; uint32_t state; const void *wait_on; uint32_t queued, free, qpeak, ovf; } ble_task_info_t;
+int ble_task_info(uint32_t i, ble_task_info_t *r)
 {
     if (i >= MAXTASK) return 0;
-    *name = tasks[i].name; *state = tasks[i].state; *wait_on = tasks[i].wait_on; *queued = tasks[i].qn;
+    r->name = tasks[i].name; r->state = tasks[i].state; r->wait_on = tasks[i].wait_on; r->queued = tasks[i].qn;
+    r->free = ble_task_free(&tasks[i]); r->qpeak = tasks[i].qpeak; r->ovf = tasks[i].ovf;
     return 1;
 }
+static uint32_t bt_stack_ovf;                        /* red zones found written, all tasks */
 #endif
 /* what a task is blocked on, for the failure line: the semaphore or mutex address, or its state when it is not waiting on one */
 uint32_t ble_task_waiting(const char *name)
@@ -255,7 +312,8 @@ int os_taskq_post_type(const char *name, int type, int argc, int *argv)
     local_irq_disable();
     if (t->qw + 1u + n > QWORDS) {
 #if OP_BT_AUDIO
-        bt_q_lost++; BT_CRUMB(t->name);                         /* (a message lost: the full task's name in the crumbs) */
+        bt_q_lost++; BT_CRUMB(t->cname);                        /* (a post refused: the full task's name in the crumbs; the
+                                                                 * library retries some, from a task, after a sleep) */
 #endif
         local_irq_enable();
         return OS_Q_FULL;
@@ -268,6 +326,7 @@ int os_taskq_post_type(const char *name, int type, int argc, int *argv)
     t->qn++;
 #if OP_BT_AUDIO
     if (t->qn > bt_q_peak) bt_q_peak = t->qn;
+    if (t->qn > t->qpeak) t->qpeak = t->qn;
 #endif
     if (t->state == T_WAIT_Q)
         t->state = T_READY;
@@ -283,8 +342,11 @@ int os_taskq_pend(const char *fmt, int *argv, int argc)
 {
     uint32_t n, r, i;
     (void)fmt;
-    if (!cur)
+    if (BLE_IN_IRQ()) { BLE_WAIT_IRQ(); return OS_Q_EMPTY; }   /* (cur is the task the interrupt cut into: not its queue) */
+    if (!cur) {
+        BLE_WAIT_MAIN();
         return OS_TIMEOUT;
+    }
     for (;;) {
         local_irq_disable();
         if (cur->qn) {
@@ -308,11 +370,14 @@ int os_taskq_pend(const char *fmt, int *argv, int argc)
 
 void os_time_dly(int ticks)
 {
-    if (!cur)
+    if (BLE_IN_IRQ()) { BLE_WAIT_IRQ(); return; }
+    if (!cur) {
+        BLE_WAIT_MAIN();                             /* (a timer's callback, run by ble_poll: it cannot wait) */
         return;
+    }
     if (ticks < 1)
         ticks = 1;
-    cur->wake_ms = fm1_uptime_ms() + (uint32_t)ticks * OS_TICK_MS;
+    cur->wake_ms = ble_deadline((uint32_t)ticks * OS_TICK_MS);
     cur->state = T_SLEEP;
     task_yield();
 }
@@ -338,7 +403,7 @@ int os_sem_post(void *s)
 int os_sem_pend(void *s, int timeout)
 {
     sem_t *sm = s;
-    uint32_t until = timeout ? fm1_uptime_ms() + (uint32_t)timeout * OS_TICK_MS : 0;
+    uint32_t until = timeout ? ble_deadline((uint32_t)timeout * OS_TICK_MS) : 0;
     for (;;) {
         local_irq_disable();
         if (sm->count > 0) {
@@ -346,8 +411,14 @@ int os_sem_pend(void *s, int timeout)
             local_irq_enable();
             return 0;
         }
-        if (!cur || (until && (int32_t)(fm1_uptime_ms() - until) >= 0)) {
+        if (BLE_IN_IRQ()) {                          /* (taken if free, never waited for: the library then takes its other path) */
             local_irq_enable();
+            BLE_WAIT_IRQ();
+            return OS_TIMEOUT;
+        }
+        if (!cur || (until && (int32_t)(ble_ms() - until) >= 0)) {
+            local_irq_enable();
+            if (!cur) BLE_WAIT_MAIN();
             return OS_TIMEOUT;
         }
         cur->state = T_WAIT_SEM;
@@ -369,7 +440,8 @@ int os_mutex_pend(void *m, int timeout)
     sem_t *x = m;
     void *const me = cur ? (void *)cur : (void *)&sched_sp;
     int r;
-    if (x->depth && x->owner == me) { x->depth++; return 0; }
+    /* (not inside an interrupt: there cur is the task it cut into, which is not the one asking) */
+    if (!BLE_IN_IRQ() && x->depth && x->owner == me) { x->depth++; return 0; }
     r = os_sem_pend(m, timeout);
     if (r == 0) { x->owner = me; x->depth = 1; }
     return r;
@@ -398,7 +470,7 @@ static uint16_t timer_add(void *priv, void (*fn)(void *), uint32_t ms, int once)
     for (i = 0; i < MAXTIMER; i++)
         if (!timers[i].used) {
             timers[i].fn = fn; timers[i].priv = priv; timers[i].period = ms ? ms : 1u;
-            timers[i].due = fm1_uptime_ms() + timers[i].period; timers[i].once = (uint8_t)once; timers[i].used = 1;
+            timers[i].due = ble_ms() + timers[i].period; timers[i].once = (uint8_t)once; timers[i].used = 1;
             return (uint16_t)(i + 1);
         }
     return 0;
@@ -411,18 +483,18 @@ uint16_t usr_timeout_add(void *p, void (*f)(void *), uint32_t ms, uint8_t prio) 
 void sys_timer_del(uint16_t id) { timer_del(id); }
 void sys_timeout_del(uint16_t id) { timer_del(id); }
 void usr_timeout_del(uint16_t id) { timer_del(id); }
-void sys_timer_re_run(uint16_t id) { if (id && id <= MAXTIMER && timers[id - 1].used) timers[id - 1].due = fm1_uptime_ms() + timers[id - 1].period; }
+void sys_timer_re_run(uint16_t id) { if (id && id <= MAXTIMER && timers[id - 1].used) timers[id - 1].due = ble_ms() + timers[id - 1].period; }
 int sys_timer_modify(uint16_t id, uint32_t ms)
 {
     if (!id || id > MAXTIMER || !timers[id - 1].used)
         return -1;
     timers[id - 1].period = ms ? ms : 1u;
-    timers[id - 1].due = fm1_uptime_ms() + timers[id - 1].period;
+    timers[id - 1].due = ble_ms() + timers[id - 1].period;
     return 0;
 }
 void sys_timer_set_user_data(uint16_t id, void *p) { if (id && id <= MAXTIMER) timers[id - 1].priv = p; }
 void *sys_timer_get_user_data(uint16_t id) { return id && id <= MAXTIMER ? timers[id - 1].priv : 0; }
-uint32_t sys_timer_get_ms(void) { return fm1_uptime_ms(); }
+uint32_t sys_timer_get_ms(void) { return ble_ms(); }
 
 /* ble_isr.S: counts the baseband interrupts, then continues in the library's own interrupt function (saved here) */
 void (*ble_irq_target_ev)(void), (*ble_irq_target_rx)(void);
@@ -440,8 +512,9 @@ void request_irq(uint8_t idx, uint8_t prio, void (*handler)(void), uint8_t cpu)
     if (idx == 45u) { ble_irq_target_ev = handler; handler = ble_isr_ev; }   /* ble_isr.S counts, then runs the library's entry */
     else if (idx == 29u) { ble_irq_target_rx = handler; handler = ble_isr_rx; }
 #if OP_BT_AUDIO                                     /* the classic baseband's two lines, counted the same way (bt/bt_isr.S) */
-    /* ... and above the audio interrupt. The library asks for 2, stock's number, but stock's audio interrupt only moves DMA
-     * buffers (its DSP is a task), while OpenPocket's runs the whole DSP block at 3 (px_audio.h ALNK0), up to 2.9 ms. The
+    /* ... and above the audio interrupt. The library asks for 2, stock's number, below stock's audio interrupt (4), which runs
+     * its dry chain in blocks of 64 frames (1.45 ms); OpenPocket's runs its DSP work in blocks of 128 (px_audio.h ALNK0, at 3),
+     * up to 2.9 ms, twice the wait. The
      * classic handlers have slot deadlines (625 us: the page response, the alarm the link scheduler arms for its next task);
      * one handled late arms the next alarm in the past and the baseband falls silent (test build 3: IRQ 40 stopped, no link).
      * Above the 10 kHz timer (4) too: its USB poll can take a while. The handlers are short. Since test build 5 the line enters
@@ -462,21 +535,28 @@ void ble_poll(void)
 {
     int i, ran;
     fm1_wdt_feed();
-    uint32_t now = fm1_uptime_ms();
+    uint32_t now = ble_ms();
     for (i = 0; i < MAXTIMER; i++) {
         timer_t_ *t = &timers[i];
+        void (*fn)(void *) = 0;
+        void *priv = 0;
+        local_irq_disable();                         /* (claimed whole: an interrupt may delete a timer, sys_timeout_del) */
         if (t->used && (int32_t)(now - t->due) >= 0) {
+            fn = t->fn; priv = t->priv;
             if (t->once)
                 t->used = 0;
             else
                 t->due = now + t->period;
+        }
+        local_irq_enable();
+        if (fn) {
             ble_cnt_timer++;
-            t->fn(t->priv);
+            fn(priv);
         }
     }
     do {
         ran = 0;
-        now = fm1_uptime_ms();
+        now = ble_ms();
         for (i = 0; i < MAXTASK; i++) {
             task_t *t = &tasks[i];
             if ((t->state == T_SLEEP || t->state == T_WAIT_SEM) && t->wake_ms && (int32_t)(now - t->wake_ms) >= 0)
@@ -490,6 +570,13 @@ void ble_poll(void)
             else
                 ble_ctx_swap(&sched_sp, t->sp);
             cur = 0;
+#if OP_BT_AUDIO
+            if (!t->ovf) {                           /* the red zone: still painted, or the task came within 64 bytes of its end */
+                uint32_t k;
+                for (k = 0; k < BLE_RED_WORDS && t->stack[k] == BLE_PAINT; k++) ;
+                if (k < BLE_RED_WORDS) { t->ovf = 1; bt_stack_ovf++; BT_CRUMB_OS(t->cname); BT_CRUMB_OS("stack red zone written"); }
+            }
+#endif
         }
     } while (ran);
 }

@@ -58,6 +58,7 @@ export function parseBle(raw) {
   }
   if ((m = /^STARTING (\d+)/.exec(raw))) return { state: "starting", raw, stage: +m[1] };
   if (/^BT (VIS|START|OFF)\b/.test(raw)) return { state: "bt-audio", raw };   // the Bluetooth audio image (docs/BT-AUDIO-TEST.md)
+  if (raw.startsWith("STALL ")) return { state: "stall-record", raw };           // its record of an earlier stall, shown while Bluetooth is off
   return { state: raw.startsWith("OFF") ? "off" : "unknown", raw };
 }
 
@@ -115,7 +116,9 @@ export function judge(readings, scan) {
     return { result: "fail", reason: `Bluetooth start-up failed: ${what} (code ${ble.code}${ble.stage ? `, stage ${ble.stage}` : ""}${ble.wait ? `, controller waiting on ${ble.wait}` : ""}).` };
   }
   if (ble.state === "starting" || boot.stage !== STAGE_OK) return { result: "pending", reason: `Still starting: boot stage ${boot.stageName}, Bluetooth ${ble.raw}.` };
+  if (ble.state === "stall-record") return { result: "running", reason: "Bluetooth is off this boot; the bluetooth, link and trace lines show the record of an earlier stall (docs/BT-AUDIO-TEST.md, \"If it stalls\")." };
   if (ble.state === "bt-audio") {
+    if (/^BT OFF/.test(ble.raw)) return { result: "running", reason: /REV HELD/.test(ble.raw) ? "Bluetooth is off this boot (REV held at power-on): the boot without the radio, to compare the sound." : "Bluetooth is off." };
     const linked = /^BT (LINK|PLAY) n[1-9]/.test(now.link || "");
     return { result: "running", reason: `The Bluetooth audio image runs (${linked ? "a phone is linked" : "visible, no phone linked"}). Its lines are read by hand: docs/BT-AUDIO-TEST.md, "What you should see".` };
   }
@@ -154,8 +157,9 @@ async function read(access, timing) {
     return dev ? { time, level: "identity", id: dev.id, port: dev.name } : { time, level: "silent", port: ports[0].name };
   }
   try {
-    const [boot, last, ble, link, trace, hci, hci0] = await ed.diag();   // (hci, hci0: the Bluetooth audio image's HCI lines)
-    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0 };
+    // (hci, hci0: the Bluetooth audio image's HCI lines; isr, from its test build 11: the interrupts' times against the audio's, and the DSP)
+    const [boot, last, ble, link, trace, hci, hci0, isr] = await ed.diag();
+    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0, isr };
   } catch (e) {
     if (e.code !== "timeout") throw e;
     const r = await ed.request(C.PING).catch(() => null);
@@ -181,6 +185,7 @@ function show(r, prev, say) {
   if (r.trace) say(`trace      ${r.trace}`);
   if (r.hci) say(`hci        ${r.hci}`);
   if (r.hci0) say(`hci0       ${r.hci0}`);
+  if (r.isr) say(`isr        ${r.isr}`);
   if (ble.state !== "advertising") return;
   const before = prev?.level === "full" && prev.ble.state === "advertising" ? prev.ble : null;
   for (const k of ["i", "e", "r", "t", "s"]) say(`  ${k.padEnd(5)}${String(ble[k]).padEnd(10)}${(before ? `+${ble[k] - before[k]}` : "").padEnd(9)}${MEANING[k]}`);

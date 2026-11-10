@@ -35,7 +35,7 @@ uint32_t bt_sbc_payload(const uint8_t *pkt, uint32_t len)
     }
     off += 1u;                                                  /* the media payload's header: the number of frames */
     while (off < len && pkt[off] != 0x9Cu) off++;               /* (some phones pad: the demo looks for the sync byte) */
-    return off;
+    return off < len ? off : len;                               /* (contributors or an extension longer than the packet: nothing left) */
 }
 
 int bt_sbc_frame(const uint8_t **p, uint32_t *n, int16_t *mono)
@@ -63,7 +63,9 @@ int bt_sbc_frame(const uint8_t **p, uint32_t *n, int16_t *mono)
         if (k > BT_SBC_MAX_SAMPLES) k = BT_SBC_MAX_SAMPLES;
         for (i = 0; i < k; i++) mono[i] = (int16_t)(((int32_t)pcm[2u * i] + pcm[2u * i + 1u]) >> 1);
     } else {
-        k = bytes / 2u;                                         /* one channel, written at the stride of two (pcmStride) */
+        k = bytes / 4u;                                         /* one channel, written at the stride of two (pcmStride): the
+                                                                 * decoder counts both slots, so half its bytes are samples (up to
+                                                                 * test build 10 this read stale ones after each frame) */
         if (k > BT_SBC_MAX_SAMPLES) k = BT_SBC_MAX_SAMPLES;
         for (i = 0; i < k; i++) mono[i] = pcm[2u * i];
     }

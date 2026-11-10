@@ -78,8 +78,7 @@ BT_STUB_V(dut_rx_handler)
 /* btstack: gatt_client.c */
 BT_STUB_V(gatt_client_exit)
 BT_STUB_V(gatt_client_schedule)
-/* btctrler: link_layer.c */
-BT_STUB(short, get_ble_link_handle)
+/* btctrler: link_layer.c (get_ble_link_handle: not a stand-in since test build 11, bt_glue.c) */
 /* btstack: bt_audio.c */
 BT_STUB(char, get_esco_coder_busy_flag)
 /* btctrler: tws_pair.c */
@@ -199,7 +198,10 @@ BT_STUB_V(scan_disable_for_connect_timeout)
 /* btstack: sdp_master.c */
 BT_STUB(char, sdp_master_channel_disconnect)
 BT_STUB_V(sdp_master_init)
-BT_STUB(int, sdp_send_cmd_iotl)
+/* the SDP client's query: -1, "no SDP client", as the real one says without one (sdp_master.c, not linked). With 0, "started", the
+ * SDP server parks a phone's SDP channel until that query ends, which here it never does (sdp.c sdp_packet_handler; bt_cfg.c
+ * hid_conn_depend_on_dev_company). Its other callers ignore the value */
+int sdp_send_cmd_iotl(void) { bt_stub_calls++; bt_stub_last = "sdp_send_cmd_iotl"; BT_CRUMB("sdp_send_cmd_iotl"); return -1; }
 /* btstack: hfp_ag_profile.c */
 BT_STUB(int, setup_hfp_ag_esco_link)
 /* btstack: sm.c */

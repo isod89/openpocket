@@ -68,7 +68,10 @@ const uint8_t more_hfp_cmd_support = 0;
 const uint8_t adt_profile_support = 0;
 const uint8_t btstack_emitter_support = 0;                  /* a receiver, not a transmitter */
 const uint8_t hci_inquiry_support = 0;
-const uint8_t hid_conn_depend_on_dev_company = 1;
+/* 0, not the SDK's 1: with 1 the SDP server answers a phone whose maker it does not know yet (every phone: no store of devices)
+ * only after its own SDP client has asked the phone (sdp.c sdp_packet_handler), and that client (sdp_master.c) is not linked: the
+ * phone's SDP channel waited for ever and it never learnt there is an A2DP sink. Only HID and TWS read it otherwise */
+const uint8_t hid_conn_depend_on_dev_company = 0;
 const int CONFIG_BTSTACK_SUPPORT_AAC = 0;                   /* SBC only, as the stock firmware */
 
 /* HCI vendor commands an application defines in the SDK (TWS and background modes, never sent here): empty */

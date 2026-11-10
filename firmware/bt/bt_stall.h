@@ -47,3 +47,15 @@ static uint32_t bt_heap_fails, bt_heap_fail_size;
 static uint32_t bt_q_lost, bt_q_peak;
 /* every message posted to a task (ble/ble_os.c os_taskq_post_type), for the log's hci lines (bt_a2dp.c) */
 static void bt_taskq_spy(const char *task, int type, int argc, const int *argv);
+
+/* the time an interrupt handler took, in TIMER4 ticks (24 a microsecond): the longest this second and since boot, and the sum
+ * this second (the main loop turns the second over: bt_a2dp.c bt_isr_second). The classic baseband's two (bt/bt_irq.c); the
+ * audio's and the 10 kHz timer's are px_audio.h's and px_usb.h's. For the log's isr line */
+typedef struct { volatile uint32_t max_s, max, sum_s; } bt_isr_time_t;
+static bt_isr_time_t bt_isr_t_br, bt_isr_t_slot;
+static inline void bt_isr_took(bt_isr_time_t *s, uint32_t d)
+{
+    if (d > s->max_s) s->max_s = d;
+    if (d > s->max) s->max = d;
+    s->sum_s += d;
+}

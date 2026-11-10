@@ -43,8 +43,14 @@ static uint8_t *ota_scratch(void);              /* px_models.h: the upload stagi
 static uint8_t px_flash_ok;                     /* the flash is a 1 MiB SPI NOR: the update entry may stage */
 static volatile uint32_t px_t5_sub;
 
+#if OP_BLE_TEST
+static volatile uint32_t px_t5_in_s, px_t5_in;  /* its longest stay, this second and since boot, TIMER4 ticks (the log's isr line) */
+#endif
 void fm1_timer5_irq(void)                       /* 10 kHz; USB at 2 kHz */
 {
+#if OP_BLE_TEST
+    const uint32_t t0 = fm1_ticks();
+#endif
     fm1_timer5_ack();
 #if OP_BLE_TEST                                 /* a ble_poll that does not return: the crash screen says where (ble_status.h) */
     {
@@ -52,14 +58,25 @@ void fm1_timer5_irq(void)                       /* 10 kHz; USB at 2 kHz */
 #if OP_BT_AUDIO
         bt_stall_tick(stalled);                 /* (its last second sampled, the record completed when it fires) */
 #endif
-        if (stalled)
+        if (stalled) {
+#if DSP_CPU1
+            fm1_cpu1_nobar = 1;                 /* (this crash is the watch's own, not the second core's fault: no bar) */
+#endif
             FM1_VEC[FM1_IRQ_TIMER5] = (uint32_t)(uintptr_t)(fm1_fatal_stubs + 6u * FM1_IRQ_TIMER5);
+        }
     }
 #endif
     if (++px_t5_sub >= 5u) {
         px_t5_sub = 0;
         usb_poll();
     }
+#if OP_BLE_TEST
+    {
+        const uint32_t d = fm1_ticks() - t0;
+        if (d > px_t5_in_s) px_t5_in_s = d;
+        if (d > px_t5_in) px_t5_in = d;
+    }
+#endif
 }
 extern void isr_timer5(void);
 
