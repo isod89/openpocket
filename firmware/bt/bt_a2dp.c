@@ -72,6 +72,7 @@ extern uint8_t acl_tx_pool[], acl_tx_pool_end[], acl_rx_pool[], acl_rx_pool_end[
  * when the host registers). ble_test_poll puts bt_h4_spy in front of it. Each event's first 6 bytes are kept (code, length,
  * parameters: a Command Complete's opcode and status, a Disconnection Complete's reason...), the newest 11; Number of Completed
  * Packets, which comes with every packet sent, is only counted. */
+int ble_task_info(uint32_t i, const char **name, uint32_t *state, const void **wait_on, uint32_t *queued);   /* ble/ble_os.c */
 typedef void (*bt_h4_fn)(int type, uint8_t *p, int len);
 extern bt_h4_fn __h4_send_packet;
 static bt_h4_fn bt_h4_host;
@@ -469,11 +470,33 @@ void ble_test_line(char *out)
 }
 
 /* a link: "BT LINK n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 1234 ER 0 PK 200 BUF 148 MS UND 0 RATE -0.04% DISC 0" */
+/* no phone linked: the tasks instead, "TASKS btapp S 01C0A1B0=0 q0, btctrler Q q0, btstack R q2, btencry Q q0" (state: R ready,
+ * Q waiting for a message, S waiting on the semaphore or mutex at that address (= its count), D sleeping, X ended; q the
+ * messages queued). A task that stays S with its queue growing is the one that is stuck */
+static void bt_tasks_line(char *out)
+{
+    static const char st_ch[] = "FRQSDX";
+    char *o = ble__put(out, "TASKS");
+    const char *name;
+    const void *w;
+    uint32_t i, st, qn;
+    for (i = 0; ble_task_info(i, &name, &st, &w, &qn); i++) {
+        if (!st) continue;
+        if (o > out + 180) break;
+        o = ble__put(o, i ? ", " : " "); o = bt__lim(o, name, o + 12);
+        *o++ = ' '; *o++ = st < 6u ? st_ch[st] : '?';
+        if (st == 3u && w) { *o++ = ' '; o = bt__hex(o, (uint32_t)(uintptr_t)w, 8); *o++ = '='; o = ble__num(o, *(const volatile int32_t *)w); }
+        o = ble__put(o, " q"); o = bt__dec(o, qn);
+    }
+    *o = 0;
+}
+
 void ble_midi_line(char *out)
 {
     char *o = out;
     int ms;
     if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_state(out); return; }
+    if (bt_st < BT_LINKED) { bt_tasks_line(out); return; }     /* (the link's figures are all 0 until a phone is linked) */
     ms = bt_st == BT_PLAYING ? a2dp_media_get_remain_play_time(0) : 0;
     const int32_t base = (int32_t)(bt_ring.base ? bt_ring.base : 1u);   /* (32-bit: the firmware has no 64-bit division) */
     int32_t pm = ((int32_t)bt_ring.step - base) * 10000 / base;   /* 0.01 %; |step - base| <= 0.5 % of base */

@@ -128,9 +128,13 @@ uint32_t ble_heap_min_free(void) { return heap_min_free; }
 #ifndef STACK_WORDS
 #define STACK_WORDS 1024u                           /* 4 KB each: the radio start-up replay runs on one */
 #endif
-#define QDEPTH 16
-#define QARGS 12                                    /* type + up to 11 words */
-typedef struct { int v[QARGS]; } msg_t;
+/* each task's messages: a ring of words, the messages back to back as [n][type][n - 1 words], so a long one fits as well as many
+ * short ones. The library's messages carry data inline: the host task's events are the event's own bytes, (length + 3) / 4
+ * words (btstack_task.c hci_packet_handler), and it reads up to 32 words a message (os_taskq_pend(.., 32)); the controller's
+ * task reads 14, the encryption task 16. Up to test build 7 a message held 11 words after its type, so every event longer than
+ * 44 bytes reached the host cut short. The same 768 bytes a task as before. */
+#define QWORDS 192u
+#define QMSG_WORDS 33u                              /* the type and 32 words: the longest message kept whole */
 enum { T_FREE, T_READY, T_WAIT_Q, T_WAIT_SEM, T_SLEEP, T_DEAD };
 typedef struct {
     char name[16];
@@ -141,8 +145,8 @@ typedef struct {
     uint32_t wake_ms;                                /* T_SLEEP, and the timeout of the waits (0: none) */
     void *wait_on;
     int timed_out;
-    msg_t q[QDEPTH];
-    uint32_t qh, qn;
+    uint32_t q[QWORDS];
+    uint32_t qh, qw, qn;                             /* the next message's first word, the words queued, the messages queued */
     uint32_t stack[STACK_WORDS] __attribute__((aligned(8)));
 } task_t;
 static task_t tasks[MAXTASK] __attribute__((section(".noinit.ble_stack")));   /* in NOINIT, out of the 96 KB RAM (app.ld brackets it as _ble_stack_lo.._hi) */
@@ -217,6 +221,15 @@ int task_kill(const char *name)
 }
 
 const char *os_current_task(void) { return cur ? cur->name : "main"; }
+#if OP_BT_AUDIO
+/* task i for the log (bt_a2dp.c): its name, state (T_*), what it waits on (a semaphore or mutex) and its queued messages */
+int ble_task_info(uint32_t i, const char **name, uint32_t *state, const void **wait_on, uint32_t *queued)
+{
+    if (i >= MAXTASK) return 0;
+    *name = tasks[i].name; *state = tasks[i].state; *wait_on = tasks[i].wait_on; *queued = tasks[i].qn;
+    return 1;
+}
+#endif
 /* what a task is blocked on, for the failure line: the semaphore or mutex address, or its state when it is not waiting on one */
 uint32_t ble_task_waiting(const char *name)
 {
@@ -227,29 +240,35 @@ uint32_t ble_task_waiting(const char *name)
 int os_taskq_post_type(const char *name, int type, int argc, int *argv)
 {
     task_t *t = task_find(name);
-    msg_t *m;
-    int i;
+    uint32_t n, w, i;
     if (!t) {
 #if OP_BT_AUDIO
         bt_q_lost++; BT_CRUMB("taskq: no such task");
 #endif
         return OS_TASK_NOT_EXIST;
     }
+    if (argc < 0) argc = 0;
+    n = 1u + ((uint32_t)argc < QMSG_WORDS - 1u ? (uint32_t)argc : QMSG_WORDS - 1u);   /* the type and the words kept */
+#if OP_BT_AUDIO
+    if ((uint32_t)argc > QMSG_WORDS - 1u) BT_CRUMB("taskq: a message cut");
+#endif
     local_irq_disable();
-    if (t->qn == QDEPTH) {
+    if (t->qw + 1u + n > QWORDS) {
 #if OP_BT_AUDIO
         bt_q_lost++; BT_CRUMB(t->name);                         /* (a message lost: the full task's name in the crumbs) */
 #endif
         local_irq_enable();
         return OS_Q_FULL;
     }
+    w = (t->qh + t->qw) % QWORDS;
+    t->q[w] = n; w = (w + 1u) % QWORDS;
+    t->q[w] = (uint32_t)type; w = (w + 1u) % QWORDS;
+    for (i = 1; i < n; i++) { t->q[w] = (uint32_t)argv[i - 1u]; w = (w + 1u) % QWORDS; }
+    t->qw += 1u + n;
+    t->qn++;
 #if OP_BT_AUDIO
-    if (t->qn + 1u > bt_q_peak) bt_q_peak = t->qn + 1u;
+    if (t->qn > bt_q_peak) bt_q_peak = t->qn;
 #endif
-    m = &t->q[(t->qh + t->qn++) % QDEPTH];
-    m->v[0] = type;
-    for (i = 0; i < argc && i < QARGS - 1; i++)
-        m->v[1 + i] = argv[i];
     if (t->state == T_WAIT_Q)
         t->state = T_READY;
     local_irq_enable();
@@ -259,20 +278,23 @@ int os_taskq_post_type(const char *name, int type, int argc, int *argv)
 /* the SDK's os_taskq_pend blocks until a message is queued; argv[0] is the type, argv[1..] the words */
 int os_taskq_pend(const char *fmt, int *argv, int argc)
 {
-    msg_t m;
-    int i;
+    uint32_t n, r, i;
     (void)fmt;
     if (!cur)
         return OS_TIMEOUT;
     for (;;) {
         local_irq_disable();
         if (cur->qn) {
-            m = cur->q[cur->qh];
-            cur->qh = (cur->qh + 1u) % QDEPTH;
+            r = cur->qh;
+            n = cur->q[r]; r = (r + 1u) % QWORDS;
+            for (i = 0; i < n; i++) {                       /* (argc: the words the reader has room for) */
+                if ((int)i < argc) argv[i] = (int)cur->q[r];
+                r = (r + 1u) % QWORDS;
+            }
+            cur->qh = r;
+            cur->qw -= 1u + n;
             cur->qn--;
             local_irq_enable();
-            for (i = 0; i < argc && i < QARGS; i++)
-                argv[i] = m.v[i];
             return OS_TASKQ;
         }
         cur->state = T_WAIT_Q;

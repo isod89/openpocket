@@ -32,7 +32,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 7` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 8` (the number is the test build's).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
    as before. Nothing outside the application area is written.
 
@@ -92,6 +92,11 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 | `Q40` | seconds since IRQ 40 last rose. While a phone is searching it stays near 0; a large number means the scans have stopped |
 | `KICK` | times the pedal asked for its scans again because IRQ 40 had been silent for 5 s while visible (test build 4) |
 | `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations. While a phone is linked, `RX` must rise: the phone's packets wait there (test builds 1 to 5 never used it, see below) |
+
+While no phone is linked, the link line shows the Bluetooth tasks instead (test build 8): `TASKS btapp S 01C0A1B0=0 q0, btctrler
+Q q0, btstack R q2, btencry Q q0`, each task's state (`R` ready, `Q` waiting for a message, `S` waiting on the semaphore or
+mutex at that address, `=` its count, `D` sleeping, `X` ended) and `q` its queued messages. A task that stays `S` while its `q`
+grows is the stuck one: look its address up in `build-bt/symbols.txt`.
 
 The `hci` line (test build 7) is what the controller told the host: `EV` events, `NCP` the Number of Completed Packets among them
 (only counted), `ACL` data packets / bytes to the host, `Q` the deepest a task's message queue has been (of 16) and `LOST` the
