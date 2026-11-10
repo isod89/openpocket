@@ -1,26 +1,26 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-/* The classic baseband's two interrupts in the Bluetooth audio image, counted, exactly as ble/ble_isr.S counts the LE ones: count,
- * restore the two registers used, jump to the library's own interrupt entry (it saves the registers and ends in rti).
+/* The classic baseband's two interrupts in the Bluetooth audio image: OpenPocket's own entry, as bsp/chip/fm1_isr.S's FM1_ISR (save
+ * what a C call may clobber, flags first; call the plain C body; restore; csync; rti), around the C bodies of firmware/bt/bt_irq.c,
+ * which follow the library's two handlers and count the interrupts.
  *
- *   bt_isr_br    IRQ 40  the BR/EDR baseband (a packet received or sent, the alarm)   counts bt_cnt_irq_br
- *   bt_isr_slot  IRQ 41  the slot timers                                               counts bt_cnt_irq_slot
- * (ble/ble_os.c request_irq sets the targets up) */
-	.macro BT_ISR name, count, target
+ *   bt_isr_br    IRQ 40  the BR/EDR baseband (a packet received or sent, the alarm)   bt_br_irq
+ *   bt_isr_slot  IRQ 41  the slot timers                                               bt_slot_irq
+ *
+ * (Test builds 1 to 4 counted here and jumped into the library's own handlers, compiled with the "interrupt" attribute: those end
+ * without csync, and the counting stub's add ran before anything saved psr. Harmless below the audio interrupt; with the radio
+ * above it, the DSP they interrupted faulted. ble/ble_os.c request_irq installs these.) */
+	.macro BT_ISR name, body
 	.section .text.\name,"ax",@progbits
 	.globl \name
 \name:
-	sp += -4
-	[--sp] = {r1-r0}
-	r0 = \count
-	r1 = [r0+0]
-	r1 += 1
-	[r0+0] = r1
-	r0 = \target
-	r0 = [r0+0]
-	[sp+8] = r0
-	{r1-r0} = [sp++]
-	{pc} = [sp++]
+	[--sp] = {psr, rets, reti}
+	[--sp] = {r3-r0}
+	call \body
+	{r3-r0} = [sp++]
+	{psr, rets, reti} = [sp++]
+	csync
+	rti
 	.endm
 
-	BT_ISR bt_isr_br, bt_cnt_irq_br, bt_irq_target_br
-	BT_ISR bt_isr_slot, bt_cnt_irq_slot, bt_irq_target_slot
+	BT_ISR bt_isr_br, bt_br_irq
+	BT_ISR bt_isr_slot, bt_slot_irq

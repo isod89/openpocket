@@ -32,7 +32,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 4` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 5` (the number is the test build's).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
    as before. Nothing outside the application area is written.
 
@@ -124,7 +124,10 @@ The trace line ends with `CR`, the last calls the library made into the firmware
 
 0. **The radio's interrupts run above the audio's** (test build 4): the classic baseband's handlers have slot deadlines
    (625 µs) and OpenPocket's audio interrupt runs the whole DSP block (stock runs its DSP in a task, below the radio). A
-   heavy preset may run late more often while Bluetooth is busy: `op.mjs dsp` with and without music tells.
+   heavy preset may run late more often while Bluetooth is busy: `op.mjs dsp` with and without music tells. Since test build 5
+   they enter through OpenPocket's own interrupt entry (`firmware/bt/bt_isr.S`, flags saved first, `csync` before `rti`) and
+   C bodies that follow the library's two handlers (`firmware/bt/bt_irq.c`): the library's own handlers end without `csync`,
+   and in test build 4, above the audio, the DSP they interrupted faulted (the reverb, `VEC 1`, 0.5 s after the DSP started).
 
 1. **The pairing is forgotten at power-off.** Afterwards the phone says it cannot connect: forget `OpenPocket` in its Bluetooth
    settings and pair again.

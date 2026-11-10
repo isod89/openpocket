@@ -390,7 +390,8 @@ void request_irq(uint8_t idx, uint8_t prio, void (*handler)(void), uint8_t cpu)
      * buffers (its DSP is a task), while OpenPocket's runs the whole DSP block at 3 (px_audio.h ALNK0), up to 2.9 ms. The
      * classic handlers have slot deadlines (625 us: the page response, the alarm the link scheduler arms for its next task);
      * one handled late arms the next alarm in the past and the baseband falls silent (test build 3: IRQ 40 stopped, no link).
-     * Above the 10 kHz timer (4) too: its USB poll can take a while. The handlers are short. */
+     * Above the 10 kHz timer (4) too: its USB poll can take a while. The handlers are short. Since test build 5 the line enters
+     * OpenPocket's own entry and the C bodies of bt/bt_irq.c (the library's handler, kept in the target, is not called: see there) */
     else if (idx == 40u) { bt_irq_target_br = handler; handler = bt_isr_br; prio = BT_IRQ_PRIO; BT_CRUMB("request_irq 40"); }
     else if (idx == 41u) { bt_irq_target_slot = handler; handler = bt_isr_slot; prio = BT_IRQ_PRIO; BT_CRUMB("request_irq 41"); }
     else BT_CRUMB("request_irq");

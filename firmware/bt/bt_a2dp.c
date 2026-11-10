@@ -57,7 +57,7 @@ static int16_t bt_ring_mem[BT_RING_N] __attribute__((aligned(4), section(".bss.l
 enum { BT_OFF, BT_STARTING, BT_VISIBLE, BT_LINKED, BT_PLAYING, BT_FAILED };
 static volatile uint32_t bt_st;
 static uint16_t ble_conn;                                       /* (openpocket.c: a link is up, scroll the link line) */
-uint32_t bt_cnt_irq_br, bt_cnt_irq_slot;                        /* bt_isr.S: IRQ 40 and 41 */
+volatile uint32_t bt_cnt_irq_br, bt_cnt_irq_slot;               /* bt_irq.c: IRQ 40 and 41 */
 static volatile uint32_t bt_ev_n, bt_ev_hist[6], bt_ev_i;       /* the events, the last six: from << 12 | code << 4 */
 static volatile uint32_t bt_init_ok, bt_links, bt_enc, bt_a2dp_ch, bt_media, bt_disc;
 static volatile uint32_t bt_cmd_bits, bt_scans;                 /* for the app task: bit 0 = visible and connectable */
@@ -148,8 +148,7 @@ static void bt_stall_begin(void)
  * stack (crt0's ssp, fm1_guard.h fm1_sp_in_isr) and every OpenPocket interrupt entry starts with [--sp] = {psr, rets, reti}
  * (bsp/chip/fm1_isr.S; the same order the fault frame shows, bsp/chip/fm1_vec.S): reti, the interrupted code's PC, at the top
  * minus 12, its rets at minus 8. When this tick interrupted another interrupt, the top is still that interrupt's frame, so it
- * names the code under both: the stuck task. (The classic baseband's interrupts enter the library's own entry, whose frame is
- * not known: a sample taken under one of them is counted like any other and stands out as a pair that is not code.) */
+ * names the code under both: the stuck task. (The classic baseband's interrupts enter through bt/bt_isr.S, the same frame.) */
 static void bt_stall_sample(void)
 {
     const uint32_t *top = (const uint32_t *)(uintptr_t)_sstack_top;
