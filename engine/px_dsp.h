@@ -35,15 +35,22 @@ extern "C" {
 enum { PX_B_GATE, PX_B_COMP, PX_B_PITCH, PX_B_SFX, PX_B_DRIVE, PX_B_AMP, PX_B_CAB, PX_B_EQ, PX_B_MOD,
        PX_B_DELAY, PX_B_REVERB, PX_B_SYN, PX_NBLK };   /* SYN appended (v29): older presets keep their indices */
 #define PX_NPAR 5
-/* PX_OWN_FX: the Bluetooth audio image's own engine (firmware/build.sh sets it under OP_BT only). The drive and delay code
- * no model reaches is left out there: the same sound, bit for bit, in less RAM code (px_dsp.c; tests/ownfx_equiv.sh).
- * Without it (the release, the BLE image, the simulator) the engine is v42's, to the preprocessed text. */
+/* PX_OWN_FX: the Bluetooth audio image's own engine (firmware/build.sh sets it under OP_BT only), with its own effects:
+ * LOW OCTAVE, the 6th PITCH model, and PAD, the 12th SYN model (docs/OWN-FX.md), each appended to its block's models so
+ * every preset keeps its meaning. They are paid for there: the drive and delay code no model reaches is left out (the same
+ * sound, bit for bit, in less RAM code: px_dsp.c, tests/ownfx_equiv.sh), and their state sits in the 912 bytes the delay
+ * ring gives up (PX_DLY_N), so px_engine keeps its size and every other field its offset. Without it (the release, the BLE
+ * image, the simulator) the engine is v42's, to the preprocessed text. */
 #ifndef PX_OWN_FX
 #define PX_OWN_FX 0
 #endif
 
 enum { PX_CMP_SQUASH, PX_CMP_STUDIO, PX_CMP_OPTO, PX_CMP_SWELL, PX_CMP_COUNT };
+#if PX_OWN_FX
+enum { PX_PIT_OCTAVER, PX_PIT_POLYOCT, PX_PIT_WHAMMY, PX_PIT_HARMONY, PX_PIT_DETUNE, PX_PIT_LOWOCT, PX_PIT_COUNT };
+#else
 enum { PX_PIT_OCTAVER, PX_PIT_POLYOCT, PX_PIT_WHAMMY, PX_PIT_HARMONY, PX_PIT_DETUNE, PX_PIT_COUNT };
+#endif
 enum { PX_SFX_AUTOWAH, PX_SFX_LFOWAH, PX_SFX_RING, PX_SFX_CRUSH, PX_SFX_SLICER, PX_SFX_LOFI, PX_SFX_SYNTH, PX_SFX_COUNT };
 enum { PX_DRV_TS9, PX_DRV_KLON, PX_DRV_M77, PX_DRV_HM2, PX_DRV_COUNT };
 enum { PX_AMP_TWIN, PX_AMP_AC15, PX_AMP_JCM900, PX_AMP_JCM2000, PX_AMP_MARK4, PX_AMP_SHIRLEY, PX_AMP_PROMOD,
@@ -63,8 +70,13 @@ enum { PX_CAB_112JN, PX_CAB_212BLUE, PX_CAB_412GB, PX_CAB_412T75, PX_CAB_412V30,
  * slot), LOW CUT, HIGH CUT. */
 #define PX_IR_N   8
 #define PX_IR_LEN 1024
+#if PX_OWN_FX
+enum { PX_SYN_ORGAN, PX_SYN_CHURCH, PX_SYN_STRINGS, PX_SYN_CHOIR, PX_SYN_MONO, PX_SYN_PWM, PX_SYN_BASS,
+       PX_SYN_12STR, PX_SYN_ACOUSTIC, PX_SYN_SITAR, PX_SYN_BARI, PX_SYN_PAD, PX_SYN_COUNT };
+#else
 enum { PX_SYN_ORGAN, PX_SYN_CHURCH, PX_SYN_STRINGS, PX_SYN_CHOIR, PX_SYN_MONO, PX_SYN_PWM, PX_SYN_BASS,
        PX_SYN_12STR, PX_SYN_ACOUSTIC, PX_SYN_SITAR, PX_SYN_BARI, PX_SYN_COUNT };
+#endif
 enum { PX_EQ_5BAND, PX_EQ_GEQ, PX_EQ_PARAM, PX_EQ_COUNT };
 enum { PX_MOD_CHORUS, PX_MOD_DIMENSION, PX_MOD_FLANGER, PX_MOD_PHASE90, PX_MOD_STONE, PX_MOD_UNIVIBE,
        PX_MOD_OPTOTREM, PX_MOD_BIASTREM, PX_MOD_HARMTREM, PX_MOD_ROTARY, PX_MOD_VIBRATO, PX_MOD_COUNT };
@@ -144,8 +156,21 @@ typedef struct { float b0, b1, a1, z; } px_op;      /* first-order section (RC) 
 typedef struct { float x[6], y[6]; } px_hb;           /* v38: a half-band filter's all-pass sections (x2 up or down) */
 
 #define PX_PS_N 2048                   /* pitch shifter buffer (46 ms) */
+#if PX_OWN_FX
+#define PX_LO_DEC 8                    /* LOW OCTAVE: its low band at sr / 8 (5.5 kHz) */
+#define PX_PAD_DEC 8                   /* SYN PAD: its grains at sr / 8 */
+#define PX_PAD_NORM 1.05f              /* SYN PAD: MIX 50 = about the chord's own level */
+#ifndef PX_PAD_NG
+#define PX_PAD_NG 2                    /* SYN PAD: grains per slice, crossing over in phase (4: 4 dB of wobble, 2: 2.3) */
+#endif
+#endif
 #define PX_SYN_CB 1024                 /* SYN: ensemble / doubler / body reflections (23 ms) */
+#if PX_OWN_FX
+#define PX_DLY_N 44600                 /* the Bluetooth image: 456 ticks less, the room its own effects' state takes (the
+                                          longest delay stays 2 s: px_dsp.c rc_delay) */
+#else
 #define PX_DLY_N 45056                 /* v40: 2.04 s of delay at half rate (22.05 kHz, 16-bit: 88 KB), as the stock */
+#endif
 #define PX_RV_M 16384                  /* reverb memory: one 16-bit ring (32 KB) at half rate, laid out per type */
 #define PX_CABM 6                      /* cabinet detail: cone breakup modes (2-pole resonators) */
 #define PX_CABT 8                      /* cabinet detail: sparse taps (mic comb, back wave) */
@@ -183,8 +208,15 @@ typedef struct {
     struct { int32_t x1, x2, y1, y2; } fq_cab[8];    /* v37: the integer filters' state (px_fx_int) */
     uint8_t ord[PX_NBLK];
     /* synth / instrument block (v29) */
+#if PX_OWN_FX
+    union { float syn_buf[PX_PS_N]; int16_t syn_pad[2 * PX_PS_N]; };   /* shifter source (organ, strings...); */
+    int syn_w;                                        /* sitar: string combs; PAD: two of its three slices */
+    union { float syn_cb[PX_SYN_CB]; int16_t syn_pad2[2 * PX_SYN_CB]; };   /* PAD: its third slice */
+    int syn_cw;
+#else
     float syn_buf[PX_PS_N]; int syn_w;                 /* shifter source (organ, strings...); sitar: string combs */
     float syn_cb[PX_SYN_CB]; int syn_cw;
+#endif
     float syn_ph[3], syn_off[3][2], syn_inc[3], syn_W[3], syn_lvl[3]; int syn_nv;
     float syn_dry, syn_out, syn_d8;                    /* dry guitar, effect level, organ 8' (the guitar's own pitch) */
     float syn_env, syn_slow, syn_ea, syn_er, syn_sr2;  /* envelope (fast, slow), coefficients */
@@ -232,7 +264,35 @@ typedef struct {
     /* delay */
     /* v40: the line runs at half rate (22.05 kHz) like the stock firmware's delays: one tick every two samples (the two
      * inputs averaged in), the output interpolated between the last two ticks; times and depths below are in ticks */
+#if PX_OWN_FX
+    int16_t dly_buf[PX_DLY_N];
+    /* the Bluetooth image's own effects, in the 912 bytes the delay ring gives up (PX_DLY_N): every other field keeps its
+     * offset, px_engine its size (px_dsp.c checks both) */
+    /* LOW OCTAVE: the lowest note below RANGE (or of the whole chord: LOWEST) an octave down, the dry signal
+     * untouched. Its low band runs at sr / PX_LO_DEC. */
+    px_bq lo_aa[2], lo_sel[3], lo_hp;
+    int lo_k;
+    float lo_y0, lo_y1, lo_lp, lo_lpk, lo_dry, lo_lvl;
+    float lo_g, lo_gk, lo_gn, lo_glp, lo_glk;         /* GROWL: the octave alone through a soft clipper */
+    float lo_ax[8][2], lo_ay[8][2], lo_ad, lo_hr, lo_hi;   /* phase halving: the 90-degree pair, the half phase */
+    float lo_t[6], lo_tk;                             /* the tilt: the lowest note leads the phase */
+    int lo_np, lo_lowest;
+    float lo_bx[8][2], lo_by[8][2], lo_bd;            /* a second 90-degree pair, on the band before the tilt */
+    float lo_amp, lo_aatk, lo_arel, lo_c;             /* the octave's level, COMP */
+    /* PAD: a chord caught on a footswitch (px_pad_press) at sr / 8 into one of three 16-bit slices, played as
+     * overlapping grains; one slice fades in, one fades out, one records */
+    volatile uint32_t pad_press, pad_stop;            /* bumped by the UI and MIDI only (px_pad_press / px_pad_stop) */
+    uint32_t pad_seen_p, pad_seen_s;
+    int pad_k, pad_cap, pad_capr, pad_wait, pad_skip, pad_act;
+    float pad_g[3], pad_gt[3], pad_rk[3], pad_ka, pad_kr, pad_kf, pad_env, pad_slow, pad_mot, pad_mix;
+    int pad_attp;
+    float pad_gp[3][4], pad_gi[3][4], pad_gt0[3][4];  /* each slice's grains (PX_PAD_NG): start, step, phase */
+    px_bq pad_aa[2], pad_tone[2];
+    float pad_y0, pad_y1;
+    int dly_w, dly_type, dly_heads, rev_start, rev_cnt, dly_tick;
+#else
     int16_t dly_buf[PX_DLY_N]; int dly_w, dly_type, dly_heads, rev_start, rev_cnt, dly_tick;
+#endif
     float dly_xa, dly_y0, dly_y1, dly_dp;              /* the input kept for the tick, the last two outputs, the last tap */
     float dly_len, dly_tgt, dly_fb, dly_mix, dly_ph, dly_ph2, dly_inc, dly_inc2, dly_wow, dly_flut, dly_mod;
     float dly_sat, dly_satn, dly_q, dly_hn, dly_hf, rev_xf, dly_env, dly_rq;
@@ -296,6 +356,10 @@ enum { PX_CH_NONE, PX_CH_KNOBS, PX_CH_FULL };
 int  px_engine_change(const px_engine *e, const px_preset_t *p);
 void px_engine_knobs(px_engine *e, const px_preset_t *p);
 void px_engine_prepare(const px_engine *e, const px_preset_t *p);
+#if PX_OWN_FX
+void px_pad_press(px_engine *e);   /* PAD: catch the chord being played (the left footswitch, MIDI CC 64: firmware/ui.h) */
+void px_pad_stop(px_engine *e);    /* PAD: fade it out over RELEASE (the left footswitch held 0.7 s) */
+#endif
 void px_engine_process(px_engine *e, const float *in, float *out, int n);
 enum { PX_PART_ALL, PX_PART_PRE, PX_PART_NAM, PX_PART_POST };   /* v37: px_engine_part's stages (see px_dsp.c) */
 void px_engine_part(px_engine *e, const float *in, float *out, int n, int part);

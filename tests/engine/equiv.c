@@ -61,12 +61,21 @@ static uint64_t run(const px_preset_t *p, int wet, int frames, int bs)
     }
     return h;
 }
+/* the Bluetooth audio image's own types (engine/px_dsp.h PX_OWN_FX: LOW OCTAVE, PAD), appended to their blocks' lists, are
+ * left out of every section: an engine built with them plays exactly the runs of one built without (tests/equiv.sh with
+ * EQUIV_CFLAGS="-DPX_OWN_FX=1 ...", against the commit before them) */
+static int nt_stock(int b)
+{
+    int n = px_ntypes(b);
+    while (n > 1 && (!strcmp(px_type_name(b, n - 1), "LOW OCTAVE") || !strcmp(px_type_name(b, n - 1), "PAD"))) n--;
+    return n;
+}
 static void rnd_preset(px_preset_t *p, int nam)
 {
     px_preset_factory(p, (int)(rnd() % 24));
     for (int z = 0; z < PX_NBLK; z++) {
         p->on[z] = (rnd() & 3) != 0;
-        p->type[z] = (uint8_t)(rnd() % (unsigned)px_ntypes(z));
+        p->type[z] = (uint8_t)(rnd() % (unsigned)nt_stock(z));
         for (int k = 0; k < 5; k++) { const uint32_t r = rnd() % 8; p->p[z][k] = (uint8_t)(r == 0 ? 0 : r == 1 ? 100 : rnd() % 101); }
     }
     if (nam) { p->on[PX_B_AMP] = 1; p->type[PX_B_AMP] = PX_AMP_NAM; }
@@ -83,7 +92,7 @@ int main(int argc, char **argv)
                                     {100, 0, 50, 100, 0}, {30, 70, 10, 90, 60}, {80, 20, 95, 5, 40}, {65, 100, 0, 75, 100}};
     int n = 0;
     if (strchr(sec, 'A'))
-    for (int blk = 0; blk < PX_NBLK; blk++) for (int t = 0; t < px_ntypes(blk); t++) {
+    for (int blk = 0; blk < PX_NBLK; blk++) for (int t = 0; t < nt_stock(blk); t++) {
         if (blk == PX_B_AMP && t == PX_AMP_NAM) continue;
         for (int a = 0; a < 8; a++) {
             px_preset_t p; px_preset_factory(&p, 7);
@@ -93,7 +102,7 @@ int main(int argc, char **argv)
         }
     }
     if (strchr(sec, 'B'))
-    for (int blk = 0; blk < PX_NBLK; blk++) for (int t = 0; t < px_ntypes(blk); t++) for (int a = 0; a < 2; a++) {
+    for (int blk = 0; blk < PX_NBLK; blk++) for (int t = 0; t < nt_stock(blk); t++) for (int a = 0; a < 2; a++) {
         px_preset_t p; px_preset_factory(&p, 9);          /* BRIT CRUNCH: a fitted amp, a drive before it */
         for (int z = 0; z < PX_NBLK; z++) p.on[z] = (z == PX_B_AMP || z == PX_B_CAB || z == PX_B_DRIVE || z == blk);
         if (blk == PX_B_AMP && t == PX_AMP_NAM) continue;

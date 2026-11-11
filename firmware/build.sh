@@ -65,8 +65,9 @@ DSPDEF="-DPX_SR=44100.0f -DPX_OVERSAMPLE=4"
 HOTRAM=1; [ -n "$OP_BT" ] && HOTRAM=0
 [ -n "$OP_BLE" ] && DSPDEF="$DSPDEF -DPXN_LEAN=1 -DPXN_HOT_RAM=$HOTRAM -DPX_RUNS=0"
 [ -n "$OP_BT" ] && DSPDEF="$DSPDEF -DPX_LOOP_GUARD=1 -DPX_TABLES_RAM=1"   # test build 13: the reverb's loop ends at PX_MAX_BLOCK, counted; test build 20: the second core's tables in RAM (engine/px_dsp.c)
-# the Bluetooth audio image's own engine (engine/px_dsp.h PX_OWN_FX): the drive and delay code no model reaches left out (the
-# same sound in less RAM code). In DSPDEF, so that openpocket.c (g_eng, px_audio.h) and px_dsp.c see one px_engine
+# the Bluetooth audio image's own engine (engine/px_dsp.h PX_OWN_FX): its own effects, LOW OCTAVE and SYN PAD (docs/OWN-FX.md),
+# paid for by the drive and delay code no model reaches (left out: the same sound) and by the delay ring (456 ticks shorter).
+# In DSPDEF, so that openpocket.c (g_eng, px_audio.h) and px_dsp.c see one px_engine
 [ -n "$OP_BT" ] && DSPDEF="$DSPDEF -DPX_OWN_FX=1"
 INC="-I$HERE/inc -I$HERE/../engine"
 $CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $BLEDEF -DOP_GUARD_STACK=$GUARD_STACK $INC \
@@ -122,6 +123,9 @@ RAM_DSP="px_engine_process px_engine_part px_wet_run px_wet_swap dly_block rv_bl
   pxn_lp_split_now pxn_frame_ticks px_nam_lp_handed px_nam_lp_before pxn_lp_handed pxn_lp_before
   px_nam_lp_split_used px_nam_lp_force pxn_lp_split_used pxn_lp_force px_nam_lp_gave_up pxn_lp_gave_up
   ps_voice_run syn_organ_run pitch_run cab_detail_run gate_run comp_run bq_chain"
+# the Bluetooth audio image's own effects (PX_OWN_FX): LOW OCTAVE's octave, SYN PAD's grains (px_pad_press and px_pad_stop,
+# which the main loop calls, stay in the flash)
+[ -n "$OP_BT" ] && RAM_DSP="$RAM_DSP lo_fast pad_run pad_step pad_grain_new pad_flatten"
 # v40.2: the layer split's path (pxn_lp_*, lp_job, dsp_lp_run) in RAM; out of it, to make the room: the frame split's serving
 # (now the fallback when the layer split cannot run), the vector unit's paths (never chosen: slower) and the C versions
 # of the hand routines (used only if a hand one fails its start-up check: the network is then too slow anyway)

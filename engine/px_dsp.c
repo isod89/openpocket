@@ -372,9 +372,16 @@ static const char *const PN_POLY[] = {"DRY", "OCT -1", "OCT +1"};
 static const char *const PN_WHAM[] = {"SHIFT", "MIX", "GLIDE"};
 static const char *const PN_HARM[] = {"INTERVAL", "MIX"};
 static const char *const PN_DET[] = {"CENTS", "MIX"};
+#if PX_OWN_FX
+static const char *const PN_LOWOCT[] = {"RANGE", "OCT -1", "DRY", "GROWL", "COMP"};
+#endif
 static const tdef T_PITCH[PX_PIT_COUNT] = {
     {"OCTAVER", 5, PN_OCT}, {"POLY OCTAVE", 3, PN_POLY}, {"WHAMMY", 3, PN_WHAM}, {"HARMONIZER", 2, PN_HARM},
+#if PX_OWN_FX
+    {"DETUNE", 2, PN_DET}, {"LOW OCTAVE", 5, PN_LOWOCT}};
+#else
     {"DETUNE", 2, PN_DET}};
+#endif
 
 static const char *const PN_AWAH[] = {"SENS", "RESO", "RANGE", "DECAY"};
 static const char *const PN_LWAH[] = {"RATE", "DEPTH", "RESO", "CENTER"};
@@ -401,10 +408,17 @@ static const char *const PN_12S[] = {"OCTAVE", "DETUNE", "TONE"};
 static const char *const PN_ACO[] = {"BODY", "BASS", "TREBLE", "ROOM"};
 static const char *const PN_SIT[] = {"KEY", "BUZZ", "SYMPATH", "DECAY"};
 static const char *const PN_BAR[] = {"TUNE", "TONE", "MIX"};
+#if PX_OWN_FX
+static const char *const PN_PAD[] = {"ATTACK", "RELEASE", "TONE", "MOTION", "MIX"};
+#endif
 static const tdef T_SYN[PX_SYN_COUNT] = {
     {"ORGAN", 5, PN_ORG}, {"CHURCH ORGAN", 5, PN_CHU}, {"STRINGS", 5, PN_STR}, {"CHOIR", 5, PN_CHO},
     {"MONO SYNTH", 5, PN_MONO}, {"PWM SYNTH", 5, PN_PWM}, {"BASS SYNTH", 5, PN_BSY}, {"12-STRING", 3, PN_12S},
+#if PX_OWN_FX
+    {"ACOUSTIC", 4, PN_ACO}, {"SITAR", 4, PN_SIT}, {"BARITONE", 3, PN_BAR}, {"PAD", 5, PN_PAD}};
+#else
     {"ACOUSTIC", 4, PN_ACO}, {"SITAR", 4, PN_SIT}, {"BARITONE", 3, PN_BAR}};
+#endif
 
 /* drives: each knob has a role; the name shown comes from the role */
 enum { R_DRIVE, R_DIST, R_FUZZ, R_SUST, R_BOOST, R_TONE, R_TREBLE, R_LEVEL, R_BASS, R_VOICE, R_GATE, R_BIAS,
@@ -616,6 +630,70 @@ static void put_int(char *b, int v, int plus)
     b[i] = 0;
 }
 static void put_str(char *b, const char *s) { int i = 0; while (s[i] && i < 7) { b[i] = s[i]; i++; } b[i] = 0; }
+#if PX_OWN_FX
+/* LOW OCTAVE's RANGE: 0 = LOWEST (the OC-5's: the lowest note of any chord), 1..100 = the crossover, 80 Hz (only
+ * the lowest notes of the E string) to 400 Hz (up to G4) */
+static float lo_fc(int v) { return 80.0f * powf(5.0f, (float)(v < 1 ? 0 : v - 1) * (1.0f / 99.0f)); }
+static void lo_note(char *b, int v)                   /* the note at the crossover: "D#3", or LOWEST */
+{
+    if (v < 1) { put_str(b, "LOWEST"); return; }
+    static const char *const NM[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    int m = (int)(69.5f + 17.31234f * logf(lo_fc(v) / 440.0f));   /* 12 log2(f / 440) + 69, rounded */
+    put_str(b, NM[m % 12]);
+    int i = 0; while (b[i]) i++;
+    b[i++] = (char)('0' + m / 12 - 1); b[i] = 0;
+}
+static void lo_db(char *b, float db)                   /* "+6 DB", "0 DB", "-12 DB" */
+{
+    put_int(b, (int)(db + (db >= 0.0f ? 0.5f : -0.5f)), 1);
+    int i = 0; while (b[i]) i++;
+    b[i++] = ' '; b[i++] = 'D'; b[i++] = 'B'; b[i] = 0;
+}
+/* LOW OCTAVE's other knobs in plain values: OCT -1 and DRY in dB against the note (OCT -1 50 = 0 dB, DRY 100 =
+ * 0 dB), GROWL the drive into its clipper in dB, COMP its ratio (the octave's level change for the note's, 1.1:1 to
+ * 10:1); OFF at 0 */
+static void lo_text(char *b, int k, int v)
+{
+    const float x = (float)v * 0.01f;
+    if (v <= 0) { put_str(b, "OFF"); return; }
+    switch (k) {
+    case 1: lo_db(b, 8.685889f * logf(2.0f * x)); return;            /* 20 log10 */
+    case 2: lo_db(b, 8.685889f * logf(x)); return;
+    case 3: lo_db(b, 8.685889f * logf(1.0f + 24.0f * x)); return;
+    default: {
+        int r10 = (int)(10.0f / (1.0f - 0.9f * x) + 0.5f);          /* the ratio, in tenths */
+        int i = 0;
+        if (r10 >= 100) { b[i++] = (char)('0' + r10 / 100); b[i++] = (char)('0' + (r10 / 10) % 10); }
+        else { b[i++] = (char)('0' + r10 / 10); b[i++] = '.'; b[i++] = (char)('0' + r10 % 10); }
+        b[i++] = ':'; b[i++] = '1'; b[i] = 0;
+    }
+    }
+}
+/* PAD's knobs: ATTACK 0.1 .. 6 s (the swell, and the crossing into a new chord), RELEASE 0.2 .. 10 s (the fade when
+ * stopped), TONE 300 .. 2400 Hz, MOTION the grains' detune 0 .. 15 cents, MIX the pad's level (0 DB at 50) */
+static float pad_att_s(float x) { return 0.1f + x * x * 5.9f; }
+static float pad_rel_s(float x) { return 0.2f + x * x * 9.8f; }
+static float pad_tone_hz(float x) { return 300.0f * powf(8.0f, x); }
+static void pad_text(char *b, int k, int v)
+{
+    const float x = (float)v * 0.01f;
+    int i = 0;
+    switch (k) {
+    case 0: case 1: {                                  /* "0.1 S" .. "9.9 S", "10 S" */
+        int d = (int)((k ? pad_rel_s(x) : pad_att_s(x)) * 10.0f + 0.5f);
+        if (d >= 100) { b[i++] = (char)('0' + d / 100); b[i++] = (char)('0' + (d / 10) % 10); }
+        else { b[i++] = (char)('0' + d / 10); b[i++] = '.'; b[i++] = (char)('0' + d % 10); }
+        b[i++] = ' '; b[i++] = 'S'; b[i] = 0;
+    } return;
+    case 2: put_int(b, (int)(pad_tone_hz(x) / 10.0f + 0.5f) * 10, 0); while (b[i]) i++;
+        b[i++] = ' '; b[i++] = 'H'; b[i++] = 'Z'; b[i] = 0; return;
+    case 3: if (v <= 0) { put_str(b, "OFF"); return; }
+        put_int(b, (int)(x * 15.0f + 0.5f), 0); while (b[i]) i++;
+        b[i++] = ' '; b[i++] = 'C'; b[i++] = 'T'; b[i] = 0; return;
+    default: lo_text(b, 1, v); return;                /* as LOW OCTAVE's OCT -1: 0 DB at 50 */
+    }
+}
+#endif
 static const char *const NOTE_TXT[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 static int syn_key_idx(int v) { int i = v * 12 / 101; return i < 0 ? 0 : (i > 11 ? 11 : i); }
 static float syn_att_ms(float x) { return 10.0f + x * x * 1490.0f; }     /* STRINGS / CHOIR attack */
@@ -697,6 +775,10 @@ int px_param_text(int b, int t, int k, int v, char *buf)
         if (t == PX_PIT_HARMONY && k == 0) { put_str(buf, HARM_TXT[harm_idx(v)]); return 1; }
         if (t == PX_PIT_WHAMMY && k == 0) { float st = (x - 0.5f) * 48.0f; put_int(buf, (int)(st + (st >= 0 ? 0.5f : -0.5f)), 1); return 1; }
         if (t == PX_PIT_DETUNE && k == 0) { put_int(buf, (int)(3.0f + x * 27.0f + 0.5f), 0); return 1; }
+#if PX_OWN_FX
+        if (t == PX_PIT_LOWOCT && k == 0) { lo_note(buf, v); return 1; }
+        if (t == PX_PIT_LOWOCT && k <= 4) { lo_text(buf, k, v); return 1; }
+#endif
         break;
     case PX_B_SFX:
         if (t == PX_SFX_CRUSH && k == 0) { put_int(buf, 16 - (int)(x * 14.0f + 0.5f), 0); return 1; }
@@ -720,6 +802,9 @@ int px_param_text(int b, int t, int k, int v, char *buf)
         if (t == PX_SYN_12STR && k == 1) { put_int(buf, (int)(x * 15.0f + 0.5f), 0); return 1; }
         if (t == PX_SYN_SITAR && k == 0) { put_str(buf, NOTE_TXT[syn_key_idx(v)]); return 1; }
         if (t == PX_SYN_BARI && k == 0) { put_int(buf, syn_bari_st(v), 0); return 1; }
+#if PX_OWN_FX
+        if (t == PX_SYN_PAD) { pad_text(buf, k, v); return 1; }
+#endif
         break;
     case PX_B_DELAY:
         if (k == 0) { put_int(buf, (int)(dly_ms(t, v) + 0.5f), 0); int i = 0; while (buf[i]) i++;
@@ -985,6 +1070,34 @@ static void rc_pitch(px_engine *e)
         e->ps_nv = 1; e->ps_dry = 1.0f; e->ps_lvl[0] = f01(q[1]) * 1.1f;
         e->ps_W[0] = r < 1.0f ? 1400.0f : 1100.0f; e->ps_inc[0] = (1.0f - r) / e->ps_W[0];
     } break;
+#if PX_OWN_FX
+    case PX_PIT_LOWOCT: {                              /* the lowest note below RANGE an octave down, the rest dry */
+        static const float QB6[3] = {0.5176f, 0.7071f, 1.9319f};   /* 6th-order Butterworth (an 8th: +1.5 ms) */
+        const float sd = sr / (float)PX_LO_DEC;
+        e->lo_lowest = q[0] < 1;
+        const float fc = e->lo_lowest ? 600.0f : lo_fc(q[0]);
+        bq_lowpass(&e->lo_aa[0], sr, 700.0f, 0.5412f); /* 4th-order Butterworth: nothing folds back at sr / 8 */
+        bq_lowpass(&e->lo_aa[1], sr, 700.0f, 1.3066f);
+        for (int i = 0; i < 3; i++) bq_lowpass(&e->lo_sel[i], sd, fc, QB6[i]);   /* steep at RANGE */
+        bq_highpass(&e->lo_hp, sd, 50.0f, 0.7071f);   /* rumble and thumps kept out of the octave (-10 dB at 30 Hz) */
+        e->lo_lpk = onepole_k(sr, 1.0f / (2.0f * PI_F * 900.0f));   /* after the x8 interpolation: its images */
+        /* the tilt: one-pole low-passes at 60 Hz, -6 dB an octave each above it, so that of two notes the lower
+         * one leads the phase (4: a fifth above is 10 dB down; LOWEST, 6: 16 dB, a fourth 11 dB, anywhere on the
+         * neck). The level comes from the band before the tilt: a pluck's tilted start settles in 20 ms. */
+        e->lo_np = e->lo_lowest ? 6 : 4;
+        e->lo_tk = onepole_k(sd, 1.0f / (2.0f * PI_F * 60.0f));
+        e->lo_aatk = onepole_k(sd, 0.0003f); e->lo_arel = onepole_k(sd, 0.025f);   /* the level: up at once, down in 25 ms */
+        e->lo_c = 0.9f * f01(q[4]);                    /* COMP: 0 .. 0.9 of the way to an even level */
+        e->lo_lvl = f01(q[1]) * 2.0f; e->lo_dry = f01(q[2]);
+        {   /* GROWL (the OC-3's DRIVE, on the octave only): tanh(k o), as loud as the clean octave at 0.25, then
+             * smoothed above 2 kHz; mixed in with the knob, so 0 leaves the octave exactly as it is */
+            float g = f01(q[3]);
+            e->lo_g = g; e->lo_gk = 1.0f + 24.0f * g;
+            e->lo_gn = 0.25f / px_tanh(0.25f * e->lo_gk);
+            e->lo_glk = onepole_k(sr, 1.0f / (2.0f * PI_F * 2000.0f));
+        }
+    } break;
+#endif
     default: {                                         /* doubler: +c and -c cents */
         float c = 3.0f + f01(q[0]) * 27.0f, m = f01(q[1]);
         float r0 = expf(c * 0.000577623f), r1 = expf(-c * 0.000577623f);
@@ -1795,7 +1908,12 @@ static void rc_delay(px_engine *e)
     const uint8_t *q = p->p[PX_B_DELAY];
     int t = p->type[PX_B_DELAY] % PX_DLY_COUNT;
     float len = dly_ms(t, q[0]) * 0.001f * sr;
+#if PX_OWN_FX   /* the ring 456 ticks shorter (px_dsp.h): TIME's top, 2,000 ms, is 44,100 ticks; TAPE's deepest wow and flutter
+                 * read 364 further back (44,464), within the 44,600 */
+    if (len > (float)(PX_DLY_N - 500)) len = (float)(PX_DLY_N - 500);
+#else
     if (len > (float)(PX_DLY_N - 600)) len = (float)(PX_DLY_N - 600);
+#endif
     if (e->dly_len < 1.0f || e->dly_type != t) { e->dly_len = len; e->rev_cnt = 0; e->rev_start = e->dly_w; }
     e->dly_type = t;
     e->dly_tgt = len;
@@ -1962,6 +2080,13 @@ static void rc_syn(px_engine *e)
         for (int i = 0; i < 6; i++) bq_reset(&e->syn_f[i]);
         memset(e->syn_buf, 0, sizeof e->syn_buf); memset(e->syn_cb, 0, sizeof e->syn_cb);
         e->syn_f0 = 0.0f; e->syn_per = 0.0f; e->syn_p1 = e->syn_p2 = 0.0f;
+#if PX_OWN_FX
+        e->pad_capr = -1; e->pad_act = -1; e->pad_k = 0; e->pad_y0 = e->pad_y1 = 0.0f; e->pad_attp = 0;
+        e->pad_env = e->pad_slow = 0.0f;
+        for (int r = 0; r < 3; r++) { e->pad_g[r] = e->pad_gt[r] = 0.0f; for (int g = 0; g < PX_PAD_NG; g++) e->pad_gt0[r][g] = (float)g / (float)PX_PAD_NG; }
+        e->pad_seen_p = e->pad_press; e->pad_seen_s = e->pad_stop;   /* presses made before: forgotten */
+        for (int i = 0; i < 2; i++) { bq_reset(&e->pad_aa[i]); bq_reset(&e->pad_tone[i]); }
+#endif
     }
     e->syn_nv = 0; e->syn_dry = 0.0f; e->syn_d8 = 0.0f; e->syn_out = 1.0f; e->syn_nf = 0; e->syn_plvl = 0.0f;
     e->syn_clk = 0.0f; e->syn_cdep[0] = e->syn_cdep[1] = 0.0f;
@@ -2069,6 +2194,20 @@ static void rc_syn(px_engine *e)
         bq_bandpass(&e->syn_f[0], sr, 2800.0f, 1.3f); bq_bandpass(&e->syn_f[1], sr, 500.0f, 0.7f);
         e->syn_dry = 1.0f; e->syn_out = 0.7f;
     } break;
+#if PX_OWN_FX
+    case PX_SYN_PAD: {                                 /* a chord held on a footswitch: grains at sr / 8 */
+        const float sd = sr / (float)PX_PAD_DEC;
+        bq_lowpass(&e->pad_aa[0], sr, 2200.0f, 0.5412f); bq_lowpass(&e->pad_aa[1], sr, 2200.0f, 1.3066f);
+        const float fc = pad_tone_hz(c);
+        bq_lowpass(&e->pad_tone[0], sr, fc, 0.5412f); bq_lowpass(&e->pad_tone[1], sr, fc, 1.3066f);
+        e->pad_ka = onepole_k(sd, pad_att_s(a) / 3.0f);      /* ~95% of the way in ATTACK */
+        e->pad_kr = onepole_k(sd, pad_rel_s(b) / 3.0f);
+        e->pad_kf = onepole_k(sd, 0.01f);                    /* a slice dropped to record into: 30 ms */
+        e->pad_mot = d * 0.0087f;                            /* 15 cents */
+        e->pad_mix = f * 2.0f * PX_PAD_NORM;
+        e->syn_dry = 1.0f;
+    } break;
+#endif
     default: {                                         /* baritone: the whole guitar a few semitones down */
         syn_voice(e, 0, (float)syn_bari_st(q[0]), 1400.0f, c);
         bq_lowshelf(&e->syn_f[0], sr, 180.0f, b * 6.0f); bq_highshelf(&e->syn_f[1], sr, 3500.0f, -b * 4.0f);
@@ -2140,8 +2279,14 @@ void px_engine_set(px_engine *e, const px_preset_t *p)
 static PX_RCONST uint32_t GL_F[] PX_RTAB(gl_f) = {
     GLF_(cmp_make), GLF_(cmp_mix), GLF_(cmp_k),
     GLF_(oct_dry), GLF_(oct_s1), GLF_(oct_s2), GLF_(oct_up), GLF_(ps_dry), GLF_(ps_lvl[0]), GLF_(ps_lvl[1]),
+#if PX_OWN_FX
+    GLF_(lo_dry), GLF_(lo_lvl), GLF_(lo_g), GLF_(lo_gk), GLF_(lo_gn), GLF_(lo_c),   /* LOW OCTAVE */
+#endif
     GLF_(sfx_mix), GLF_(sfx_c), GLF_(sfx_d),
     GLF_(syn_dry), GLF_(syn_out), GLF_(syn_d8), GLF_(syn_plvl), GLF_(syn_lvl[0]), GLF_(syn_lvl[1]), GLF_(syn_lvl[2]),
+#if PX_OWN_FX
+    GLF_(pad_mix),                                     /* SYN PAD */
+#endif
     GLF_(drv_gain), GLF_(drv_level), GLF_(drv_blend), GLF_(drv_mix), GLF_(drv_shelf_lo),
     GLF_(amp_g[0]), GLF_(amp_g[1]), GLF_(amp_g[2]), GLF_(amp_g[3]), GLF_(amp_out), GLF_(nam_in_g),
     GLF_(cab_g),
@@ -2154,6 +2299,10 @@ static PX_RCONST uint32_t GL_F[] PX_RTAB(gl_f) = {
 #undef GLF_
 #define GL_N ((int)(sizeof GL_F / sizeof GL_F[0]))
 typedef char px_gl_room[GL_N <= PX_GL_MAX ? 1 : -1];
+#if PX_OWN_FX   /* the effects' state fills the 912 bytes the delay ring gave up: every other field keeps its offset, the
+                 * engine its size (the POOL has 40 bytes free in the Bluetooth image: firmware/bt/app-bt.ld) */
+typedef char px_ownfx_room[offsetof(px_engine, dly_w) - offsetof(px_engine, dly_buf) == 2u * 45056u ? 1 : -1];
+#endif
 #define GLP(e, i) ((float *)((char *)(e) + GL_F[i]))
 
 static int nam_model_of(const px_preset_t *p) { return px_nam_model(p->p[PX_B_AMP][0]); }
@@ -2696,6 +2845,56 @@ PX_INL static inline float ps_voice_al(float *buf, int w, float *ph, float *off,
     float s = lfo_sin(a * 0.5f), g = s * s;
     return rd_frac(buf, PX_PS_N - 1, pa) * g + rd_frac(buf, PX_PS_N - 1, pb) * (1.0f - g);
 }
+#if PX_OWN_FX
+/* LOW OCTAVE's fast octave: phase halving. Two allpass chains 90 degrees apart (Olli Niemitalo's coefficients,
+ * 90 +- 0.7 degrees from 30 Hz to 1 kHz at sr / 8, 3.6 ms at the low E) make the low band a turning arrow, z; the
+ * octave is an arrow turning half as fast, h, kept in step by h <- unit(h + unit(z) conj(h)) every sample (the
+ * half-way arrow between h and h turned as far as z turned), and given z's length. No buffer to read from: the
+ * octave is as late as the filters in front of it. It follows one note: with two in the band it gives neither. */
+static const float LO_HC[8] = {0.47940087f, 0.87621849f, 0.97659759f, 0.99749926f,      /* the squares, chain A */
+                               0.16175850f, 0.73302893f, 0.94534970f, 0.99059916f};     /* chain B */
+static inline float lo_ap(float x, float c, float *xh, float *yh)   /* y = c (x + y[n-2]) - x[n-2] */
+{
+    float y = c * (x + yh[1]) - xh[1];
+    xh[1] = xh[0]; xh[0] = x; yh[1] = yh[0]; yh[0] = y;
+    return y;
+}
+#define LO_REF 0.1f                                    /* COMP brings the octave towards this level */
+#define LO_FLOOR 0.002f                                /* and stops raising it below this one (-54 dB) */
+static __attribute__((noinline)) float lo_fast(px_engine *e, float a)   /* (RAM code: firmware/build.sh RAM_DSP) */
+{
+    float ua = a, ub = a;                              /* the band's own level: its 90-degree pair, z's length */
+    for (int i = 0; i < 4; i++) ua = lo_ap(ua, LO_HC[i], e->lo_bx[i], e->lo_by[i]);
+    for (int i = 4; i < 8; i++) ub = lo_ap(ub, LO_HC[i], e->lo_bx[i], e->lo_by[i]);
+    const float A = sqrtf(ub * ub + e->lo_bd * e->lo_bd);
+    e->lo_bd = ua;
+    e->lo_amp += (A - e->lo_amp) * (A > e->lo_amp ? e->lo_aatk : e->lo_arel);
+    float t = a;                                       /* the tilt: the lowest note in the band leads the phase */
+    for (int i = 0; i < e->lo_np; i++) { e->lo_t[i] += (t - e->lo_t[i]) * e->lo_tk; t = e->lo_t[i]; }
+    float pa = t, pb = t;
+    for (int i = 0; i < 4; i++) pa = lo_ap(pa, LO_HC[i], e->lo_ax[i], e->lo_ay[i]);
+    for (int i = 4; i < 8; i++) pb = lo_ap(pb, LO_HC[i], e->lo_ax[i], e->lo_ay[i]);
+    const float re = pb, im = e->lo_ad;                /* chain A a sample later: 90 degrees behind chain B */
+    e->lo_ad = pa;
+    const float m2 = re * re + im * im;
+    float hr = e->lo_hr, hi = e->lo_hi;
+    if (m2 > 1e-20f) {
+        const float inv = 1.0f / sqrtf(m2), wr = re * inv, wi = im * inv;
+        if (hr * hr + hi * hi < 0.5f) { hr = 1.0f; hi = 0.0f; }
+        const float gr = hr + wr * hr + wi * hi, gi = hi + wi * hr - wr * hi;   /* h + unit(z) conj(h) */
+        const float gn = gr * gr + gi * gi;
+        if (gn > 1e-6f) { const float n = 1.0f / sqrtf(gn); hr = gr * n; hi = gi * n; }
+    }
+    e->lo_hr = hr; e->lo_hi = hi;
+    float amp = e->lo_amp;
+    if (e->lo_c > 0.0f) {                              /* COMP: amp^(1-c), towards LO_REF; closes below LO_FLOOR */
+        amp *= powf(LO_REF / (amp > LO_FLOOR ? amp : LO_FLOOR), e->lo_c);
+        if (e->lo_amp < LO_FLOOR) { const float x = e->lo_amp * (1.0f / LO_FLOOR); amp *= x * x; }
+    }
+    return amp * hr;
+}
+
+#endif
 
 
 /* ---- SYN: synth / instrument, one sample ---- */
@@ -2772,6 +2971,152 @@ static inline int syn_track(px_engine *e, float x)
     e->syn_prev = b;
     return trig;
 }
+#if PX_OWN_FX
+/* ---- SYN PAD: the chord caught on the footswitch, held as overlapping grains ---- */
+#define PX_PAD_L 2048                                  /* a slice: 372 ms at sr / 8, 16 bits */
+#define PX_PAD_G 882                                   /* a grain: 160 ms */
+#define PX_PAD_SKIP 441                                /* after a pick attack heard while recording: 80 ms */
+static inline int16_t *pad_slice(px_engine *e, int r) { return r < 2 ? e->syn_pad + r * PX_PAD_L : e->syn_pad2; }
+static inline float pad_rand(px_engine *e)             /* 0 .. 1 */
+{
+    e->syn_rnd = e->syn_rnd * 1664525u + 1013904223u;
+    return (float)(e->syn_rnd >> 9) * (1.0f / 8388608.0f);
+}
+/* A new grain starts where it is in phase with the grain playing loudest now (the one nearest the middle of its
+ * window): 24 starts 8 samples apart from a random one (35 ms: two periods of the low E, at sr / 8), then +-4 by
+ * one, compared over 48 samples. Grains out of phase beat (the level wobbled 5 dB); in phase they do not. */
+static float px_pad_ref[48] PX_LO(px_pad_ref);       /* (the grain search's reference: off the second core's 2.8 KB stack) */
+static __attribute__((noinline)) void pad_grain_new(px_engine *e, int r, int g)
+{
+    const int16_t *sl = pad_slice(e, r);
+    const int hi = PX_PAD_L - (int)(PX_PAD_G * 1.01f) - 3;
+    e->pad_gi[r][g] = 1.0f + e->pad_mot * (2.0f * pad_rand(e) - 1.0f);
+    int lead = -1; float bw = 0.0f;
+    for (int i = 0; i < PX_PAD_NG; i++) {
+        if (i == g) continue;
+        const float w = lfo_sin(e->pad_gt0[r][i] * 0.5f);
+        if (w * w > bw) { bw = w * w; lead = i; }
+    }
+    int base = (int)(pad_rand(e) * (float)(hi - 24 * 8 - 4));
+    if (lead < 0 || bw < 0.25f) { e->pad_gp[r][g] = (float)base; return; }
+    float *const ref = px_pad_ref;
+    const float lp = e->pad_gp[r][lead] + e->pad_gt0[r][lead] * (float)PX_PAD_G * e->pad_gi[r][lead];
+    for (int j = 0; j < 48; j++) {
+        int i0 = (int)(lp + (float)j * e->pad_gi[r][lead]);
+        ref[j] = (float)sl[i0 < PX_PAD_L - 1 ? i0 : PX_PAD_L - 1];
+    }
+    int best = base; float bc = -1e30f;
+    for (int pass = 0; pass < 2; pass++) {
+        const int lo = pass ? best - 4 : base, n = pass ? 9 : 24, st = pass ? 1 : 8;
+        int b2 = best;
+        for (int k = 0; k < n; k++) {
+            const int c0 = lo + k * st;
+            if (c0 < 0 || c0 > hi) continue;
+            float acc = 0.0f, en = 1.0f;
+            for (int j = 0; j < 48; j += 2) { const float v = (float)sl[c0 + j]; acc += v * ref[j]; en += v * v; }
+            acc /= sqrtf(en);
+            if (acc > bc) { bc = acc; b2 = c0; }
+        }
+        best = b2;
+    }
+    e->pad_gp[r][g] = (float)best;
+}
+/* A caught chord still decays over its slice (a strum: about 3 dB in 372 ms), so grains from its start would play
+ * louder than grains from its end: each eighth of the slice is brought to the slice's mean level, the gain moving
+ * linearly between their centres. Once per catch. */
+static __attribute__((noinline)) void pad_flatten(int16_t *sl)
+{
+    float rm[8], mean = 0.0f;
+    for (int b = 0; b < 8; b++) {
+        float a = 0.0f;
+        for (int i = 0; i < PX_PAD_L / 8; i++) { const float v = (float)sl[b * (PX_PAD_L / 8) + i]; a += v * v; }
+        rm[b] = sqrtf(a / (float)(PX_PAD_L / 8)) + 1.0f; mean += rm[b] * 0.125f;
+    }
+    for (int i = 0; i < PX_PAD_L; i++) {
+        float pos = ((float)i + 0.5f) / (float)(PX_PAD_L / 8) - 0.5f;
+        int b0 = (int)pos; if (pos < 0.0f) { b0 = 0; pos = 0.0f; } if (b0 > 6) { b0 = 6; pos = 7.0f; }
+        const float fr = pos - (float)b0;
+        float g = mean / (rm[b0] + (rm[b0 + 1] - rm[b0]) * fr);
+        g = g > 2.0f ? 2.0f : g < 0.5f ? 0.5f : g;
+        float v = (float)sl[i] * g;
+        v = v > 32767.0f ? 32767.0f : v < -32767.0f ? -32767.0f : v;
+        sl[i] = (int16_t)v;
+    }
+}
+void px_pad_press(px_engine *e) { e->pad_press++; }   /* the UI and MIDI only: the audio side never writes these */
+void px_pad_stop(px_engine *e) { e->pad_stop++; }
+static __attribute__((noinline)) void pad_step(px_engine *e, float a)   /* one sample at sr / 8 */
+{
+    const uint32_t pp = e->pad_press, ps = e->pad_stop;
+    if (ps != e->pad_seen_s) {                         /* held footswitch: everything fades over RELEASE */
+        e->pad_seen_s = ps;
+        for (int r = 0; r < 3; r++) { e->pad_gt[r] = 0.0f; e->pad_rk[r] = e->pad_kr; }
+        e->pad_capr = -1;
+    }
+    if (pp != e->pad_seen_p) {                         /* a press: record the chord from now into a free slice */
+        e->pad_seen_p = pp;
+        if (e->pad_capr < 0) {
+            int r = -1;
+            for (int i = 0; i < 3; i++) if (i != e->pad_act && (r < 0 || e->pad_g[i] < e->pad_g[r])) r = i;
+            e->pad_capr = r;
+            e->pad_gt[r] = 0.0f; e->pad_rk[r] = e->pad_kf;   /* (if it was still fading out: dropped quickly) */
+        }
+        e->pad_wait = 1; e->pad_cap = 0; e->pad_skip = 0;
+    }
+    {   /* a pick attack: the envelope jumps over its slow average */
+        const float m = a < 0.0f ? -a : a;
+        e->pad_env = m > e->pad_env ? m : e->pad_env + (m - e->pad_env) * 0.006f;
+        e->pad_slow += (e->pad_env - e->pad_slow) * 0.0006f;
+    }
+    const int att = e->pad_env > 1.8f * e->pad_slow + 0.01f, edge = att && !e->pad_attp;
+    e->pad_attp = att;
+    if (e->pad_capr >= 0) {
+        const int r = e->pad_capr;
+        if (e->pad_wait) { if (e->pad_g[r] < 1e-4f) { e->pad_g[r] = 0.0f; e->pad_wait = 0; } }
+        else if (edge && e->pad_cap < PX_PAD_L / 2) { e->pad_cap = 0; e->pad_skip = PX_PAD_SKIP; }   /* strummed */
+        else if (e->pad_skip > 0) e->pad_skip--;
+        else {
+            float v = a * 16384.0f;
+            v = v > 32767.0f ? 32767.0f : v < -32767.0f ? -32767.0f : v;
+            pad_slice(e, r)[e->pad_cap++] = (int16_t)v;
+            if (e->pad_cap >= PX_PAD_L) {              /* caught: it swells in, the one before fades out */
+                pad_flatten(pad_slice(e, r));
+                if (e->pad_act >= 0) { e->pad_gt[e->pad_act] = 0.0f; e->pad_rk[e->pad_act] = e->pad_ka; }
+                e->pad_act = r; e->pad_gt[r] = 1.0f; e->pad_rk[r] = e->pad_ka; e->pad_capr = -1;
+                for (int g = 0; g < PX_PAD_NG; g++) { e->pad_gt0[r][g] = (float)g / (float)PX_PAD_NG; pad_grain_new(e, r, g); }
+            }
+        }
+    }
+    float y = 0.0f;
+    for (int r = 0; r < 3; r++) {
+        e->pad_g[r] += (e->pad_gt[r] - e->pad_g[r]) * e->pad_rk[r];
+        if (e->pad_gt[r] == 0.0f && e->pad_g[r] < 1e-5f) e->pad_g[r] = 0.0f;
+        if (e->pad_g[r] == 0.0f || r == e->pad_capr) continue;
+        const int16_t *sl = pad_slice(e, r);
+        float acc = 0.0f;
+        for (int g = 0; g < PX_PAD_NG; g++) {          /* NG grains, 1/NG apart: their windows sum to NG / 2 */
+            float t = e->pad_gt0[r][g];
+            const float pos = e->pad_gp[r][g] + t * (float)PX_PAD_G * e->pad_gi[r][g];
+            const int i0 = (int)pos;
+            const float fr = pos - (float)i0, s = lfo_sin(t * 0.5f);
+            acc += ((float)sl[i0] + (float)(sl[i0 + 1] - sl[i0]) * fr) * s * s;
+            t += 1.0f / (float)PX_PAD_G;
+            if (t >= 1.0f) { t -= 1.0f; pad_grain_new(e, r, g); }
+            e->pad_gt0[r][g] = t;
+        }
+        y += acc * e->pad_g[r];
+    }
+    e->pad_y0 = e->pad_y1; e->pad_y1 = y * (2.0f / (float)PX_PAD_NG / 16384.0f);
+}
+static __attribute__((noinline)) float pad_run(px_engine *e, float x)
+{
+    const float a = bq_run(&e->pad_aa[1], bq_run(&e->pad_aa[0], x));
+    if (++e->pad_k >= PX_PAD_DEC) { e->pad_k = 0; pad_step(e, a); }
+    float o = e->pad_y0 + (e->pad_y1 - e->pad_y0) * ((float)e->pad_k * (1.0f / (float)PX_PAD_DEC));
+    o = bq_run(&e->pad_tone[1], bq_run(&e->pad_tone[0], o));
+    return x + o * e->pad_mix + e->dn;
+}
+#endif
 PX_INL static inline float syn_run(px_engine *e, int t, float x)
 {
     float y = 0.0f;
@@ -2937,6 +3282,10 @@ PX_INL static inline float syn_run(px_engine *e, int t, float x)
         }
         return (y + sum * e->syn_sym) * e->syn_out + e->dn;
     }
+#if PX_OWN_FX
+    case PX_SYN_PAD:
+        return pad_run(e, x);
+#endif
     default: {                                         /* baritone */
         e->syn_buf[e->syn_w] = x;
         y = x * e->syn_dry + syn_shift(e, 0) * e->syn_lvl[0];
@@ -3673,7 +4022,11 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
             syn_organ_run(e, syn_t == PX_SYN_ORGAN, xb, n, strim);
             goto faded;
         }
+#if PX_OWN_FX   /* (LOW OCTAVE runs sample by sample, below) */
+        if (sblk == PX_B_PITCH && p->on[PX_B_PITCH] && pit_t != PX_PIT_OCTAVER && pit_t != PX_PIT_LOWOCT) {
+#else
         if (sblk == PX_B_PITCH && p->on[PX_B_PITCH] && pit_t != PX_PIT_OCTAVER) {
+#endif
             pitch_run(e, pit_t == PX_PIT_WHAMMY, xb, n, strim);
             goto faded;
         }
@@ -3738,6 +4091,25 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
                     float u = px_abs(bq_run(&e->oct_bp, x));
                     u = bq_run(&e->oct_uphp, u);
                     x = x * e->oct_dry + s1 * e->oct_s1 + s2 * e->oct_s2 + u * e->oct_up;
+#if PX_OWN_FX
+                } else if (pit_t == PX_PIT_LOWOCT) {
+                    float a = bq_run(&e->lo_aa[1], bq_run(&e->lo_aa[0], x));
+                    if (++e->lo_k >= PX_LO_DEC) {          /* every 8th sample: the low band at its own rate */
+                        e->lo_k = 0;
+                        for (int i = 0; i < 3; i++) a = bq_run(&e->lo_sel[i], a);
+                        a = bq_run(&e->lo_hp, a);
+                        float v = lo_fast(e, a);
+                        e->lo_y0 = e->lo_y1; e->lo_y1 = v;
+                    }
+                    float o = e->lo_y0 + (e->lo_y1 - e->lo_y0) * ((float)e->lo_k * (1.0f / (float)PX_LO_DEC));
+                    e->lo_lp += (o - e->lo_lp) * e->lo_lpk;
+                    float oc = e->lo_lp;
+                    if (e->lo_g > 0.0f) {                  /* GROWL */
+                        e->lo_glp += (px_tanh(oc * e->lo_gk) * e->lo_gn - e->lo_glp) * e->lo_glk;
+                        oc += (e->lo_glp - oc) * e->lo_g;
+                    }
+                    x = x * e->lo_dry + oc * e->lo_lvl;
+#endif
                 } else {
 #if !PX_RUNS                                           /* (with the runs: pitch_run) */
                     e->ps_buf[e->ps_w] = x;

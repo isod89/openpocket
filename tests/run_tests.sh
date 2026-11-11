@@ -8,7 +8,9 @@
 #    against the C post through a model of its instructions (tests/test_post5.py)
 #  - (not run here, it needs the git history: tests/equiv.sh REF, this tree's engine against commit REF's, bit for bit)
 #  - the Bluetooth audio image's engine (engine/px_dsp.h PX_OWN_FX): every existing model bit for bit as without it
-#    (tests/ownfx_equiv.sh, 5,460 runs); the engine tests built with that image's flags
+#    (tests/ownfx_equiv.sh, 5,460 runs); the engine tests built with that image's flags; its own effects (docs/OWN-FX.md):
+#    LOW OCTAVE (PIT), low notes get their octave, high ones and the dry signal stay as they are (tests/engine/lowoct.c);
+#    SYN PAD, a caught chord held steady, swell, crossing to a new chord, fade, stomp-then-strum, no clicks (tests/engine/pad.c)
 #  - changes without clicks (v38): knob changes glide to exactly where a full set goes, blocks on / off fade, fewer clicks
 #  - USER IR (v38): the partitioned FFT convolution against the direct FIR, slots, names
 #  - wet lanes (v39): the delay through its lane as inline bit for bit, the reverb's tail lag frames later, the pipeline
@@ -66,6 +68,14 @@ sh tests/ownfx_equiv.sh
 FX="-DPX_OWN_FX=1 -DPXN_LEAN=1 -DPXN_HOT_RAM=0 -DPX_RUNS=0 -DPX_LOOP_GUARD=1"   # (firmware/build.sh's DSPDEF under OP_BT)
 $CC -O2 $FX -Iengine tests/engine/sweep2.c engine/px_dsp.c firmware/px_math.c -lm -o build/sweep_fx && build/sweep_fx | tail -1
 $CC -O2 $FX -Iengine tests/engine/pipe_test.c engine/px_dsp.c firmware/px_math.c -lm -o build/pipe_fx && build/pipe_fx | tail -1
+$CC -O2 $FX -Iengine tests/engine/long.c engine/px_dsp.c firmware/px_math.c -lm -o build/long_fx && build/long_fx "LOW OCTAVE" PAD | tail -1
+echo "== the Bluetooth audio image's own effects: LOW OCTAVE (PIT) and SYN PAD (docs/OWN-FX.md)"
+for D in "$FX" "-DPX_OWN_FX=1"; do                     # as the image builds the engine, and with the host's defaults (PX_RUNS 1)
+  for t in lowoct pad; do
+    $CC -O2 $D -Iengine tests/engine/$t.c engine/px_dsp.c firmware/px_math.c -lm -o build/$t
+    build/$t > build/$t.log || { cat build/$t.log; exit 1; }; tail -1 build/$t.log
+  done
+done
 echo "== NAM (fixed point against the float reference, every factory model)"
 $CC -O2 -DPXN_EMUVEC -Iengine tests/engine/nam_test.c engine/px_nam.c -o build/nam_test
 if python3 -c "import numpy" 2>/dev/null; then mkdir -p build/nam; python3 tests/test_nam.py build/nam_test > build/nam/log.txt || { cat build/nam/log.txt; exit 1; }; tail -1 build/nam/log.txt; else echo "(numpy not installed: NAM comparison skipped)"; fi

@@ -1,9 +1,9 @@
 /* The Bluetooth audio image's engine (PX_OWN_FX, engine/px_dsp.h) against the same tree's engine without it: the output
  * hashed bit for bit over the runs below (tests/ownfx_equiv.sh builds this file both ways and compares the lists). PX_OWN_FX
- * leaves out the drive and delay code no model reaches (px_dsp.c: rc_drive, clip_run, drive_run, drive_block, dly_block):
- * every existing model must sound the same to the bit. Only the models both builds have are run (new ones would be
- * appended to their block's list), so the two lists must be identical line for line; where they differ, the line names
- * the block, the model and the settings.
+ * leaves out the drive and delay code no model reaches (px_dsp.c: rc_drive, clip_run, drive_run, drive_block, dly_block),
+ * shortens the delay ring by 456 ticks and puts its own effects' state there (px_dsp.h): every existing model must sound
+ * the same to the bit. Only the models both builds have are run (LOW OCTAVE and PAD come last in their blocks' lists), so
+ * the two lists must be identical line for line; where they differ, the line names the block, the model and the settings.
  *  A  tests/engine/equiv.c's A: every block x type x 8 settings, the block alone, 2 s, wet lanes on odd settings
  *  B  equiv.c's B: every block x type x 2 settings with a fitted amp, a drive and a cabinet
  *  C  equiv.c's C: 60 random chains, knob changes and blocks switched while playing, blocks of 64, 48, 16, 1 frames
