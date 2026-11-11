@@ -144,6 +144,12 @@ PY
     a=${r% *}; z=${r#* }
     "$TC/common/bin/objdump" -d --start-address=$((0x$a)) --stop-address=$((0x$a + 0x$z)) "$O/openpocket.elf" >> "$O/listings/linked.txt" 2>&1 || true
   done
+  # the folding probe (the room Bluetooth MIDI needs): the library built through text IR, as is and with its constant
+  # configuration folded, each linked beside the image, which is not touched; the sizes go to the log and listings/fold.txt
+  # (tools/jlfold.py; it cannot fail the build)
+  python3 "$HERE/../tools/jlfold.py" probe "$TC" "$HERE/bt/bt_cfg.c" "$O/fold" "$O/listings/fold.txt" $BCS -- \
+    "$TC/pi32v2/bin/ld" --defsym "op_guard_stack=$GUARD_STACK" -T "$LDS" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ \
+    "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o" "$O/iis.o" $BLEOBJ -o "$O/openpocket.elf" || echo "fold probe: failed"
 fi
 "$TC/common/bin/objcopy" -O binary -j .text     "$O/openpocket.elf" "$O/text.bin"
 "$TC/common/bin/objcopy" -O binary -j .data     "$O/openpocket.elf" "$O/data.bin"
