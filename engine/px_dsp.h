@@ -35,6 +35,12 @@ extern "C" {
 enum { PX_B_GATE, PX_B_COMP, PX_B_PITCH, PX_B_SFX, PX_B_DRIVE, PX_B_AMP, PX_B_CAB, PX_B_EQ, PX_B_MOD,
        PX_B_DELAY, PX_B_REVERB, PX_B_SYN, PX_NBLK };   /* SYN appended (v29): older presets keep their indices */
 #define PX_NPAR 5
+/* PX_OWN_FX: the Bluetooth audio image's own engine (firmware/build.sh sets it under OP_BT only). The drive and delay code
+ * no model reaches is left out there: the same sound, bit for bit, in less RAM code (px_dsp.c; tests/ownfx_equiv.sh).
+ * Without it (the release, the BLE image, the simulator) the engine is v42's, to the preprocessed text. */
+#ifndef PX_OWN_FX
+#define PX_OWN_FX 0
+#endif
 
 enum { PX_CMP_SQUASH, PX_CMP_STUDIO, PX_CMP_OPTO, PX_CMP_SWELL, PX_CMP_COUNT };
 enum { PX_PIT_OCTAVER, PX_PIT_POLYOCT, PX_PIT_WHAMMY, PX_PIT_HARMONY, PX_PIT_DETUNE, PX_PIT_COUNT };

@@ -429,7 +429,12 @@ typedef struct {
 #ifdef PX_FIT
 drv_v px_fit_drv; int px_fit_drv_on; float px_fit_drv_trim = 1.0f;
 #endif
-/* v34: fitted to NAM captures of the pedals (tools/fit_drive.py); knobs at noon = the captured setting */
+#if PX_OWN_FX && defined(PX_FIT)
+#error "PX_OWN_FX leaves out the drive modes no DV row uses (rc_drive, clip_run): the fitter needs them all"
+#endif
+/* v34: fitted to NAM captures of the pedals (tools/fit_drive.py); knobs at noon = the captured setting. (PX_OWN_FX keeps
+ * only the modes these four rows use: clip SOFT, ASYM, HARD, GE; tone TM_LP, TM_HM2; no lp, no p2. tests/engine/ownfx_equiv.c
+ * checks it) */
 static const drv_v DV[PX_DRV_COUNT] = {
     {"TS9", L3(R_DRIVE, R_TONE, R_LEVEL), 69.84f, 100.0f, 0.0f, 0.0f, 0.0f, 7.0f, 29.46f, 49.46f, CL_SOFT, TM_LP, 2102.0f, 1.132e+04f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},  /* Tim R TS9 */
     {"KLON", L3(R_DRIVE, R_TREBLE, R_LEVEL), 11.65f, 239.6f, 0.0f, 449.9f, 2.0f, 11.21f, 18.99f, 52.99f, CL_GE, TM_LP, 842.3f, 4717.0f, 0.0f, 0.0f, 2.468f, 0.0f, 0.0f},  /* Keith B klone_g6_t6_o5 */
@@ -1079,7 +1084,9 @@ static void rc_drive(px_engine *e)
         e->drv_shelf_lo = 1.0f / e->drv_gain;
         e->drv_pre |= 1;
     }
+#if !PX_OWN_FX
     if (d->lp) { bq_lowpass(&e->drv_lp, sr, (float)d->lp, 0.7f); e->drv_pre |= 2; }
+#endif
     if (d->mid) {
         float f = (float)d->mid, db = (float)d->mid_db;
         bq_peak(&e->drv_mid, sr, f, (float)d->mid_q10 * 0.1f, db);
@@ -1091,37 +1098,47 @@ static void rc_drive(px_engine *e)
     e->drv_bias = (float)d->bias * 0.01f;
     e->drv_gate = 0.0f;
     e->drv_off = px_tanh(e->drv_bias);
+#if PX_OWN_FX
+    e->drv_dcb = d->clip == CL_ASYM;
+#else
     e->drv_dcb = (d->clip == CL_ASYM || d->clip == CL_FUZZ || d->clip == CL_OCTA);
+#endif
     e->drv_dck = 2.0f * PI_F * 12.0f / osr;
 
     /* post tone, oversampled */
     e->drv_tm = d->tm; e->drv_np = 1;
     switch (d->tm) {
+#if !PX_OWN_FX
     case TM_MUFF:                                      /* LP / HP crossfade: the classic mid scoop */
         bq_lowpass(&e->drv_t1, osr, (float)d->t0, 0.6f);
         bq_highpass(&e->drv_t2, osr, (float)d->t1, 0.6f);
         e->drv_mix = tone;
         e->drv_np = 2;
         break;
+#endif
     case TM_HM2:
         bq_peak(&e->drv_t1, osr, (float)d->t0, 0.9f, role_val(d, q, R_LOW, 0.5f) * 15.0f);
         bq_peak(&e->drv_t2, osr, (float)d->t1, 0.7f, role_val(d, q, R_HIGH, 0.5f) * 15.0f);
         e->drv_np = 2;
         break;
+#if !PX_OWN_FX
     case TM_MT2:
         bq_peak(&e->drv_t1, osr, (float)d->t0, 0.8f, (role_val(d, q, R_LOW, 0.5f) - 0.5f) * 24.0f);
         bq_highshelf(&e->drv_t2, osr, (float)d->t1, (role_val(d, q, R_HIGH, 0.5f) - 0.5f) * 24.0f);
         e->drv_np = 2;
         break;
+#endif
     default:
         bq_lowpass(&e->drv_t1, osr, (float)d->t0 * powf((float)d->t1 / (float)d->t0, tone), 0.7f);
         break;
     }
+#if !PX_OWN_FX
     if (d->p2) {
         if (d->p2db == 0) bq_lowpass(&e->drv_t3, osr, (float)d->p2, 0.7f);
         else bq_peak(&e->drv_t3, osr, (float)d->p2, 0.8f, (float)d->p2db);
         e->drv_np |= 4;
     }
+#endif
 
     float bl = (float)d->blend * 0.01f;
     bl *= (1.0f - 0.8f * dr);                     /* Klon: clean path fades as gain rises */
@@ -1816,6 +1833,10 @@ static void rc_delay(px_engine *e)
         bq_lowpass(&e->dly_lp, sr, 4000.0f - tone * 2000.0f, 0.9f); bq_highpass(&e->dly_hp, sr, 300.0f, 0.7f);
         e->dly_q = powf(2.0f, 11.0f - tone * 6.0f); e->dly_wow = 2.0f + tone * 4.0f; e->dly_inc = 0.5f / sr; e->dly_sat = 1.5f; break;
     }
+#if PX_OWN_FX   /* TAPE and SPACE ECHO run their flutter loop at WOW 0 too (dly_block): there the flutter's phase stays put, as
+                 * the loop without it left it, so that WOW turned up later starts it where it was */
+    if (e->dly_flut == 0.0f) e->dly_inc2 = 0.0f;
+#endif
     if (e->dly_sat > 0.0f) {                           /* saturating loop: tops out at 1.08 = self-oscillation, like the real units */
         e->dly_sat = 1.0f + e->dly_sat * 0.5f;         /* drive into the loop clipper */
         e->dly_satn = 1.0f / e->dly_sat;
@@ -2245,6 +2266,9 @@ static inline float clip_run(const px_engine *e, float d)
         a = px_abs(d); y = a < 0.7f ? a : 1.0f - 0.09f / (a - 0.4f);
         return d < 0.0f ? -y : y;
     case CL_GE: return d / (1.0f + px_abs(d));
+#if PX_OWN_FX   /* (no DV row uses the others: see DV) */
+    default: return d;
+#else
     case CL_LED:
         a = px_abs(d); y = a >= 1.0f ? 1.0f : a * (1.5f - 0.5f * a * a);
         return d < 0.0f ? -y : y;
@@ -2263,12 +2287,15 @@ static inline float clip_run(const px_engine *e, float d)
         a = px_abs(d); y = a < 0.7f ? a : 1.0f - 0.09f / (a - 0.4f);
         return 0.7f * px_tanh(1.5f * a) + 0.3f * (d < 0.0f ? -y : y);
     default: return px_tanh(d * 0.4f) * 2.5f;          /* clean boost */
+#endif
     }
 }
 static inline float drive_pre(px_engine *e, float x)   /* base rate */
 {
     x = bq_run(&e->drv_hp, x);
+#if !PX_OWN_FX
     if (e->drv_pre & 2) x = bq_run(&e->drv_lp, x);
+#endif
     if (e->drv_pre & 4) x = bq_run(&e->drv_mid, x);
     if (e->drv_pre & 1) x = x * e->drv_shelf_lo + bq_run(&e->drv_shelf, x);
     return x;
@@ -2277,6 +2304,10 @@ PX_INL static inline float drive_run(px_engine *e, float x)   /* oversampled */
 {
     float d = clip_run(e, x * e->drv_gain) + e->dn;
     if (e->drv_dcb) { e->drv_dcs += (d - e->drv_dcs) * e->drv_dck; d -= e->drv_dcs; }
+#if PX_OWN_FX
+    d = bq_run(&e->drv_t1, d);
+    if (e->drv_np & 2) d = bq_run(&e->drv_t2, d);
+#else
     if (e->drv_tm == TM_MUFF) {
         float lo = bq_run(&e->drv_t1, d), hi = bq_run(&e->drv_t2, d);
         d = lo + (hi - lo) * e->drv_mix;
@@ -2285,6 +2316,7 @@ PX_INL static inline float drive_run(px_engine *e, float x)   /* oversampled */
         if (e->drv_np & 2) d = bq_run(&e->drv_t2, d);
     }
     if (e->drv_np & 4) d = bq_run(&e->drv_t3, d);
+#endif
     return d * e->drv_level + x * e->drv_blend;
 }
 /* ---- v38: oversampling by polyphase IIR half-band filters (as the stock firmware does: two all-pass branches, each
@@ -2368,20 +2400,32 @@ static void os_down(px_hb *st, const float *in, float *out, int n, int os)   /* 
 
 /* drive_run over n oversampled samples in place, stage by stage (the same operations as drive_run sample by sample);
  * the anti-denormal offset follows the base-rate sample (os samples each) */
+#if PX_OWN_FX   /* (px_os_h held TM_MUFF's second path only) */
+static float px_os_t[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_LO(px_os_t), px_os_u[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_LO(px_os_u);
+#else
 static float px_os_t[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_LO(px_os_t), px_os_h[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_LO(px_os_h),
              px_os_u[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_LO(px_os_u);
+#endif
 /* v40.4: the oversampled sections' input at the base rate (the drive's, or a fitted amp's: one at a time), and the delay's
  * and the reverb's wet output when they run in the chain: not on px_engine_part's stack (the second core's is 2.8 KB) */
 static float px_os_p[PX_MAX_BLOCK] PX_LO(px_os_p), px_wb[2][PX_MAX_BLOCK] PX_LO(px_wb);
 static void drive_block(px_engine *e, float *u, int n, int os)   /* (static buffers: off the interrupt's stack) */
 {
+#if PX_OWN_FX
+    float *t = px_os_t;
+#else
     float *t = px_os_t, *h = px_os_h;
+#endif
     for (int i = 0; i < n; i++) {
         const float dn = ((i / os) & 1) ? 1e-15f : -1e-15f;
         float d = clip_run(e, u[i] * e->drv_gain) + dn;
         if (e->drv_dcb) { e->drv_dcs += (d - e->drv_dcs) * e->drv_dck; d -= e->drv_dcs; }
         t[i] = d;
     }
+#if PX_OWN_FX
+    if (e->drv_np & 2) bq_block2(&e->drv_t1, &e->drv_t2, t, n);
+    else bq_block(&e->drv_t1, t, n);
+#else
     if (e->drv_tm == TM_MUFF) {
         memcpy(h, t, (unsigned)n * sizeof(float));
         bq_block(&e->drv_t1, t, n);
@@ -2391,6 +2435,7 @@ static void drive_block(px_engine *e, float *u, int n, int os)   /* (static buff
         bq_block2(&e->drv_t1, &e->drv_t2, t, n);
     } else bq_block(&e->drv_t1, t, n);
     if (e->drv_np & 4) bq_block(&e->drv_t3, t, n);
+#endif
     for (int i = 0; i < n; i++) u[i] = t[i] * e->drv_level + u[i] * e->drv_blend;
 }
 PX_INL static inline float amp_stage(px_engine *e, int i, float x, int upd)
@@ -3273,20 +3318,34 @@ static void dly_block(px_engine *e, const float *xb, float *wo, int n, int t)
 {
     const int m = e->dly_wow > 0.0f || e->dly_mod > 0.0f, fl = e->dly_flut > 0.0f, q = e->dly_q > 0.0f, s = e->dly_sat > 0.0f;
     switch (t) {                                       /* the combinations each type sets (rc_delay) */
+#if !PX_OWN_FX
     case PX_DLY_DIGITAL: if (!m && !fl && !q && !s) { dly_loop(e, xb, wo, n, PX_DLY_DIGITAL, 0, 0, 0, 0); return; } break;
+#endif
     case PX_DLY_DUAL:    if (!m && !fl && !q && !s) { dly_loop(e, xb, wo, n, PX_DLY_DUAL, 0, 0, 0, 0); return; } break;
     case PX_DLY_REVERSE: if (!m && !fl && !q && !s) { dly_loop(e, xb, wo, n, PX_DLY_REVERSE, 0, 0, 0, 0); return; } break;
     case PX_DLY_ANALOG:  if (m && !fl && !q && s) { dly_loop(e, xb, wo, n, PX_DLY_ANALOG, 1, 0, 0, 1); return; } break;
     case PX_DLY_MEMORY:  if (m && !fl && !q && s) { dly_loop(e, xb, wo, n, PX_DLY_MEMORY, 1, 0, 0, 1); return; } break;
     case PX_DLY_TAPE:
+#if PX_OWN_FX   /* one loop: at WOW 0 the flutter's depth is 0 and its phase stays put (rc_delay): the same output */
+        if (m && !q && s) { dly_loop(e, xb, wo, n, PX_DLY_TAPE, 1, 1, 0, 1); return; }
+#else
         if (m && !q && s) { if (fl) dly_loop(e, xb, wo, n, PX_DLY_TAPE, 1, 1, 0, 1); else dly_loop(e, xb, wo, n, PX_DLY_TAPE, 1, 0, 0, 1); return; }
+#endif
         break;
     case PX_DLY_SPACE:
+#if PX_OWN_FX
+        if (m && !q && s) { dly_loop(e, xb, wo, n, PX_DLY_SPACE, 1, 1, 0, 1); return; }
+#else
         if (m && !q && s) { if (fl) dly_loop(e, xb, wo, n, PX_DLY_SPACE, 1, 1, 0, 1); else dly_loop(e, xb, wo, n, PX_DLY_SPACE, 1, 0, 0, 1); return; }
+#endif
         break;
     case PX_DLY_LOFI:    if (m && !fl && q && s) { dly_loop(e, xb, wo, n, PX_DLY_LOFI, 1, 0, 1, 1); return; } break;
     }
+#if PX_OWN_FX   /* DIGITAL, and the generic loop's place: no type reaches it, each sets its own combination (rc_delay) */
+    dly_loop(e, xb, wo, n, PX_DLY_DIGITAL, 0, 0, 0, 0);
+#else
     dly_loop(e, xb, wo, n, t, m, fl, q, s);                /* (anything else: decided per sample, as before) */
+#endif
 }
 PX_AINL static inline void rv_loop(px_engine *e, const float *xb, float *wo, int n, const int ALG, const int SP, const int SH,
                                    const int GT)
