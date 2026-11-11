@@ -41,7 +41,7 @@ OpenPocket (the stock-firmware scan was skipped on purpose).
    **Back to the official firmware** step. The SD-card recovery (`make appimage`) works as before.
 
 The status text at the bottom right of the screen shows the Bluetooth state: `STARTING` with the stage and the pedal's
-usual `C1 42%`, then `ADVERTISING` (the proof counters, scrolling) or `FAILED` (the failure, scrolling, with its short
+usual `DSP 42%`, then `ADVERTISING` (the proof counters, scrolling) or `FAILED` (the failure, scrolling, with its short
 code first so that it is always on screen). See [Reading the status text](#reading-the-status-text).
 
 ## What you should see
@@ -95,7 +95,7 @@ The log channel (`node tools/op.mjs log`) adds two lines, and the status area sc
 | Text | Meaning |
 | --- | --- |
 | `STARTING n` | the last stage reached: 1 task created, 2 controller init called, 3 radio front end replay entered, 4 waiting for the controller task, 5 setting the advertisement, 6 enabling it, 7 the replay returned, 8 the baseband asked for its interrupts. The markers are set by two tasks, so 3 and 7 can appear after 4; the number shown is the last one set, not the highest |
-| `FAILED s c` | step `s` failed with return value `c`. The status area is only 11 characters wide, so the whole line scrolls like a marquee (2 characters a second, resting 2 s on the start, then looping): `FAILED 2 -7  step btctrler_task_init stage init`. The short code is first, so it can be read before the scroll starts. The usual `C1 42%` is not shown while it has failed. |
+| `FAILED s c` | step `s` failed with return value `c`. The status area is only 11 characters wide, so the whole line scrolls like a marquee (2 characters a second, resting 2 s on the start, then looping): `FAILED 2 -7  step btctrler_task_init stage init`. The short code is first, so it can be read before the scroll starts. The usual `DSP 42%` is not shown while it has failed. |
 | `ADVERTISING` | the controller accepted the command to advertise; it does not mean a packet was sent. The status shows the proof counters instead, as a marquee (below) |
 
 Failing steps: `1` `task_create` failed (`c` is -1); `2` `btctrler_task_init` returned `c` (not 0); `3`
@@ -214,7 +214,7 @@ The fifth flash showed `ADVERTISING` and event interrupts at the advertising rat
 1. The library writes the modem's transmit I/Q trims (`keep_BT_CMPUK1/2/3`, `keep_BT_OFSI`, `keep_BT_OFSQ`, which stock fills from the Wi-Fi front-end calibration) into `0x2FC10` and `0x2FC08`. Here nothing set them, so the I and Q gains were zero. `ble_rf.c` now sets the neutral values (`0x80` for the two gains).
 2. `wf_rf_common_init` was `void`, so the library read a stray register value as its result and switched on the Wi-Fi/Bluetooth coexistence arbiter (`0x14000` bit 1). It now returns 0, as stock does on a first start.
 
-After the fix a Mac scan saw `OpenPocket-BLE-TEST` with the BLE-MIDI service UUID (206 sightings in 60 s, RSSI -51 to -36 dBm, not connectable) and the scan-request counter `r` rose. The stored radio records are also read now: the VM is plain flash (the XIP window decrypts it, so it must be read raw, `ble_vm.h`), VM 106 to 108 go to the replay, and VM 187 (the unit's calibration) replaces the measured one. The status line shows them as `V <mask> <area/4096> <first two bytes of VM 106>` (`V F BD B0B` on the test pedal). `bt_max_pwr_set(10, 5, 8, 9)` is called after the controller's own init. Which of these beyond the two fixes matters was not isolated. `t` and `e` stay 0 by design here (no software timer on the advertising path, no host packet handler), so they are not health signs.
+After the fix a Mac scan saw `OpenPocket-BLE-TEST` with the BLE-MIDI service UUID (206 sightings in 60 s, RSSI -51 to -36 dBm, not connectable) and the scan-request counter `r` rose. The stored radio records are also read now: the VM is plain flash (the XIP window decrypts it, so it must be read raw, `ble_vm.h`), VM 106 to 108 go to the replay, and VM 187 (the unit's calibration) replaces the measured one. The status line shows them as `V <mask> <area/4096> <first two bytes of VM 106>` (`V F BD B0B` on the test pedal). Since v41 the mask has more bits: `10` and `20` mean VM 106 and 107 were missing and got the defaults (`0B 0B` and a Pocket X backup's VM 107), `400` that the calibration was measured (no VM 187), `100` / `200` that its VCO scan / its trim failed. The scan starts at `0xA1000`, where a Pocket X keeps its VM. `bt_max_pwr_set(10, 5, 8, 9)` is called after the controller's own init. Which of these beyond the two fixes matters was not isolated. `t` and `e` stay 0 by design here (no software timer on the advertising path, no host packet handler), so they are not health signs.
 
 ## Found on hardware: the link
 

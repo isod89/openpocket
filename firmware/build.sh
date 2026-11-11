@@ -50,7 +50,7 @@ CHAN="${OP_CHANNEL:-}"
 : > "$O/channel.h"
 if [ -n "$CHAN" ]; then
   case "$CHAN" in *[!a-z0-9-]*|"") echo "ERROR: OP_CHANNEL must be lowercase letters, digits and -"; exit 1;; esac
-  TESTVER="${OP_TEST_VERSION:-40}"
+  TESTVER="${OP_TEST_VERSION:-42}"
   printf '#define OP_VERSION_NUM "%s"\n#define OP_TAG " %s"\n' "$TESTVER" "$(echo "$CHAN" | tr a-z- A-Z' ')" > "$O/channel.h"
   APP="$HERE/openpocket-$CHAN.bin"; PKG="$HERE/../docs/firmware/$CHAN"
   rm -f "$APP"
@@ -59,7 +59,11 @@ fi
 # AC791N hardware FPU (same options as the JieLi SDK for the WL82) + DSP engine at 44.1 kHz
 FP="-mcpu=r3 -mfprev1"
 DSPDEF="-DPX_SR=44100.0f -DPX_OVERSAMPLE=4"
-[ -n "$OP_BLE" ] && DSPDEF="$DSPDEF -DPXN_LEAN=1"   # v40.2: the test image's flash is full (engine/px_nam.c)
+# v40.2: the test images' flash is full (engine/px_nam.c PXN_LEAN; v40.4: px_dsp.c PX_RUNS). v40.5: the BLE image keeps px_nam.c's
+# hot routines (rdm6, rdm15, post5) in the RAM code; the Bluetooth audio image runs them from the flash, as the release does
+# (test build 14: its RAM code window holds the engine's buffers, bt/app-bt.ld .bss_hi, and has no room for them)
+HOTRAM=1; [ -n "$OP_BT" ] && HOTRAM=0
+[ -n "$OP_BLE" ] && DSPDEF="$DSPDEF -DPXN_LEAN=1 -DPXN_HOT_RAM=$HOTRAM -DPX_RUNS=0"
 [ -n "$OP_BT" ] && DSPDEF="$DSPDEF -DPX_LOOP_GUARD=1"   # test build 13: the reverb's loop ends at PX_MAX_BLOCK, counted (engine/px_dsp.c)
 INC="-I$HERE/inc -I$HERE/../engine"
 $CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $BLEDEF -DOP_GUARD_STACK=$GUARD_STACK $INC \
@@ -102,11 +106,13 @@ RAM_DSP="px_engine_process px_engine_part px_wet_run px_wet_swap dly_block rv_bl
   ir_run fft64 rfft128 cab_detail ps_voice_al ps_align amp_stage bq_block bq_block2 drive_block nam_run fq_loop_c px_nam_dual
   pxn_process pxn_block pxn_direct pxn_post_part pxn_rows pxn_rows_cpu pxn_gather pxn_range_cpu pxn_dual
   px_nam_lp_b px_nam_lp_queued px_nam_lp_split px_nam_lp_split_now pxn_lp_a pxn_lp_b pxn_lp_queued pxn_lp_split
-  pxn_lp_split_now pxn_frame_ticks"
+  pxn_lp_split_now pxn_frame_ticks px_nam_lp_handed px_nam_lp_before pxn_lp_handed pxn_lp_before
+  px_nam_lp_split_used px_nam_lp_force pxn_lp_split_used pxn_lp_force px_nam_lp_gave_up pxn_lp_gave_up
+  ps_voice_run syn_organ_run pitch_run cab_detail_run gate_run comp_run bq_chain"
 # v40.2: the layer split's path (pxn_lp_*, lp_job, dsp_lp_run) in RAM; out of it, to make the room: the frame split's serving
 # (now the fallback when the layer split cannot run), the vector unit's paths (never chosen: slower) and the C versions
 # of the hand routines (used only if a hand one fails its start-up check: the network is then too slow anyway)
-RAM_FW="a_enc a_dec a_collect a_commit dsp_block dsp_out dsp_load dsp_job post_job dsp_pipe lp_job dsp_lp_run
+RAM_FW="a_enc a_dec a_block a_send a_collect a_commit dsp_block dsp_out dsp_load dsp_job post_job post_run dsp_pipe lp_job dsp_lp_run a_lp_post lp_split
   fm1_alnk0_irq tn_capture fm1_cpu1_run fm1_cpu1_wait fm1_cpu1_retire a_hrun a_hwait b_ticks memcpy memset"
 python3 "$HERE/../tools/ramcode.py" "$O/px_dsp.o" --plain $RAM_DSP
 python3 "$HERE/../tools/ramcode.py" "$O/openpocket.o" $RAM_FW

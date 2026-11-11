@@ -55,7 +55,7 @@ static void load_preset(uint32_t i) { st_get(i, &PRESET); }
 #define ST_IRQ_OFF() ((void)0)
 #include "../firmware/px_store.h"
 
-static void reboot(void) { memset(st_slot, 0, sizeof st_slot); st_cur = st_seq = 0; st_last = 0; st_midi = 0x55; mid_cfg.chan = 9; px_store_boot(); }
+static void reboot(void) { memset(st_slot, 0, sizeof st_slot); st_cur = st_seq = 0; st_last = 0; st_midi = 0x55; mid_cfg.chan = 9; st_usb = 0xA5; px_ua_on = 7; px_store_boot(); }
 static void loader_bytes_clear(void)
 {
     for (uint32_t s = 0xF0000u; s < 0xF4000u; s += 0x1000u)
@@ -264,6 +264,34 @@ int main(void)
             }
             CHECK(bad == 0 && olds > 0 && news > 0, "settings: a power cut during a settings save leaves the old or the new, never a broken store");
         }
+    }
+    /* v42: the USB AUDIO setting rides in the header too (its second spare byte) */
+    {
+        px_preset_t q;
+        px_preset_factory(&q, 5);
+        reboot();
+        CHECK(!px_ua_on && !st_usb, "USB audio: off in a store that never set it (every earlier OpenPocket wrote 0 there)");
+        mid_cfg.chan = 3; st_midi = px_midi_cfg_pack(&mid_cfg);
+        st_usb = 1;
+        CHECK(st_commit() == 0, "USB audio: a commit of the setting");
+        reboot();
+        CHECK(px_ua_on == 1 && st_usb == 1, "USB audio: on survives a power cycle");
+        CHECK(mid_cfg.chan == 3, "USB audio: the MIDI settings beside it are kept");
+        CHECK(st_save(5, &q) == 0, "USB audio: a preset save");
+        reboot();
+        CHECK(px_ua_on == 1 && st_saved(5), "USB audio: still on after a preset save");
+        {   /* only bit 0 is the setting */
+            st_hdr_t h;
+            memcpy(&h, nor + st_cur, sizeof h);
+            h.pad[1] = 0xFE;
+            memcpy(nor + st_cur, &h, sizeof h);
+            reboot();
+            CHECK(px_ua_on == 0, "USB audio: the byte's other bits do not switch it on");
+        }
+        st_usb = 0;
+        CHECK(st_commit() == 0, "USB audio: a commit of off");
+        reboot();
+        CHECK(!px_ua_on && !st_usb, "USB audio: off survives a power cycle");
     }
     loader_bytes_clear();
     printf(fails ? "%d FAILED\n" : "store tests passed\n", fails);

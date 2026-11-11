@@ -39,8 +39,9 @@ as v39 to within 0.0002 on every type.
 ## On the pedal
 
 - Nothing to change in your presets. The delay's TIME knob, tap tempo and MIDI clock give the same times.
-- **Please report**, on a preset that went to `BYP` with v39: the tuner page's footer (CPU per block) with v39 and with
-  v40, and whether `BYP`, `LATE` or `CUT` still appear.
+- **Please report**, on a preset that went to `BYP` with v39: the CPU per block (on the tuner page's footer in v39, on
+  the diagnostics page now: keep holding HOME past the tuner) with v39 and with v40, and whether `BYP`, `LATE` or `CUT`
+  still appear.
 
 ## For developers
 

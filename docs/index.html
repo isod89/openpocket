@@ -86,7 +86,6 @@ footer a,.note a{color:inherit}
     <p class="note warnbox" data-t="s2warn"></p>
     <p class="note warnbox" id="bbwarn" hidden data-t="bbwarn"></p>
     <p class="note warnbox" id="testchan" hidden data-t="testchan"></p>
-    <label class="chk"><input type="checkbox" id="rescueOn"><span data-t="rescueon"></span></label>
     <div class="row">
       <button class="go" id="install" disabled data-t="install"></button>
       <button class="alt" id="resume" hidden data-t="resume"></button>
@@ -94,6 +93,7 @@ footer a,.note a{color:inherit}
     <div class="bar"><i id="bar"></i></div>
     <div class="steps" id="steps"></div>
     <p class="msg" id="msg"></p>
+    <p class="note" id="next" hidden><a href="editor.html" data-t="nexteditor"></a> · <a id="notes" data-t="nextnotes"></a></p>
   </section>
 
   <section class="card">
@@ -103,11 +103,20 @@ footer a,.note a{color:inherit}
     <p class="msg" id="offmsg"></p>
     <label class="chk" id="offconfirm" hidden><input type="checkbox" id="offok"><span data-t="unknownok"></span></label>
     <div class="row"><button class="alt" id="backoff" disabled data-t="backoff"></button></div>
+    <div class="note warnbox" id="v21-factory" hidden>
+      <strong>BlackBox V21 factory sounds</strong>
+      <p>The V21 firmware file contains no amps, cabinets, or presets. After it boots, verify the factory sounds here. If verification fails, start the Terminal tool in the <a href="RESCUE.md#blackbox-v21-factory-sounds">macOS recovery steps</a> before pressing the USB recovery button.</p>
+      <div class="row">
+        <button class="alt" id="verify-factory" disabled>Verify factory sounds</button>
+        <button class="alt" id="factory-uboot" disabled>Enter BlackBox USB recovery</button>
+      </div>
+    </div>
   </section>
 
   <section class="card">
     <details>
       <summary data-t="rescue"></summary>
+      <label class="chk"><input type="checkbox" id="rescueOn"><span data-t="rescueon"></span></label>
       <p class="note" data-t="rescuenote"></p>
       <p class="note" data-t="rescuemac"></p>
       <div class="row"><button class="alt" id="uboot" disabled data-t="uboot"></button></div>
@@ -127,6 +136,7 @@ footer a,.note a{color:inherit}
 <script type="module">
 import { Updater, IS_OTA, IS_OPENPOCKET, OUR_LOADER, MODELS } from "./pxota.js";
 import { productOf, logicalImage, checkOfficial } from "./pxpkg.js";
+import { BLACKBOX_V21, verifyFactorySounds } from "./pxfactory.js";
 
 const T = {
   en: {
@@ -140,7 +150,7 @@ const T = {
     s2warn: "During the install (about 1 to 2 minutes): do not unplug or switch the pedal off, keep this tab open. Nothing is written before the pedal has checked the package. First install over the official firmware: keep your backup (SD card / fm1buddy) at hand.",
     install: "Install", resume: "Resume the update",
     st_start: "start", st_verify: "check", st_loader: "loader", st_write: "write", st_reboot: "restart", st_done: "done",
-    done: "Done: the pedal now runs ", sameok: "OpenPocket is up to date.",
+    done: "Done: the pedal now runs ", nexteditor: "Open the preset editor", nextnotes: "What is new in this version", sameok: "OpenPocket is up to date.",
     s3: "Back to the official firmware", s3note: "Pick your pedal's official file (.fwsc), downloaded from Donner / M-VAVE. It is checked here, in your browser, and sent to no server.",
     backoff: "Return to the official firmware", offknown: "Official file verified: ", offunknown: "Well-formed official file, unknown to this page: ",
     unknownok: "I understand: this file has not been tested with this page. Install it anyway.",
@@ -186,6 +196,7 @@ const errText = (e) => (e && e.code && T.en["e_" + e.code] ? t("e_" + e.code) + 
 const CHANNEL = (new URLSearchParams(location.search).get("channel") || "").replace(/[^a-z0-9-]/g, "");
 const FW = "firmware/" + (CHANNEL ? CHANNEL + "/" : "");
 let access = null, up = null, manifest = null, lastDev = null, busy = false, official = null;
+let sawV21 = false;
 
 if (!navigator.requestMIDIAccess) { $("nomidi").hidden = false; $("connect").disabled = true; }
 $("testchan").hidden = !CHANNEL;
@@ -201,6 +212,17 @@ async function loadManifest() {
 function showDev(d) {
   lastDev = d;
   $("devinfo").hidden = !d;
+  const onV21 = d?.id.text === BLACKBOX_V21;
+  if (d) sawV21 = onV21;
+  $("v21-factory").hidden = !sawV21 && official?.product !== BLACKBOX_V21;
+  $("verify-factory").disabled = busy || !onV21;
+  $("factory-uboot").disabled = busy || !onV21;
+  $("resume").hidden = !d || !IS_OTA(d.id);
+  $("install").disabled = busy || !d || IS_OTA(d.id) || !manifest;
+  $("uboot").disabled = busy || !d || !IS_OPENPOCKET(d.id);
+  $("backoff").disabled = busy || !d || IS_OTA(d.id) || !official || official.model !== d.id.model ||
+    (!official.known && !$("offok").checked);
+  $("backoff").textContent = official?.product === BLACKBOX_V21 ? "Install V21 firmware" : t("backoff");
   if (!d) return;
   const id = d.id;
   const ota = IS_OTA(id);
@@ -209,10 +231,6 @@ function showDev(d) {
   $("d-port").textContent = d.name;
   const bb = id.model === "BlackBox";               /* not supported yet: boot loop (issue #1) */
   $("bbwarn").hidden = !bb;
-  $("install").disabled = busy || ota || !manifest;
-  $("resume").hidden = !ota;
-  $("uboot").disabled = busy || !IS_OPENPOCKET(id);
-  $("backoff").disabled = busy || ota || !official || official.model !== id.model || (!official.known && !$("offok").checked);
 }
 
 async function connect() {
@@ -259,16 +277,23 @@ async function packageFor(model) {
   return { product: p.product, image: logicalImage(bytes) };
 }
 
-async function run(job) {
+async function run(job, resultMessage) {
   if (busy) return;
-  busy = true; stepAt = 0; drawSteps(); $("bar").style.width = "0";
+  busy = true; stepAt = resultMessage ? -1 : 0; drawSteps(); $("bar").style.width = "0";
   setState(t("busy"), "warn");
-  ["install", "backoff", "uboot", "connect"].forEach((id) => $(id).disabled = true);
-  setMsg($("msg"), "");
+  ["install", "backoff", "uboot", "connect", "verify-factory", "factory-uboot"].forEach((id) => $(id).disabled = true);
+  setMsg($("msg"), ""); $("next").hidden = true;
   try {
     const res = await job();
-    setMsg($("msg"), t("done") + res, "ok");
-    log("done: " + res);
+    if (!resultMessage) { stepAt = STEPS.length; drawSteps(); }   // every stage done, none still lit
+    const firmwareOnly = !resultMessage && res === BLACKBOX_V21;
+    const v = !resultMessage && /^(?:PocketX|BlackBox)_9(\d\d)$/.exec(res);
+    const message = resultMessage || (firmwareOnly
+      ? "V21 firmware booted. Verify or restore the factory sounds in step 3."
+      : t("done") + (v ? `${t("opfw")} v${+v[1]} (${res})` : res));
+    setMsg($("msg"), message, firmwareOnly ? "" : "ok");
+    if (v) { $("notes").href = `WHATS-NEW-v${+v[1]}.md`; $("next").hidden = false; }
+    log(message);
   } catch (e) {
     setMsg($("msg"), errText(e), "err");
     log(`error ${e.code || ""}: ${e.message}`);
@@ -335,6 +360,14 @@ $("backoff").onclick = () => run(async () => {
   return up.install(official.image, official.product, (s, n) => progress(s, n));
 });
 $("uboot").onclick = async () => { try { await up.uboot(); log("UBOOT soft key sent"); } catch (e) { log(e.message); } };
+$("factory-uboot").onclick = () => run(
+  () => up.uboot((id) => id.text === BLACKBOX_V21),
+  "USB recovery requested. The Terminal recovery tool can now read the pedal."
+);
+$("verify-factory").onclick = () => run(
+  () => verifyFactorySounds(up, (p) => { $("bar").style.width = (p * 100).toFixed(1) + "%"; }),
+  "Factory sounds verified: 20 amps, 20 cabinets, and 80 presets."
+);
 $("offfile").onchange = async (ev) => {
   official = null; $("offconfirm").hidden = true; $("offok").checked = false;
   const f = ev.target.files[0];

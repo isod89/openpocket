@@ -95,7 +95,7 @@ function lastBootWords(reading) {
 // What cannot be read at each level, and what is left: the verdict's reason says it in words.
 const SCREEN = "Look at the pedal's screen or ask for a photo: nothing else can show";
 const NOT_READ = {
-  none: `No pedal-like MIDI port. The pedal is unplugged, off, on the red CRASH screen, showing the 12 s LAST BOOT FAILED report (USB starts after it), or in its boot loader. ${SCREEN} the crash's PC, RETS, vector and DBG; they can be read here only after the next boot, in safe mode (the Bluetooth audio image's R1, R6, R12 and SP: only on its LAST BOOT FAILED report).`,
+  none: `No pedal-like MIDI port. The pedal is unplugged, off, on the red CRASH screen, showing the 12 s LAST START FAILED report (USB starts after it), or in its boot loader. ${SCREEN} the crash's PC, RETS, vector and DBG; they can be read here only after the next boot, in safe mode (the Bluetooth audio image's R1, R6, R12 and SP: only on its LAST START FAILED report).`,
   silent: `A pedal-like MIDI port is there but nothing answers: the main loop is stuck or the firmware failed before USB service. ${SCREEN} what it is doing. If the pedal then resets by itself, read again; a pedal stuck like this needs a power cycle or the UBOOT rescue.`,
 };
 

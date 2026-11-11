@@ -9,7 +9,8 @@ import { IR_BYTES, IR_CHUNK } from "./pxir.js";
 const H = [0x7D, 0x4F, 0x50];
 export const C = { INFO: 1, CAT_BLOCK: 2, CAT_TYPE: 3, TEXTS: 4, STATE: 5, SET: 6, ORDER: 7, NAME: 8, PUT: 9, SELECT: 10,
   FOCUS: 11, LIST: 12, SLOT_GET: 13, SLOT_PUT: 14, COMMIT: 15, SAVE: 16, WATCH: 17, PING: 18,
-  NAM_LIST: 19, NAM_WRITE: 20, NAM_COMMIT: 21, NAM_ERASE: 22, DIAG: 23, IR_LIST: 24, IR_WRITE: 25, IR_COMMIT: 26, IR_ERASE: 27 };
+  NAM_LIST: 19, NAM_WRITE: 20, NAM_COMMIT: 21, NAM_ERASE: 22, DIAG: 23, IR_LIST: 24, IR_WRITE: 25, IR_COMMIT: 26, IR_ERASE: 27,
+  USB_AUDIO: 28 };
 export const NAM_CHUNK = 112;     // bytes per NAM_WRITE (firmware/px_models.h NM_CHUNK)
 export const P_SIZE = 110;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -55,6 +56,7 @@ export class Editor {
     this.timeout = opts.timeout || 1500;
     this.onState = null;          // (state) => {}: pushed by the pedal
     this.onLost = null;           // () => {}: the pedal stopped answering
+    this.onMidi = null;           // (bytes) => {}: a musical message the pedal sent (docs/MIDI.md), not SysEx
     this.link = null;
     this.queue = Promise.resolve();
     this.waiting = null;          // { cmd, resolve, reject, timer }
@@ -65,6 +67,7 @@ export class Editor {
   // ---- transport ----
   _onMessage(data) {
     const d = data instanceof Uint8Array ? data : Uint8Array.from(data);
+    if (d.length && d[0] !== 0xF0) { if (this.onMidi) { try { this.onMidi(d); } catch (_) { } } return; }
     if (d.length < 6 || d[0] !== 0xF0 || d[1] !== H[0] || d[2] !== H[1] || d[3] !== H[2] || d[d.length - 1] !== 0xF7) return;
     const cmd = d[4], args = d.slice(5, d.length - 1);
     if (this.waiting && this.waiting.cmd === cmd) {
@@ -228,6 +231,11 @@ export class Editor {
     // v40.2: then a count and that many 2-byte figures (the DSP profile, tools/dsp.mjs): the stack figures end before it
     const base = [12, 16].find((b) => r.length > b && r.length === b + 1 + 2 * r[b]);
     if ((base ?? r.length) >= 16) Object.assign(p, { bleHeapFree: (r[12] | r[13] << 7) * 4, bleTaskStackFree: (r[14] | r[15] << 7) * 4 });
+    if (base) {                   // each block's share of an audio block's time (%), in the block order, then the NAM network's
+      const f = [], n = this.info ? this.info.nblk : 12;
+      for (let i = base + 1; i + 1 < r.length; i += 2) f.push(r[i] | r[i + 1] << 7);
+      p.prof = f.slice(0, n); p.profNam = f[n];
+    }
     return p;
   }
   // v37 (protocol 2): NAM models. list -> { nfact, nuser, models: [{ index, user, slot, used, name }] }
@@ -279,6 +287,20 @@ export class Editor {
     return rc;
   }
   async irErase(slot) { return (await this.request(C.IR_ERASE, [slot], 6000))[1]; }
+  // v42 (protocol 4): USB AUDIO, the pedal as a USB sound card (docs/USB-AUDIO.md). usbAudio() reads the setting and
+  // the streams; usbAudio(true / false) sets it first: the pedal then leaves USB for a second and comes back as a
+  // device with or without the audio streams, so this connection ends (connect again after about 3 s).
+  // -> { on, rc (0 ok, 1 not in this firmware, 2 flash), recording, flowing, playing, sounding, counts: {...} }
+  get hasUsbAudio() { return !!(this.info && this.info.proto >= 4); }
+  async usbAudio(on) {
+    const r = await this.request(C.USB_AUDIO, on === undefined ? [] : [on ? 1 : 0], 3000);
+    const n = r[3] || 0, v = [];
+    for (let i = 0; i < n && 4 + 4 * i + 3 < r.length; i++) { const k = 4 + 4 * i; v.push(r[k] | r[k + 1] << 7 | r[k + 2] << 14 | r[k + 3] << 21); }
+    const names = ["recStarts", "recPackets", "recFrames", "recEmpty", "recFull", "recNoPacket", "recStalls", "recLonger", "recShorter",
+      "recFillLow", "recFillHigh", "playStarts", "playPackets", "playFrames", "playEmpty", "playFull", "blockTicks", "recSkipped", "playSkipped", "blockSwaps"];
+    return { on: !!r[0], rc: r[1], recording: !!(r[2] & 1), flowing: !!(r[2] & 2), playing: !!(r[2] & 4), sounding: !!(r[2] & 8),
+      counts: Object.fromEntries(names.map((k, i) => [k, v[i] ?? 0])) };
+  }
   // the CAB USER IR type's IR texts name the slots, which change: always asked again (not cached)
   async irTexts() {
     const b = this.cat.blocks.findIndex((x) => x.label === "CAB");

@@ -102,7 +102,7 @@ await page.mouse.up();
 await post("/api/press/home");
 await page.mouse.click(para.x, para.y);
 s = await until((x) => x.mode === "block");
-ok(s.mode === "block", "PARA clicked: PUSH, the block page after the double-click wait");
+ok(s.mode === "block", "PARA clicked: PUSH, the block page at once");
 await post("/api/press/home");
 await until((x) => x.mode === "chain");
 await page.mouse.click(para.x, para.y);
@@ -111,13 +111,15 @@ s = await until((x) => x.mode === "move");
 ok(s.mode === "move", "PARA clicked twice: MOVE");
 await post("/api/press/home");
 
-// ---- 5. both footswitches: two presses, as the firmware does ----
+// ---- 5. both footswitches: the tuner, as the panel says (v42), on the same preset ----
 s = await state();
 await page.evaluate(async () => { await Promise.all([pedal.down("fs_dn"), pedal.down("fs_up")]); });
 await page.waitForTimeout(800);
 const both = await state();
 await page.evaluate(async () => { await Promise.all([pedal.up("fs_dn"), pedal.up("fs_up")]); });
-ok(both.mode === "chain" && both.slot === s.slot && both.held.length === 2, "both footswitches held: no tuner in OpenPocket");
+ok(both.mode === "tuner" && both.slot === s.slot && both.held.length === 2, "both footswitches held: the tuner, the preset unchanged");
+await post("/api/press/home");
+await until((x) => x.mode === "chain");
 
 // ---- 6. the knobs ----
 await post("/api/volume/50");
@@ -146,23 +148,23 @@ ok(s.volume === 100, "MASTER in focus: End is 100");
 await page.locator("#master").blur();
 
 await post("/api/press/amp");
-await post("/api/knob/2");
+await post("/api/knob/2");                             // (v42: down the page from MODEL: the NAM MODEL list, then GAIN)
 await post("/api/press/push");
 s = await until((x) => x.mode === "edit");
-const gain = s.preset.p[5][0], k0 = s.knob, pb = await box("#para");
+const gain = s.preset.p[5][1], k0 = s.knob, pb = await box("#para");
 await page.mouse.move(para.x, para.y);
 await page.mouse.down();
 for (let i = 1; i <= 3; i++) { await page.mouse.move(para.x, para.y - (i + 0.2) * pb.width / 10); await page.waitForTimeout(70); }
 await page.mouse.up();
 s = await until((x) => x.knob === k0 + 3);
-ok(s.preset.p[5][0] === gain + 3 && s.mode === "edit", `PARA dragged three detents, slowly: GAIN ${gain} -> ${s.preset.p[5][0]}, and no PUSH`);
+ok(s.preset.p[5][1] === gain + 3 && s.mode === "edit", `PARA dragged three detents, slowly: GAIN ${gain} -> ${s.preset.p[5][1]}, and no PUSH`);
 await page.mouse.wheel(0, NOTCH);
 s = await until((x) => x.knob === k0 + 2);
-ok(s.preset.p[5][0] === gain + 2, "PARA wheel: one detent back");
+ok(s.preset.p[5][1] === gain + 2, "PARA wheel: one detent back");
 await page.waitForTimeout(60);                          // closer than 45 ms it would be a fast turn
 await page.keyboard.press("ArrowRight");
 s = await until((x) => x.knob === k0 + 3);
-ok(s.preset.p[5][0] === gain + 3, "the right arrow: one detent");
+ok(s.preset.p[5][1] === gain + 3, "the right arrow: one detent");
 const turned = await page.locator("#para").evaluate((e) => e.style.getPropertyValue("--angle"));
 await post("/api/knob/1");
 await until((x) => x.knob === k0 + 4);
@@ -254,6 +256,7 @@ s = await until((x) => x.held.length === 2);
 ok(s.held.length === 2, "touch: both footswitches down at once, two fingers");
 await touch("touchEnd", []);
 await until((x) => !x.held.length);
+if ((await state()).mode === "tuner") await post("/api/press/home");
 
 const plain = await browser.newPage();
 await plain.goto(sim.url + "/plain");

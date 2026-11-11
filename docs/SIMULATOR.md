@@ -38,7 +38,8 @@ is one request; `POST down` and `POST up` have the firmware's.
 
 `http://127.0.0.1:8766/` is the pedal: its front panel, drawn in code (`tools/sim/pedal.html`), with the live screen in
 the LCD. It works as the pedal does, through `POST down` and `POST up`: a button acts when the firmware's does, so hold
-HOME 0.7 s for the tuner, hold PARA 0.8 s for SAVE, click PARA twice for MOVE.
+HOME 0.7 s for the tuner (1.4 s for the diagnostics), press both footswitches together for the tuner, hold PARA 0.8 s
+for SAVE, click PARA twice for MOVE.
 
 | Control | Mouse or touch | Keys |
 | --- | --- | --- |
@@ -67,8 +68,7 @@ brightens while it is held.
 
 The panel's Sound section plays guitar through the pedal: see "The sound".
 
-The TUNER line on the panel is the stock firmware's: in OpenPocket both footswitches are two presses, and the tuner is a
-long press of HOME.
+The TUNER line on the panel holds: both footswitches together open the tuner, as does a long press of HOME.
 
 `http://127.0.0.1:8766/plain` is the earlier plain page: the screen, every control as a button, the battery, the tuner
 pitch and the state.
@@ -95,7 +95,7 @@ sound. MASTER is the firmware's output gain, so it sets the level through the sa
 | Input | a bundled loop, a file (drop one on the page, or choose one), or a device of the computer |
 | Play, Stop | start and stop the source. The first click also starts the audio, because browsers require a gesture |
 | Loop | repeat the loop or file |
-| Bypass | the firmware's bypass: the dry input at MASTER, and "BYP" on the screen. It stays on across presets, unlike the pedal's, which is an overload guard and has no switch |
+| Bypass | the firmware's bypass: the dry input at MASTER, and the overload banner on the screen. It stays on across presets, unlike the pedal's, which is an overload guard and has no switch |
 | Input level | the level into the pedal: 100 % puts a full-scale recording at guitar level (below) |
 | Input, Output meters | peak dBFS going into and out of the engine, before the output volume |
 | Output volume | the computer's master volume, after the pedal; MASTER is the pedal's own |
@@ -128,7 +128,7 @@ decodes them, devices at the source, and the output to the sound card. Firefox r
 differs from the context's, and the page then says so; loops and files are not affected. This path was tested only in
 Chromium.
 
-**The load.** The status text ("C1 3%") and `dsp.load` show the time the engine took for a block as a share of 2.9 ms,
+**The load.** The status text ("DSP 3%") and `dsp.load` show the time the engine took for a block as a share of 2.9 ms,
 as the firmware measures it, but on this computer, so it is no prediction of the pedal's load. It stays 42 until the
 sound first runs.
 
@@ -152,13 +152,13 @@ before it is answered, so a state read right after a press shows the press.
 | --- | --- |
 | `GET info` | `{kind: "pedal" \| "update", port, flash, controls, log}`; `port` is the MIDI port name, `null` when none |
 | `GET state` | the pedal's state (below) |
-| `POST press/NAME` | a control: `fs_up` `fs_dn` `fx` `home` `push` `mod` `amp` `cab` `dly` `rev`; `push_long` (hold PUSH: SAVE), `dpush` (double click PUSH: MOVE), `home_long` (hold HOME: tuner) |
-| `POST down/NAME`, `POST up/NAME` | a button goes down, comes up: `fs_up` `fs_dn` `fx` `home` `push` `mod` `amp` `cab` `dly` `rev`. Timed as the firmware does: HOME and PUSH act at a short release, or after 0.7 s and 0.8 s held; two PUSH clicks within 350 ms on the chain are MOVE, one acts after those 350 ms; the others act when they go down. A button already down, or not down, is left as it is |
+| `POST press/NAME` | a control: `fs_up` `fs_dn` `fx` `home` `push` `mod` `amp` `cab` `dly` `rev`; `push_long` (hold PUSH: SAVE), `dpush` (double click PUSH: MOVE), `home_long` (hold HOME: tuner; on the tuner: diagnostics), `fx_long` (hold FX: MIDI), `feet` (both footswitches: tuner) |
+| `POST down/NAME`, `POST up/NAME` | a button goes down, comes up: `fs_up` `fs_dn` `fx` `home` `push` `mod` `amp` `cab` `dly` `rev`. Timed as the firmware does (`ui_buttons` in `firmware/ui.h`): HOME, PUSH and FX act at a short release, or after 0.7 s, 0.8 s and 0.8 s held (HOME held on as long again: the diagnostics); a PUSH click on the chain opens the block at once and a second one within 350 ms makes it MOVE; the others act when they go down; the second footswitch down within 150 ms of the first, while the first is held, takes the first one's step back and opens the tuner. A button already down, or not down, is left as it is |
 | `POST knob/N[?fast]` | the PARA knob N detents (negative: the other way); `fast` is the quick-turn step of 5 |
 | `POST volume/N` | the MASTER knob, 0..100 |
 | `POST battery/MV[/USB_MV]` | the battery voltage the screen shows; `USB_MV` above 4300 shows "USB" |
 | `POST tuner/HZ` | the pitch the tuner page hears (0: none) |
-| `POST bypass/0`, `POST bypass/1` | the bypass: `dsp.bypass`, "BYP" on the screen, the dry input in the sound |
+| `POST bypass/0`, `POST bypass/1` | the bypass: `dsp.bypass`, the overload banner on the screen, the dry input in the sound |
 | `POST load/N` | the load in the status text and `dsp.load`, 0..999. The page sets it while the sound runs |
 | `GET screen.png[?scale=N]` | the screen as a PNG, 240 x 240 times N (1..8, nearest neighbour) |
 | `GET screen.rgb565` | the raw frame buffer: 240 x 240 pixels, 2 bytes each, big endian, row by row |
@@ -179,7 +179,7 @@ before it is answered, so a state read right after a press shows the press.
 ```
 
 `slot` is 0..51 (the pedal shows 1..52); `dirty`: the sound differs from its slot (the pedal's "EDITED"); `saved`: the
-slot holds a saved preset (0: factory); `mode`: the page, one of `chain` `block` `edit` `tuner` `save` `move`; `block`:
+slot holds a saved preset (0: factory); `mode`: the page, one of `chain` `block` `edit` `tuner` `save` `move` `midi` `list` (the preset list) `diag` (diagnostics); `block`:
 the focused block (0 GATE, 1 COMP, 2 PITCH, 3 SFX, 4 DRIVE, 5 AMP, 6 CAB, 7 EQ, 8 MOD, 9 DELAY, 10 REVERB, 11 SYN);
 `writes_ok` is 0 once the firmware tried to write outside the preset area of the flash; `frame` counts the drawing
 calls: it changes when the screen does; `knob`: the detents PARA has turned since the start; `held`: the buttons that are

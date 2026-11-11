@@ -68,6 +68,7 @@ export function ufwEntries(logical) {
 export const OFFICIAL = [
   { model: "PocketX", product: "PocketX_016", size: 692244, sha256: "192a997f42ecb9ec0a136d4089f3d3b1fdc96b19f1d76fc237dca64f2119b5d9" },
   { model: "BlackBox", product: "BlackBox_020", size: 700436, sha256: "c0fef191b860d3b20f77fc492a24986eef2d12df44bb5e38355684820e26cb08" },
+  { model: "BlackBox", product: "BlackBox_021", size: 676884, sha256: "1dc7bc50db2b8ac3468509a8c43eb871fead262ebe7727e28e4df882fad5bb87" },
 ];
 
 // an official package for the way back: { product, model, known, image } or an Error.

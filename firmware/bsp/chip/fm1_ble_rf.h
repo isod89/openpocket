@@ -347,7 +347,10 @@ static uint32_t fm1_ble_rf_burst(uint32_t pc, uint32_t end, const uint8_t *const
     /* the burst leaves the flash unusable (above): the second core's job in flight first (at most one: no new one can start with
      * CPU0's interrupts off; fm1_cpu1_wait's 8 ms bound retires a core that does not come back, and a core that faulted, parked
      * in the fault handler's loop in the flash, is held there now rather than at CPU0's next look) */
-    (void)fm1_cpu1_wait();
+#ifndef FM1_CPU1_QUIET
+#define FM1_CPU1_QUIET() ((void)fm1_cpu1_wait())   /* (the app's own, when it has one: OpenPocket's px_audio.h) */
+#endif
+    FM1_CPU1_QUIET();
 #endif
     run(a, v, n);
     if (ie)

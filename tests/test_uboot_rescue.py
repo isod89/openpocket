@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import uboot_sim
 import uboot_rescue as ur
+import blackbox_v21_factory as factory
 from uboot_rescue import DeviceGone, GuardError, RescueError, ScsiError, Uboot, Window
 
 PACKAGE = Path(sys.argv.pop(1)) if len(sys.argv) > 1 and sys.argv[1].endswith(".fwsc") else ur.DEFAULT_PACKAGE
@@ -55,6 +56,34 @@ class Rescue(unittest.TestCase):
 
     def run_rescue(self, open_device, sim, write, attempts=10, image=IMAGE):
         return ur.rescue(open_device, LOADER, image, write, self.backups, attempts, self.logs.append, sim.clock)
+
+    def test_v21_factory_restore_backs_up_and_changes_only_the_sound_bank(self):
+        before = bytes(crashed_flash())
+        firmware = before[:factory.V21_SIZE]
+        bank = noise(4, 0x3C000 + 7370)
+        lo, hi = factory.BANK.lo, factory.BANK.hi
+        target = before[:lo] + bank + before[lo + len(bank):]
+        for write in (False, True):
+            with self.subTest(write=write):
+                sim, _ = self.pedal(before)
+                backups = []
+                sim.on_first_write = lambda: self.assertEqual(backups, [before])
+                count = factory.restore(sim, LOADER, firmware, bank, write, backups.append, self.logs.append)
+                self.assertEqual(backups, [before])
+                self.assertEqual(count, (hi - lo) // SECTOR)
+                self.assertEqual(bytes(sim.flash), target if write else before)
+                self.assertEqual(sim.erases(), list(range(lo, hi, SECTOR)) if write else [])
+                self.assertEqual(sim.seen[-1][0], ur.RUN_APP)
+
+    def test_v21_factory_restore_refuses_nonstock_app(self):
+        flash = crashed_flash()
+        firmware = bytes(flash[:factory.V21_SIZE])
+        flash[0x9E273] ^= 1
+        sim, _ = self.pedal(flash)
+        with self.assertRaisesRegex(GuardError, "complete original BlackBox V21"):
+            factory.restore(sim, LOADER, firmware, noise(4, 0x3C000 + 7370), True,
+                            self.fail, self.logs.append)
+        self.assertFalse(sim.writes() or sim.erases())
 
     # ---- the read-only mode
     def test_read_only_never_writes_and_backs_up(self):

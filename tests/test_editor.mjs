@@ -56,7 +56,7 @@ let s = sim(["--dump", flash1]);
 await s.ready;
 let ed = new Editor(s.access);
 const info = await ed.connect();
-ok(info && info.proto === 3 && info.version === "v39" && info.identity === "PocketX_939", `INFO: ${info && `${info.version} ${info.identity}`}`);
+ok(info && info.proto === 4 && info.version === "v39" && info.identity === "PocketX_939", `INFO: ${info && `${info.version} ${info.identity}`}`);
 ok(info && info.nblk === 12 && info.npar === 5 && info.nslot === 52 && info.nameMax === 13, "INFO: 12 blocks, 5 parameters, 52 slots, names of 13");
 const t0 = Date.now();
 const cat = await ed.catalog();
@@ -137,6 +137,12 @@ const oldDly = presetFromJSON({ name: "ECHO", blocks: [{ block: "DLY", on: true,
 const newDly = presetFromJSON(presetToJSON(oldDly.preset, cat), cat, q);
 ok(oldDly.preset.p[dl][0] === 40 && oldDly.warn.length === 1 && newDly.preset.p[dl][0] === 40 && newDly.warn.length === 0,
    "file: a delay TIME from before v35 keeps its time (50 -> 40 = 510 ms); a v35 file is taken as is");
+// ---- v42: USB AUDIO (protocol 4): off until asked for; kept in the store ----
+{
+  const u0 = await ed.usbAudio();
+  const u1 = await ed.usbAudio(true);
+  ok(ed.hasUsbAudio && !u0.on && u0.rc === 0 && u1.on && u1.rc === 0, "USB audio: off by default; switched on");
+}
 await s.end();
 
 // ---- 6. after a power cycle: the store is read back from the flash ----
@@ -145,6 +151,13 @@ await s.ready;
 ed = new Editor(s.access);
 await ed.connect();
 list = await ed.list();
+{
+  let u = await ed.usbAudio();
+  ok(u.on && u.rc === 0, "USB audio: still on after a power cycle");
+  ok(!u.recording && !u.playing && Object.keys(u.counts).length === 20, "USB audio: the streams' state and 20 counts");
+  u = await ed.usbAudio(false);
+  ok(!u.on && u.rc === 0 && !(await ed.usbAudio()).on, "USB audio: switched off again");
+}
 
 // ---- 7. v37: NAM models (an A2 file -> a user slot -> the AMP block's NAM type) ----
 {

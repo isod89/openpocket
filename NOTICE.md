@@ -4,7 +4,7 @@ OpenPocket is GPL-3.0-only (`LICENSE`), except the parts below, which keep their
 
 | Part | Origin | Licence |
 | --- | --- | --- |
-| `firmware/bsp/` (chip support: startup, interrupts, second core, flash, USB-MIDI device, M-UPGRADE update entry `ota.c`) | [felucca-bsp](https://github.com/hugelton/felucca-bsp), Leo Kuroshita / Hügelton Instruments and contributors. `chip/ota.c` changed for OpenPocket (identity read at run time). | MPL-2.0 (`LICENSES/MPL-2.0.txt`) |
+| `firmware/bsp/` (chip support: startup, interrupts, second core, flash, USB-MIDI device, M-UPGRADE update entry `ota.c`) | [felucca-bsp](https://github.com/hugelton/felucca-bsp), Leo Kuroshita / Hügelton Instruments and contributors. `chip/ota.c` changed for OpenPocket (identity read at run time). `chip/usb.c` changed for OpenPocket's USB audio (v42): the audio streams switched at run time (`FELUCCA_UAC_SWITCH`), the record stream's packet pacing of felucca-bsp `e79a1f8`, the playback mix in integers, fewer controller reads a poll. | MPL-2.0 (`LICENSES/MPL-2.0.txt`) |
 | `loader/` (update loader) | felucca-bsp `loader/`, changed for the Pocket X flash layout | MPL-2.0 |
 | `docs/pxota.js`, `docs/pxpkg.js`, `tools/pxpkg.py`, `tools/mkloader.py`, `tools/lz4blk.py` | adapted from [Felucca](https://github.com/hugelton/Felucca)'s web installer and build tools (as used by CLIPPER and SLOOP) | GPL-3.0 |
 | `firmware/sdk/` (I2S and DAC drivers as LLVM bitcode, SPL, cfg files) | JieLi AC79 SDK V1.2.0 (fw-AC79_AIoT_SDK) | Apache-2.0 (`LICENSES/Apache-2.0.txt`) |
@@ -19,6 +19,15 @@ Modeler community captures ([pelennor2170/NAM_models](https://github.com/pelenno
 in `docs/NAM.md`) played with DI guitar from [Alec-Wright/Automated-GuitarAmpModelling](https://github.com/Alec-Wright/Automated-GuitarAmpModelling)
 (GPL v3). The NAM A2 architecture is from Neural Amp Modeler (Steven Atkinson, MIT); `engine/px_nam.c`,
 `tools/nam_a2.py` and `tools/train_a2.py` are written for OpenPocket from the published architecture.
+
+Contributors: **Vince Speelman ([VinSpee](https://github.com/VinSpee))**: the simulator's WebAssembly engine and its sound, the
+command-line flasher, MIDI, the Bluetooth test image (the radio's fix, a connectable BLE-MIDI peripheral, the Chocolate
+Plus test, `op.mjs log`), and v41's two-core NAM work (the network split by layers, the `rdm` / `post4` / `post5` routines, 24 KB of RAM
+freed, the faster preset switches with LOADING, PING's DSP health and `tools/dsp.mjs`, the pedal screen's quick wins;
+pull request #22), and v42's web editor in four sections (#23), the pedal's reworked controls and diagnostics pages
+(#24) and USB audio (#25).
+**Ivan Shevchuk ([Testing7B](https://github.com/Testing7B))**: v42's check and restore of the BlackBox V21 factory
+sounds (pull request #26).
 
 Sound models: the names refer to the gear that inspired each voicing (circuit analyses published by ElectroSmash,
 Electric Druid, R.G. Keen / GEOFEX, Rob Robinette, Duncan's Tone Stack Calculator; speaker data sheets; manufacturers'

@@ -42,11 +42,13 @@ static uint32_t (*pxn_pt)(void);
 static uint32_t pxn_prof[9];
 static uint8_t pxn_pskip, pxn_pd = 1;
 static uint8_t pxn_p3ok, pxn_pc = 4;                 /* post3 checked; frames per post call (4 with the vector unit) */
-static uint32_t pxn_ptt[3];                          /* mode 0 timed with post2, post3 and post4 */
+static uint32_t pxn_ptt[4];                          /* mode 0 timed with post2, post3, post4 and post5 */
 static uint8_t pxn_p4ok, pxn_p4on;                   /* post4 checked; in use (where x is read from the ring) */
-uint32_t pxn_post_ticks(int v) { return v >= 0 && v < 3 ? pxn_ptt[v] : 0; }
+static uint8_t pxn_p5ok, pxn_p5on;                   /* post5 checked; in use (post4's frames, two at a time) */
+uint32_t pxn_post_ticks(int v) { return v >= 0 && v < 4 ? pxn_ptt[v] : 0; }
 int pxn_post3_state(void) { return pxn_p3ok ? 1 + (pxn_ptt[1] && pxn_ptt[1] < pxn_ptt[0]) : 0; }
 int pxn_post4_state(void) { return pxn_p4ok ? 1 + (pxn_p4on != 0) : 0; }
+int pxn_post5_state(void) { return pxn_p5ok ? 1 + (pxn_p5on != 0) : 0; }
 #define PXN_T() (pxn_pt ? pxn_pt() : 0u)
 uint32_t pxn_prof_ticks(int k) { return k >= 0 && k < 9 ? pxn_prof[k] : 0; }
 static int32_t pxn_z[PXN_N * PXN_C + 4], pxn_hs[PXN_N * PXN_C];
@@ -211,12 +213,28 @@ void pxn_post_asm(const pxn_post *j);
 void pxn_post2_asm(const pxn_post *j);
 void pxn_post3_asm(const pxn_post *j);
 void pxn_post4_asm(const pxn_post *j);
+void pxn_post5_asm(const pxn_post *j);
 void pxn_rdot_asm(const pxn_rdot *j);
 void pxn_rdot6_asm(const pxn_rdot *j);
 void pxn_rdq6_asm(const pxn_rdot *j), pxn_rdq15_asm(const pxn_rdot *j), pxn_rdq16_asm(const pxn_rdot *j);
 void pxn_rdl6_asm(pxn_rdot *j), pxn_rdl15_asm(pxn_rdot *j), pxn_rdl16_asm(pxn_rdot *j);
 void pxn_rdm6_asm(pxn_rdot *j), pxn_rdm15_asm(pxn_rdot *j);
 void pxn_gcopy_asm(int32_t *dst, const int32_t *src, int n, int sb);
+/* v40.5: where the routines that do most of the network's work lie (rdm6, rdm15, post5: 6.6 KB). On the pedal the RAM
+ * code gets an instruction word in about 1.5 cycles; the flash code, through the instruction cache, one every cycle
+ * (measured: sixteen 6-byte instructions of 1 cycle in a loop take 2.14 cycles each from RAM, 1.49 from the flash, 1.0
+ * in a hardware loop, which fetches nothing). These loops are multiply-adds paired with loads, 6 bytes for 2 cycles of
+ * work: from RAM they wait for their own instructions. They are small, run all the time and stay in the cache.
+ * PXN_HOT_RAM 1 keeps them in the RAM code (the Bluetooth test image, whose radio code runs from the flash all the
+ * time and has not been measured this way). */
+#ifndef PXN_HOT_RAM
+#define PXN_HOT_RAM 0
+#endif
+#if PXN_HOT_RAM
+#define PXN_HOT "\t.text\n"
+#else
+#define PXN_HOT "\t.section .text.pxn_hot,\"ax\"\n"
+#endif
 #if defined(__PI32V2__) && !defined(PXN_NO_ASM)
 #define PXN_ASM 1
 __asm__(
@@ -580,6 +598,123 @@ __asm__(
     "\tif (--r0 != 0) goto .Lpxn_p4h\n"
     ".Lpxn_p4e:\n"
     "\tsp += 48\n"
+    "\t{pc, r15-r4} = [sp++]\n"
+    /* post5 (v40.5, tools/gen_rdq.py --post5): post4's frames two at a time, for a layer with an output. The residual's 9
+     * weights are read once for the two frames, and every load and store rides on an instruction that computes: on the
+     * pedal that is free on a multiply or multiply-add and costs the memory word's own time on a 1-cycle instruction
+     * (measured), so a turn of 2 frames takes 109 cycles against post4's 159. Every value is loaded 2 instructions or
+     * more before its use, and no word outside the job's is read. r0 z, r1 hs then out, r7 x; r2 r3 r6 values (r6 the
+     * slope while the activations are made); r5_r4 and r9_r8 the two frames' sums; r10..r15 the 6 activations. Stack:
+     * [sp+0..44] the residual, [sp+48] hs - z, [sp+52] out - z, [sp+56] z's end. n even and > 0, out not 0.
+     * In the flash (PXN_HOT): from RAM its 292 bytes a turn take 126 cycles to fetch and run, from the flash 109 */
+    PXN_HOT
+    "\t.global pxn_post5_asm\n"
+    "pxn_post5_asm:\n"
+    "\t[--sp] = {rets, r15-r4}\n"
+    "\tsp += -60\n"
+    "\tr7 = [r0+28]\n"
+    "\tr4 = [r7+0]\n"
+    "\t[sp+0] = r4\n"
+    "\tr4 = [r7+4]\n"
+    "\t[sp+4] = r4\n"
+    "\tr4 = [r7+8]\n"
+    "\t[sp+8] = r4\n"
+    "\tr4 = [r7+12]\n"
+    "\t[sp+12] = r4\n"
+    "\tr4 = [r7+16]\n"
+    "\t[sp+16] = r4\n"
+    "\tr4 = [r7+20]\n"
+    "\t[sp+20] = r4\n"
+    "\tr4 = [r7+24]\n"
+    "\t[sp+24] = r4\n"
+    "\tr4 = [r7+28]\n"
+    "\t[sp+28] = r4\n"
+    "\tr4 = [r7+32]\n"
+    "\t[sp+32] = r4\n"
+    "\tr4 = [r7+36]\n"
+    "\t[sp+36] = r4\n"
+    "\tr4 = [r7+40]\n"
+    "\t[sp+40] = r4\n"
+    "\tr4 = [r7+44]\n"
+    "\t[sp+44] = r4\n"
+    "\tr1 = [r0+0]\n"
+    "\tr2 = [r0+4]\n"
+    "\tr3 = [r0+16]\n"
+    "\tr4 = [r0+20]\n"
+    "\tr5 = [r0+24]\n"
+    "\tr6 = r3 - r1\n"
+    "\t[sp+48] = r6\n"
+    "\tr6 = r4 - r1\n"
+    "\t[sp+52] = r6\n"
+    "\tr6 = 12\n"
+    "\tr5 = r5 * r6\n"
+    "\tr5 += r1\n"
+    "\t[sp+56] = r5\n"
+    "\tr7 = r2 + -24\n"
+    "\tr0 = r1\n"
+    "\tr1 = r3\n"
+    ".Lpxn_p5f:\n"
+    "\tr7 += 24  #  r2 = [r0+0]\n"
+    "\tr6 = 42949673\n"
+    "\tr9_r8 = r2 * r6 (s)  #  r3 = [r0+4]\n"
+    "\tr10 = smax(r2, r9)  #  r4 = [r1+0]\n"
+    "\tr9_r8 = r3 * r6 (s)  #  r2 = [r0+8]\n"
+    "\tr4 += r10  #  r5 = [r1+4]\n"
+    "\tr11 = smax(r3, r9)  #  [r1++=4] = r4\n"
+    "\tr9_r8 = r2 * r6 (s)  #  r3 = [r0+12]\n"
+    "\tr5 += r11  #  r4 = [r1+4]\n"
+    "\tr12 = smax(r2, r9)  #  [r1++=4] = r5\n"
+    "\tr9_r8 = r3 * r6 (s)  #  r2 = [r0+16]\n"
+    "\tr4 += r12  #  r5 = [r1+4]\n"
+    "\tr13 = smax(r3, r9)  #  [r1++=4] = r4\n"
+    "\tr9_r8 = r2 * r6 (s)  #  r3 = [r0+20]\n"
+    "\tr5 += r13  #  r4 = [r1+4]\n"
+    "\tr14 = smax(r2, r9)  #  [r1++=4] = r5\n"
+    "\tr9_r8 = r3 * r6 (s)  #  r5 = [r1+4]\n"
+    "\tr4 += r14  #  r2 = [sp+0]\n"
+    "\tr15 = smax(r3, r9)  #  [r1++=4] = r4\n"
+    "\tr5 += r15  #  r3 = [sp+12]\n"
+    "\tr9_r8 = r2 * r13 (s)  #  [r1++=4] = r5\n"
+    "\tr5_r4 = r2 * r10 (s)  #  r6 = [sp+52]\n"
+    "\tr5_r4 += r3 * r11 (s)  #  r2 = [sp+24]\n"
+    "\tr9_r8 += r3 * r14 (s)  #  r3 = [r7+0]\n"
+    "\tr1 = r0 + r6  #  r6 = [sp+36]\n"
+    "\tr5_r4 += r2 * r12 (s)\n"
+    "\tr9_r8 += r2 * r15 (s)  #  r2 = [r7+12]\n"
+    "\tr5_r4 >>= 24\n"
+    "\tr9_r8 >>= 24\n"
+    "\tr4 += r6\n"
+    "\tr4 += r3  #  r3 = [sp+4]\n"
+    "\tr6 += r8  #  [r1+0] = r4\n"
+    "\tr6 += r2  #  r2 = [sp+16]\n"
+    "\tr5_r4 = r3 * r10 (s)  #  [r1+12] = r6\n"
+    "\tr9_r8 = r3 * r13 (s)  #  r3 = [sp+28]\n"
+    "\tr5_r4 += r2 * r11 (s)  #  r6 = [sp+40]\n"
+    "\tr9_r8 += r2 * r14 (s)  #  r2 = [r7+4]\n"
+    "\tr5_r4 += r3 * r12 (s)\n"
+    "\tr9_r8 += r3 * r15 (s)  #  r3 = [r7+16]\n"
+    "\tr5_r4 >>= 24\n"
+    "\tr9_r8 >>= 24\n"
+    "\tr4 += r6\n"
+    "\tr4 += r2  #  r2 = [sp+8]\n"
+    "\tr6 += r8  #  [r1+4] = r4\n"
+    "\tr6 += r3  #  r3 = [sp+20]\n"
+    "\tr5_r4 = r2 * r10 (s)  #  [r1+16] = r6\n"
+    "\tr9_r8 = r2 * r13 (s)  #  r2 = [sp+32]\n"
+    "\tr5_r4 += r3 * r11 (s)  #  r6 = [sp+44]\n"
+    "\tr9_r8 += r3 * r14 (s)  #  r3 = [r7+8]\n"
+    "\tr5_r4 += r2 * r12 (s)\n"
+    "\tr9_r8 += r2 * r15 (s)  #  r2 = [r7+20]\n"
+    "\tr5_r4 >>= 24\n"
+    "\tr9_r8 >>= 24\n"
+    "\tr4 += r6\n"
+    "\tr4 += r3  #  r3 = [sp+48]\n"
+    "\tr6 += r8  #  [r1+8] = r4\n"
+    "\tr6 += r2  #  r2 = [sp+56]\n"
+    "\tr0 += 24  #  [r1+20] = r6\n"
+    "\tr1 = r0 + r3\n"
+    "\tif (r0 != r2) goto .Lpxn_p5f\n"
+    "\tsp += 60\n"
     "\t{pc, r15-r4} = [sp++]\n"
     /* v40.2: rdot, rdot6, the rdq routines and rdl6, rdl15 stay in the flash (.text.pxn_cold, not moved to RAM): they
      * only serve the start-up check and timing, rdm doing the work, and the RAM code window needs the room */
@@ -2699,7 +2834,8 @@ __asm__(
     "\t{pc, r15-r4} = [sp++]\n"
 
     /* rdm (v40.2, tools/gen_rdq.py --rdm): rdl's job for the 3 rows of a 6- or 15-tap layer, rows 0 and 1 two frames at a
-     * time (every load paired with a multiply-add), row 2 four frames at a time */
+     * time (every load paired with a multiply-add), row 2 four frames at a time. v40.5: in the flash (PXN_HOT) */
+    PXN_HOT
     "\t.global pxn_rdm6_asm\n"
     "pxn_rdm6_asm:\n"
     "\t[--sp] = {rets, r15-r4}\n"
@@ -3997,6 +4133,7 @@ __asm__(
     "\t[r4+16] = r7\n"
     "\tsp += 80\n"
     "\t{pc, r15-r4} = [sp++]\n"
+    "\t.text\n"
     /* gcopy: r0 dst, r1 src, r2 frames, r3 row stride */
     "\t.global pxn_gcopy_asm\n"
     "pxn_gcopy_asm:\n"
@@ -4203,7 +4340,7 @@ static void pxn_test_data(int32_t *s) { pxn_test_data_sh(s, 6); }
 int pxn_selftest(int32_t *scratch)
 {
 #if PXN_HAND
-    int32_t *s = scratch, ok = 1, p2ok = 1, p3ok = 1, p4ok = 1;
+    int32_t *s = scratch, ok = 1, p2ok = 1, p3ok = 1, p4ok = 1, p5ok = 1;
     for (int pass = 0; pass < 4 && ok; pass++) {
         pxn_test_data(s);
         const int T = pass & 1 ? 47 : 20, sb = PXN_S * 4;
@@ -4241,6 +4378,13 @@ int pxn_selftest(int32_t *scratch)
             q4.hs = PXN_T_O(s, 6); if (q4.out) q4.out = PXN_T_O(s, 7);
             pxn_post4_asm(&q4);
             if (memcmp(PXN_T_O(s, 2), PXN_T_O(s, 6), 64 * 4) || memcmp(PXN_T_O(s, 3), PXN_T_O(s, 7), 64 * 4)) p4ok = 0;
+            if (c4.out) {                                 /* post5: the same check, 6 frames (it takes them in twos) */
+                for (int i = 0; i < 64; i++) PXN_T_O(s, 2)[i] = PXN_T_O(s, 3)[i] = PXN_T_O(s, 6)[i] = PXN_T_O(s, 7)[i] = i * 77 - 1000;
+                c4.n = q4.n = 6;
+                pxn_post_c(&c4);
+                pxn_post5_asm(&q4);
+                if (memcmp(PXN_T_O(s, 2), PXN_T_O(s, 6), 64 * 4) || memcmp(PXN_T_O(s, 3), PXN_T_O(s, 7), 64 * 4)) p5ok = 0;
+            }
         }
         pxn_gcopy_c(PXN_T_O(s, 0), PXN_T_W(s) + pass, 5, 40);
         pxn_gcopy_asm(PXN_T_O(s, 1), PXN_T_W(s) + pass, 5, 40);
@@ -4334,6 +4478,7 @@ int pxn_selftest(int32_t *scratch)
         pxn_post_f = p2ok ? pxn_post2_asm : pxn_post_asm;
         pxn_p3ok = (uint8_t)(p2ok && p3ok);             /* pxn_tune times post3 against post2 */
         pxn_p4ok = (uint8_t)(p2ok && p4ok);             /* and post4 against both */
+        pxn_p5ok = (uint8_t)(pxn_p4ok && p5ok);         /* and post5 against post4, whose frames it takes */
     }
     /* the vector unit: rows of 20 and 47 over 8 X rows, against the C dot */
     {
@@ -4414,6 +4559,7 @@ int pxn_asm_in_use(void)
 }
 
 /* ---- measurements for the firmware's bench screen (BENCH_AT_BOOT) ---- */
+#if !PXN_LEAN   /* v40.4: nothing calls them in a shipped image (the linker keeps every function): out of the Bluetooth test image, whose flash is full */
 /* ticks for `reps` runs of the work of one kernel-6 layer over 32 frames (gather 6 taps, 3 dot rows of 20, post with
  * the residual): 1,920 multiply-adds a run. hand: the hand routines (if any), else C. scratch: PXN_TEST_WORDS */
 uint32_t pxn_bench_layer(int32_t *scratch, uint32_t (*ticks)(void), int hand, int reps)
@@ -4631,6 +4777,8 @@ uint32_t pxn_bench_ops(int kind, int32_t *buf, int reps, int *n, uint32_t (*tick
 #endif
 }
 
+#endif
+
 /* ---- loading ---- */
 static int pxn_finite(float x)
 {
@@ -4798,6 +4946,19 @@ static inline void pxn_mir(int32_t *ring, int32_t len, int32_t p, int c)
         b[0] = a[0]; b[1] = a[1]; b[2] = a[2];
     }
 }
+#if PXN_HAND
+/* post4's job by post5 where it can: a layer with an output, two frames at a time (an odd first frame by post4) */
+static void pxn_post45(const pxn_post *p)
+{
+    if (!pxn_p5on || !p->out || p->n < 2) { pxn_post4_asm(p); return; }
+    if (!(p->n & 1)) { pxn_post5_asm(p); return; }
+    pxn_post q = *p;
+    q.n = 1;
+    pxn_post4_asm(&q);
+    q.z += 3; q.x += 3; q.hs += 3; q.out += 3; q.n = p->n - 1;
+    pxn_post5_asm(&q);
+}
+#endif
 /* layer i's post for frames f0 .. f0+n-1: LeakyReLU, head sum, residual into the next layer's ring (its block starts
  * at its write position, still the one before this block); in pieces of 4 frames, the vector unit kicked between */
 static void pxn_post_part(pxn_model *m, int i, int f0, int n, int kick, int ring, const pxn_sc *sc)
@@ -4828,7 +4989,7 @@ static void pxn_post_part(pxn_model *m, int i, int f0, int n, int kick, int ring
         if (q) { p.out = q; q += 3 * c; }
         p.n = c;
 #if PXN_HAND
-        if (ring && pxn_p4on) pxn_post4_asm(&p);
+        if (ring && pxn_p4on) pxn_post45(&p);
         else
 #endif
         pxn_post_f(&p);
@@ -5226,6 +5387,25 @@ typedef char pxn_lp_size_check[sizeof(pxn_lpm) <= PXN_LP_BYTES ? 1 : -1];
 static pxn_lpm *pxn_lp;
 static volatile uint32_t pxn_lp_in, pxn_lp_out;        /* blocks handed over, finished */
 static volatile int32_t pxn_lp_s = PXN_NL / 2;
+static volatile int32_t pxn_lp_se = PXN_NL / 2;        /* v40.4: the s of the last block handed over */
+static volatile uint8_t pxn_lp_hard;                   /* its next rise may wait for the other core (pxn_lp_force) */
+/* v40.5: CPU0's waits for the other core end after a limit (pxn_lp_clock; none set: they wait as long as it takes, as on
+ * the PC). Past it the other core is taken as stuck: pxn_lp_a returns without handing the block over (its output is not
+ * written) and pxn_lp_gave_up says so until pxn_lp_reset; the caller then retires that core and resets the engine, as for
+ * a core that faults. Until v40 every wait for CPU1 ended after FM1_CPU1_TIMEOUT_US (fm1_cpu1_wait, LATE): a CPU1 that
+ * stopped without a fault cost one core, not a stuck audio interrupt and a watchdog reset. */
+static uint32_t (*pxn_lp_tk)(void);
+static uint32_t pxn_lp_lim;
+static volatile uint8_t pxn_lp_dead;
+void pxn_lp_clock(uint32_t (*ticks)(void), uint32_t limit) { pxn_lp_tk = ticks; pxn_lp_lim = limit; }
+int pxn_lp_gave_up(void) { return pxn_lp_dead; }
+static inline uint32_t pxn_lp_t0(void) { return pxn_lp_tk ? pxn_lp_tk() : 0u; }
+static inline int pxn_lp_late(uint32_t t0)               /* 1 = past the limit: the other core is stuck */
+{
+    if (!pxn_lp_tk || pxn_lp_tk() - t0 < pxn_lp_lim) return 0;
+    pxn_lp_dead = 1;
+    return 1;
+}
 void pxn_set_lp(void *base, unsigned bytes) { pxn_lp = bytes >= sizeof(pxn_lpm) ? (pxn_lpm *)base : 0; }
 /* the layer split can run: its memory, the network read straight from the rings (no X rows, which the cores would
  * share), two cores without the vector unit */
@@ -5233,12 +5413,32 @@ int pxn_lp_ok(void) { return pxn_lp && pxn_rd && PXN_MC[pxn_mode_v].h && !PXN_MC
 void pxn_lp_reset(void)                                  /* (no block in progress: the network was reset or loaded) */
 {
     pxn_lp_in = pxn_lp_out = 0;
+    pxn_lp_hard = 0;
+    pxn_lp_dead = 0;
+    pxn_lp_se = pxn_lp_s;
     if (pxn_lp) for (int i = 0; i < PXN_NL; i++) pxn_lp->ld[i] = 0;
     PXN_SYNC();
 }
 void pxn_lp_split(int s) { pxn_lp_s = s < 0 ? 0 : s > PXN_NL - 1 ? PXN_NL - 1 : s; }
 int pxn_lp_split_now(void) { return pxn_lp_s; }
+int pxn_lp_split_used(void) { return pxn_lp_se; }
+void pxn_lp_force(void) { pxn_lp_hard = 1; }
 uint32_t pxn_lp_queued(void) { return pxn_lp_in - pxn_lp_out; }
+/* v40.4: the blocks handed over so far; 1 while one handed over before `upto` is not finished (the caller's own count) */
+uint32_t pxn_lp_handed(void) { return pxn_lp_in; }
+int pxn_lp_before(uint32_t upto) { return (int32_t)(upto - pxn_lp_out) > 0; }
+/* the network's work in layers 0..s, in 1/1024 of the whole (the 15-tap layers weigh 1.9 six-tap ones, the head 0.7;
+ * measured: tools/dsp.mjs prints the parts), for sharing it between the cores */
+uint32_t pxn_lp_share(int s)
+{
+    uint32_t a = 0, t = 11;                              /* (the head, in 1/16 of a six-tap layer) */
+    for (int i = 0; i < PXN_NL; i++) {
+        const uint32_t w = pxn_k[i] > 6 ? 30u : 16u;
+        t += w;
+        if (i <= s) a += w;
+    }
+    return a * 1024u / t;
+}
 #ifdef PXN_EMUVEC
 static pxn_model *pxn_lp_em;                             /* PC: the other core's work, done while this one waits */
 #define PXN_LSTEP() (pxn_lp_em ? (void)pxn_lp_b(pxn_lp_em) : (void)0)
@@ -5249,6 +5449,16 @@ static inline void pxn_lp_wait(uint32_t b, int lo, int hi)   /* layers lo..hi of
 {
     for (int j = lo; j <= hi; j++)
         while ((int32_t)(pxn_lp->ld[j] - b) < 0) { PXN_SYNC(); PXN_LSTEP(); }
+}
+static inline int pxn_lp_wait_a(uint32_t b, int lo, int hi)   /* CPU0's pxn_lp_wait: 1 = it gave up (pxn_lp_late) */
+{
+    const uint32_t t0 = pxn_lp_t0();
+    for (int j = lo; j <= hi; j++)
+        while ((int32_t)(pxn_lp->ld[j] - b) < 0) {
+            PXN_SYNC(); PXN_LSTEP();
+            if (pxn_lp_late(t0)) return 1;
+        }
+    return 0;
 }
 static inline void pxn_lp_next(pxn_layer *L)
 {
@@ -5262,10 +5472,29 @@ void pxn_lp_a(pxn_model *m, const float *in, float *out)
 #ifdef PXN_EMUVEC
     pxn_lp_em = m;
 #endif
-    while (b - pxn_lp_out >= PXN_LPQ) { PXN_SYNC(); PXN_LSTEP(); }   /* (the queue full: CPU1 far behind) */
+    if (pxn_lp_dead) return;                             /* (the other core gave up: nothing until pxn_lp_reset) */
+    {
+        const uint32_t t0 = pxn_lp_t0();
+        while (b - pxn_lp_out >= PXN_LPQ) {              /* (the queue full: CPU1 far behind) */
+            PXN_SYNC(); PXN_LSTEP();
+            if (pxn_lp_late(t0)) return;
+        }
+    }
     pxn_lpe *e = &pxn_lp->e[b % PXN_LPQ];
-    const int s = pxn_lp_s;
-    pxn_lp_wait(b, 0, s);                                /* (s moved up: CPU1 had layers up to s of the block before) */
+    /* v40.4: layers 0..s here: as far as asked (pxn_lp_s), and no further than the other core has finished the block
+     * before's (it ran those the block before's s left it). Where s moves up, this core does not wait for it: it
+     * takes the layers once they are free (with the other core up to date at the start of an audio block: at once).
+     * Unless told to (pxn_lp_force: the other core is the one behind, and stays so until this core takes them): then
+     * it waits, once, as before */
+    int s = 0;
+    PXN_SYNC();
+    while (s < pxn_lp_s && (int32_t)(pxn_lp->ld[s + 1] - b) >= 0) s++;
+    if (s < pxn_lp_s && pxn_lp_hard) {
+        s = pxn_lp_s;
+        if (pxn_lp_wait_a(b, 0, s)) return;              /* (nothing written yet: the block is not handed over) */
+    }
+    pxn_lp_hard = 0;
+    pxn_lp_se = s;
     e->out = out;
     e->s = s;
     pxn_layer *L0 = &m->L[0];
@@ -5371,11 +5600,13 @@ int pxn_tune(pxn_model *m, uint32_t (*ticks)(void), uint32_t t[PXN_MODES])
         pxn_sv_c = (int32_t)(pxn_rdt[b] / (8u * PXN_N));  /* one frame through every layer, one core (ticks) */
     }
 #if PXN_HAND
-    pxn_p4on = 0;
-    if (pxn_p3ok) for (int v = 0; v < 3; v++) {          /* post2, post3, post4 (from the ring): the fastest */
-        if (v == 2 && !pxn_p4ok) { pxn_ptt[2] = 0; break; }
+    pxn_p4on = pxn_p5on = 0;
+    pxn_ptt[2] = pxn_ptt[3] = 0;
+    if (pxn_p3ok) for (int v = 0; v < 4; v++) {          /* post2, post3, post4 (from the ring), post5: the fastest */
+        if ((v == 2 && !pxn_p4ok) || (v == 3 && !pxn_p5ok)) break;
         pxn_post_f = v == 1 ? pxn_post3_asm : pxn_post2_asm;
-        pxn_p4on = (uint8_t)(v == 2);
+        pxn_p4on = (uint8_t)(v >= 2);
+        pxn_p5on = (uint8_t)(v == 3);
         pxn_mode_v = 0;
         pxn_reset(m);
         uint32_t r = 4321u, dt = 0;
@@ -5389,6 +5620,7 @@ int pxn_tune(pxn_model *m, uint32_t (*ticks)(void), uint32_t t[PXN_MODES])
     }
     if (pxn_p3ok) pxn_post_f = pxn_ptt[1] < pxn_ptt[0] ? pxn_post3_asm : pxn_post2_asm;
     pxn_p4on = (uint8_t)(pxn_p3ok && pxn_p4ok && pxn_ptt[2] && pxn_ptt[2] < pxn_ptt[0] && pxn_ptt[2] < pxn_ptt[1]);
+    pxn_p5on = (uint8_t)(pxn_p4on && pxn_p5ok && pxn_ptt[3] && pxn_ptt[3] < pxn_ptt[2]);
 #endif
     for (int pass = 0; pass < 2; pass++) {               /* the profile (mode 0, the chosen way), then without kernel */
         uint32_t keep[9];
@@ -5425,6 +5657,7 @@ int pxn_tune(pxn_model *m, uint32_t (*ticks)(void), uint32_t t[PXN_MODES])
         t[mode] = dt;
         if (dt < t[best]) best = mode;
     }
+    if (t[0]) pxn_sv_c = (int32_t)(t[0] / (8u * PXN_N));  /* v40.4: one frame, one core, with the routines chosen above */
     pxn_mode_v = best;
     pxn_reset(m);
     return best;
@@ -5508,7 +5741,7 @@ int pxn_equiv(pxn_model *m, int mode)
     if (!m->ready || mode < 0 || mode >= PXN_MODES || (PXN_MC[mode].h && !pxn_hrun) || PXN_MC[mode].pipe || mode == 1)
         return -1;
     const int mv = pxn_mode_v;
-    const uint8_t rd = pxn_rd, rq = pxn_rdq_on, rl = pxn_rdl_on, rm = pxn_rdm_on, p4 = pxn_p4on;
+    const uint8_t rd = pxn_rd, rq = pxn_rdq_on, rl = pxn_rdl_on, rm = pxn_rdm_on, p4 = pxn_p4on, p5 = pxn_p5on;
     void (*const d3)(const pxn_dot *) = pxn_dot3x4, (*const d1)(const pxn_dot *) = pxn_dot1, (*const po)(const pxn_post *) = pxn_post_f;
     void (*const gc)(int32_t *, const int32_t *, int, int) = pxn_gcopy;
     void (*const r1)(const pxn_rdot *) = pxn_rdot_f, (*const r6)(const pxn_rdot *) = pxn_rdot6_f;
@@ -5516,7 +5749,7 @@ int pxn_equiv(pxn_model *m, int mode)
     int diff = 0;
     for (int pass = 0; pass < 2; pass++) {
         if (pass) {                                      /* every routine in C, one core */
-            pxn_mode_v = 0; pxn_rd = 1; pxn_rdq_on = 0; pxn_rdl_on = 1; pxn_rdm_on = 0; pxn_p4on = 0;
+            pxn_mode_v = 0; pxn_rd = 1; pxn_rdq_on = 0; pxn_rdl_on = 1; pxn_rdm_on = 0; pxn_p4on = pxn_p5on = 0;
             pxn_dot3x4 = pxn_dot3x4_c; pxn_dot1 = pxn_dot1_c; pxn_post_f = pxn_post_c; pxn_gcopy = pxn_gcopy_c;
             pxn_rdot_f = pxn_rdot6_f = pxn_rdot_c;
             pxn_rdl_f[6] = pxn_rdl_f[15] = pxn_rdl_f[16] = pxn_rdl_c;
@@ -5536,7 +5769,7 @@ int pxn_equiv(pxn_model *m, int mode)
             else if (hb[b] != h) diff++;
         }
     }
-    pxn_mode_v = mv; pxn_rd = rd; pxn_rdq_on = rq; pxn_rdl_on = rl; pxn_rdm_on = rm; pxn_p4on = p4;
+    pxn_mode_v = mv; pxn_rd = rd; pxn_rdq_on = rq; pxn_rdl_on = rl; pxn_rdm_on = rm; pxn_p4on = p4; pxn_p5on = p5;
     pxn_dot3x4 = d3; pxn_dot1 = d1; pxn_post_f = po; pxn_gcopy = gc; pxn_rdot_f = r1; pxn_rdot6_f = r6;
     pxn_rdl_f[6] = l6; pxn_rdl_f[15] = l15; pxn_rdl_f[16] = l16;
     pxn_reset(m);

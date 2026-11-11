@@ -55,6 +55,43 @@ written, so a rerun is short.
 Options (after `ARGS=` with make): `--check` (prerequisites only), `--package`, `--image`, `--loader`, `--backup-dir DIR`, `--attempts N` (UBOOT windows to try, default 10).
 Exit codes: 0 done, 1 setup problem (libusb, root, files), 2 refused by a safety check, 130 stopped by Ctrl-C.
 
+## BlackBox V21 factory sounds
+
+The official BlackBox V21 download installs the firmware but contains no sound bank.
+OpenPocket's NAM, preset and loader storage overlap parts of the stock sound bank.
+V21 checks all 20 amp and 20 cabinet records at startup and disables the sound bank
+when any of them are invalid. In that state M-EFCS cannot restore it one model at a time.
+
+Use the web installer to install the official [BlackBox V21 package](https://www.m-vave.com/appdownload)
+if the pedal is running another version. When it shows `BlackBox_021`, click **Verify factory sounds**.
+If the check fails, use the steps below on a Mac with M-EFCS, Python 3 and libusb installed
+(`brew install libusb`). Connect only the BlackBox and close other apps using the pedal.
+The recovery port uses USB Mass Storage, which [WebUSB protects](https://wicg.github.io/webusb/#has-a-protected-interface-class).
+The installer can enter recovery mode over MIDI, and the Terminal tool handles the flash transfer.
+
+1. In Terminal, from the OpenPocket repository, start the read-only check with the same V21 file.
+   Replace the example path with the location of your download.
+
+   ```sh
+   sudo python3 tools/blackbox_v21_factory.py --package ~/Downloads/BlackBox.fwsc
+   ```
+
+2. When Terminal is waiting for UBOOT, click **Enter BlackBox USB recovery** under step 3
+   in the installer. The tool checks the complete installed V21 firmware against the download,
+   saves a flash backup in `~/OpenPocket-rescue`, and reboots the pedal.
+3. Once the read-only check passes, run the same command with `--write` and click the
+   recovery button again when Terminal is ready. This replaces the 20 factory amps,
+   20 cabs and 80 presets. The tool checks the entire flash after writing. It only
+   writes sectors in the factory bank at `0xBF000..0xFCFFF`.
+4. After the pedal returns, click **Verify factory sounds** in the installer. This
+   compares every record the running firmware returns with the vendor's factory bank.
+
+The tool uses the AM4 files included in the installed M-EFCS app. If they are stored
+elsewhere, pass `--assets DIRECTORY` containing `blackbox_am4_ampCab.bin` and
+`blackbox_am4_preset.bin`. The files must match the AM4 bank in M-VAVE's official Windows
+updater. If USB disconnects during a write, re-enter recovery and rerun the write.
+Keep the first flash backup.
+
 ## What the first real run showed
 
 The first run on a real, looping BlackBox was done by the captain, who reported that the rescue worked ("the rescue worked!").

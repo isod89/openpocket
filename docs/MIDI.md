@@ -82,6 +82,23 @@ by accident. Map them to one of the free numbers in your DAW instead.
 The map is in one place in the source, `px_cc_param()` and its siblings in `firmware/px_midi.h`; a test checks that every
 number is unique, reserved ones are free, and a value sent by one pedal is applied by another to the same sound.
 
+## From the web editor
+
+The editor's **MIDI** section ([`docs/editor.html`](editor.html), `docs/edmidi.js`, `docs/pxmidi.js`) does three things:
+
+- **The map, named for the current preset.** The table above with each setting's name in the preset on the pedal
+  (setting 1 of the AMP is GAIN for a fitted amp and MODEL for NAM), and the settings a type does not have marked.
+- **Learned controls.** For a controller plugged into the computer, not into the pedal: click a control in the table,
+  then move a knob or press a switch on the controller. From then on the page passes that Control Change on to the
+  pedal as an editor command (`SET`, `SELECT`), scaled as the pedal scales its own. A switch can flip on each press or
+  follow the value; a control can work in every preset or only in one; a switch can step to the next or the previous
+  preset; Program Change 0 to 51 loads preset 1 to 52. Learned controls are kept in the browser and work only while the
+  page is open and connected: the pedal itself stores no mapping.
+- **Monitor.** What the controllers send and what it did, and the pedal's own messages (with SEND on), each named. A
+  setting turned on the pedal lights its cell in the table, which is the quick way to find its number.
+
+CHANNEL, SEND and CLOCK > DELAY stay on the pedal's MIDI page: the editor protocol has no command for them.
+
 ## Tempo for the delay
 
 Turn **CLOCK > DELAY** on (default off). When the host sends MIDI clock, the pedal times 24 clocks, and sets the delay TIME to
@@ -99,10 +116,15 @@ follow a tempo with another note value, set the delay's own TIME; this is not a 
 | CHANNEL | OMNI, 1 to 16 | OMNI |
 | SEND | ON, OFF | ON |
 | CLOCK > DELAY | ON, OFF | OFF |
+| USB AUDIO | ON, OFF | OFF |
 
 The knob changes the row, PUSH goes to the next one (after the last it leaves), HOME leaves. The page also shows whether a
 host is connected and the last Program or Control Change received ("LAST: CC 25 = 127"), which is what to look at first when
 nothing happens. Leaving saves the settings only if you changed something (one flash write, about 0.3 s of silence, like SAVE).
+
+**USB AUDIO** (v42) is not a MIDI setting; it lives on this page because it changes what the pedal is on USB. ON makes
+the pedal a USB sound card as well as a MIDI device: see [USB-AUDIO.md](USB-AUDIO.md). The change is made when you leave
+the page, and the pedal then leaves USB for a second. MIDI works the same with it on or off.
 
 The settings are one byte in the header of the preset store (`firmware/px_store.h`). Older copies have 0 there, which means the
 defaults. A power cut while saving leaves the old or the new settings, never a broken store (tested).
@@ -140,7 +162,7 @@ and the pedal's state; `firmware/ui.h` has the MIDI page; `firmware/px_store.h` 
 - **CPU and audio.** The MIDI code runs on the main loop (CPU0), not in the audio interrupt and not on the DSP core. Per pass it
   reads the ring (usually empty) and compares the 84 on/model/setting bytes of the preset with the last values sent. The binary
   grows by about 3.3 KB. The DSP load was **not measured on a pedal** (no hardware here): the hardware checklist asks for the
-  "C1 xx%" reading with and without MIDI traffic. Nothing was added to the audio path.
+  "DSP xx%" reading with and without MIDI traffic. Nothing was added to the audio path.
 - **Flash.** The only new write is the settings save, in the preset store's own area, through the existing commit.
 - **Update and recovery paths.** Unchanged. The tests of the installer, the update loader and the editor run as before.
 - **Never flash from here.** The test package is built and checked on a PC; the captain installs it.

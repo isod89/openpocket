@@ -10,7 +10,8 @@
  * The including file provides: PRESET, cur_preset, load_preset, ui_blk / ui_mode / ui_item (ui.h), st_gen, the
  * store (px_store.h), BLK_COL (ui_colors.h), ota_frame_get / ota_frame_done / ota_wire_send, ms_now, OP_VERSION,
  * FELUCCA_ID_PTR, ed_load / ed_flags (the DSP load for PING), and (v37) the NAM user models (px_models.h) with
- * nm_changed(slot), called after a slot was written or erased.
+ * nm_changed(slot), called after a slot was written or erased; (v42) px_ua_on (px_midi.h), st_usb, and with
+ * OP_UAUDIO ed_ua_stat(k), USB audio's state (k = 0) and its ED_UA_STATS counts (px_uaudio.h).
  * An image with a log channel also defines ED_DIAG_LINES
  * and ed_diag_line(i, out), which writes line i (at most ED_DIAG_LEN - 1 characters); without them DIAG gets no reply.
  */
@@ -19,9 +20,14 @@
 #define ED_H0 0x7Du
 #define ED_H1 0x4Fu
 #define ED_H2 0x50u
-#define ED_PROTO 3u                             /* 3: v38, cabinet IRs (IR_LIST .. IR_ERASE); 2: v37, NAM models */
+#define ED_PROTO 4u                             /* 4: v42, USB_AUDIO; 3: v38, cabinet IRs (IR_LIST .. IR_ERASE); 2: v37, NAM models */
 #define ED_NAME_MAX 13u
 #define ED_P_SIZE 110u
+#if OP_UADEV
+#define ED_UA_STATS 40u                         /* (the measurement option's figures after the 20, px_uaudio.h) */
+#else
+#define ED_UA_STATS 20u                         /* USB_AUDIO's counts after the state (ed_ua_stat 1..20) */
+#endif
 #ifndef ED_STATS
 #define ED_STATS 6u                             /* PING's figures after the flags (ed_stat): the Bluetooth test image has 8 */
 #endif
@@ -29,7 +35,8 @@ typedef char ed_size_check[sizeof(px_preset_t) == ED_P_SIZE ? 1 : -1];
 enum { ED_INFO = 1, ED_CAT_BLOCK, ED_CAT_TYPE, ED_TEXTS, ED_STATE, ED_SET, ED_ORDER, ED_NAME, ED_PUT, ED_SELECT,
        ED_FOCUS, ED_LIST, ED_SLOT_GET, ED_SLOT_PUT, ED_COMMIT, ED_SAVE, ED_WATCH, ED_PING,
        ED_NAM_LIST, ED_NAM_WRITE, ED_NAM_COMMIT, ED_NAM_ERASE, ED_DIAG,
-       ED_IR_LIST, ED_IR_WRITE, ED_IR_COMMIT, ED_IR_ERASE };   /* v38: 24..27 */
+       ED_IR_LIST, ED_IR_WRITE, ED_IR_COMMIT, ED_IR_ERASE,     /* v38: 24..27 */
+       ED_USB_AUDIO };                                         /* v42: 28 */
 
 #ifndef ED_OUT_BYTES
 #define ED_OUT_BYTES 1024u   /* a reply's bytes at most (an image with longer DIAG lines sets more) */
@@ -286,6 +293,25 @@ static void ed_handle(const uint8_t *a, uint32_t n)   /* a: the args, after the 
         rc = cmd == ED_IR_COMMIT ? ir_commit(a[0]) : ir_erase(a[0]);
         ir_changed(a[0]);                              /* a sound playing that slot reloads it */
         ed_b(a[0]); ed_b((uint32_t)rc);
+        break;
+    case ED_USB_AUDIO:                                 /* v42: the USB AUDIO setting (no argument: read), its streams */
+#if OP_UAUDIO
+        rc = 0;
+        i = n >= 1u && a[0] ? 1u : 0u;
+#if OP_UADEV
+        if (n >= 1u) i = uad_set(a, n);                /* the measurement option's modes (px_uaudio.h) */
+#endif
+        if (n >= 1u && i != px_ua_on) {
+            px_ua_on = (uint8_t)i;                     /* (px_usb.h presents the USB device anew, after this reply) */
+            st_usb = (uint8_t)((st_usb & ~1u) | px_ua_on);
+            rc = st_commit() ? 2 : 0;
+        }
+        ed_b(px_ua_on); ed_b((uint32_t)rc); ed_b(ed_ua_stat(0));
+        ed_b(ED_UA_STATS);
+        for (k = 1; k <= ED_UA_STATS; k++) { i = ed_ua_stat(k); ed_b(i); ed_b(i >> 7); ed_b(i >> 14); ed_b(i >> 21); }
+#else
+        ed_b(0); ed_b(1); ed_b(0); ed_b(0);            /* (this image has no USB audio) */
+#endif
         break;
 #ifdef ED_DIAG_LINES
     case ED_DIAG: {                                    /* read only: nothing here changes the pedal */

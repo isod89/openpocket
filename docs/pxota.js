@@ -294,11 +294,14 @@ export class Updater {
     return true;
   }
 
-  // the chip's UBOOT mode (mask ROM), for a rescue with the SD-card tool; OpenPocket answers the soft key
-  async uboot() {
-    const dev = await this.find((id) => IS_OPENPOCKET(id));
-    if (!dev) throw fail("notfound", "OpenPocket not found", this.seen());
-    dev.link.send(UBOOT_KEY);
-    dev.link.close();
+  // Enter the chip's UBOOT mode. The caller chooses which firmware supports the soft key.
+  async uboot(filter = IS_OPENPOCKET) {
+    const dev = await this.find(filter);
+    if (!dev) throw fail("notfound", "pedal not found", this.seen());
+    try {
+      if (!dev.link.send(UBOOT_KEY)) throw fail("lost", "could not send the recovery key");
+    } finally {
+      dev.link.close();
+    }
   }
 }

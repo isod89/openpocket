@@ -134,6 +134,15 @@ if (-not $remoteTag -or -not $remoteTag.StartsWith($head)) {
   git tag -f -a $Tag -m "OpenPocket $Tag"
   git push --quiet origin $Tag
   if ($LASTEXITCODE -ne 0) { Write-Host "  (the tag $Tag could not be pushed)" -ForegroundColor Yellow }
+  # moving a tag turns its release (if there is one) into a draft on GitHub, and the list then shows an older one as Latest:
+  # published again here too, so that the source-only way leaves the release as it was
+  elseif ($remoteTag) {
+    gh release view $Tag --repo $full *> $null
+    if ($LASTEXITCODE -eq 0) {
+      gh release edit $Tag --repo $full --draft=false --tag $Tag --latest *> $null
+      if ($LASTEXITCODE -eq 0) { Write-Host "  release $Tag published again (moving its tag had made it a draft)" }
+    }
+  }
 }
 Pop-Location
 Write-Host "Source:      https://github.com/$full/tree/main   (tag $Tag)" -ForegroundColor Green

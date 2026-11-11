@@ -6,6 +6,7 @@
 # that wait 2.2). Paste its output into px_nam.c's asm block (the lines after "rdq6, rdq15, rdq16").
 #   python3 tools/gen_rdq.py > rdq.inc        (rdq6, rdq15, rdq16)
 #   python3 tools/gen_rdq.py --rdl > rdl.inc  (rdl6, rdl15, rdl16: a whole layer's groups in one call)
+#   python3 tools/gen_rdq.py --rdm | --post5  (rdm6, rdm15: two rows at a time; post5: the post two frames a turn)
 ACC = ["r9_r8", "r11_r10", "r13_r12", "r15_r14"]
 X = ["r3", "r4", "r6", "r7"]
 def gen(K):
@@ -273,8 +274,84 @@ def genm(K):
     for ln in "\n".join(L).split("\n"):
         out.append('    "%s\\n"' % ln.replace("\t", "\\t"))
     return "\n".join(out)
+def genp5():
+    """post5 (v40.5): post4's job (LeakyReLU, head sum, residual; x 3 words a frame, as in a ring) two frames a turn. The
+    residual's 9 weights are then read once for two frames, and every load and store rides on an instruction that
+    computes: free on a multiply or multiply-add (2 cycles), and on a 1-cycle instruction for the memory word's own
+    time (measured on the pedal). Each value is loaded at least 2 instructions before its use (no wait). No word outside
+    the job's is read. r0 z, r1 hs then out (both set from r0), r7 x; r2 r3 r6 values (r6 the slope while the
+    activations are made); r5_r4 and r9_r8 the two frames' sums; r10..r15 the 6 activations. Stack: [sp+0..44] the
+    residual (w[o][c] at 4(3c+o), the biases at 36+4o), [sp+48] hs - z, [sp+52] out - z, [sp+56] z's end.
+    n even and > 0, out not 0 (pxn_post_part sees to both)."""
+    L = []
+    a = L.append
+    a("\t.global pxn_post5_asm")
+    a("pxn_post5_asm:")
+    a("\t[--sp] = {rets, r15-r4}")
+    a("\tsp += -60")
+    a("\tr7 = [r0+28]")
+    for k in range(12):
+        a("\tr4 = [r7+%d]\n\t[sp+%d] = r4" % (4 * k, 4 * k))
+    a("\tr1 = [r0+0]\n\tr2 = [r0+4]\n\tr3 = [r0+16]\n\tr4 = [r0+20]\n\tr5 = [r0+24]")
+    a("\tr6 = r3 - r1\n\t[sp+48] = r6")
+    a("\tr6 = r4 - r1\n\t[sp+52] = r6")
+    a("\tr6 = 12\n\tr5 = r5 * r6\n\tr5 += r1\n\t[sp+56] = r5")
+    a("\tr7 = r2 + -24")
+    a("\tr0 = r1\n\tr1 = r3")
+    a(".Lpxn_p5f:")
+    a("\tr7 += 24  #  r2 = [r0+0]")
+    a("\tr6 = 42949673")
+    Z, H = ["r2", "r3"], ["r4", "r5"]
+    # the activations: for value v, M (z * slope), X (smax -> r10+v), D (hs + a); hs is stored as r1 moves on
+    def M(v, b): a("\tr9_r8 = %s * r6 (s)  #  %s" % (Z[v & 1], b))
+    def X(v, b): a("\tr%d = smax(%s, r9)  #  %s" % (10 + v, Z[v & 1], b))
+    def D(v, b): a("\t%s += r%d  #  %s" % (H[v & 1], 10 + v, b))
+    lz = lambda v: "%s = [r0+%d]" % (Z[v & 1], 4 * v)
+    lh = lambda v: "%s = [r1+%d]" % (H[v & 1], 4 if v else 0)
+    sh = lambda v: "[r1++=4] = %s" % H[v & 1]
+    M(0, lz(1)); X(0, lh(0)); M(1, lz(2)); D(0, lh(1)); X(1, sh(0))
+    M(2, lz(3)); D(1, lh(2)); X(2, sh(1))
+    M(3, lz(4)); D(2, lh(3)); X(3, sh(2))
+    M(4, lz(5)); D(3, lh(4)); X(4, sh(3))
+    M(5, lh(5)); D(4, "r2 = [sp+0]"); X(5, sh(4)); D(5, "r3 = [sp+12]")
+    # the residual, output channel o for the two frames: P and Q hold the weights, then the two x; r6 the bias, then
+    # the second frame's sum
+    P, Q = "r2", "r3"
+    for o in range(3):
+        nx = o + 1
+        if o == 0:
+            a("\tr9_r8 = %s * r13 (s)  #  [r1++=4] = r5" % P)
+            a("\tr5_r4 = %s * r10 (s)  #  r6 = [sp+52]" % P)
+            a("\tr5_r4 += %s * r11 (s)  #  %s = [sp+24]" % (Q, P))
+            a("\tr9_r8 += %s * r14 (s)  #  %s = [r7+0]" % (Q, Q))
+            a("\tr1 = r0 + r6  #  r6 = [sp+36]")
+        else:
+            a("\tr5_r4 = %s * r10 (s)  #  [r1+%d] = r6" % (P, 12 + 4 * (o - 1)))
+            a("\tr9_r8 = %s * r13 (s)  #  %s = [sp+%d]" % (P, P, 24 + 4 * o))
+            a("\tr5_r4 += %s * r11 (s)  #  r6 = [sp+%d]" % (Q, 36 + 4 * o))
+            a("\tr9_r8 += %s * r14 (s)  #  %s = [r7+%d]" % (Q, Q, 4 * o))
+        a("\tr5_r4 += %s * r12 (s)" % P)
+        a("\tr9_r8 += %s * r15 (s)  #  %s = [r7+%d]" % (P, P, 12 + 4 * o))
+        a("\tr5_r4 >>= 24")
+        a("\tr9_r8 >>= 24")
+        a("\tr4 += r6")
+        a("\tr4 += %s  #  %s = [sp+%d]" % (Q, Q, 4 * nx if o < 2 else 48))
+        a("\tr6 += r8  #  [r1+%d] = r4" % (4 * o))
+        a("\tr6 += %s  #  %s = [sp+%d]" % (P, P, 12 + 4 * nx if o < 2 else 56))
+        P, Q = Q, P
+    a("\tr0 += 24  #  [r1+20] = r6")
+    a("\tr1 = r0 + %s" % P)
+    a("\tif (r0 != %s) goto .Lpxn_p5f" % Q)
+    a("\tsp += 60")
+    a("\t{pc, r15-r4} = [sp++]")
+    out = []
+    for ln in "\n".join(L).split("\n"):
+        out.append('    "%s\\n"' % ln.replace("\t", "\\t"))
+    return "\n".join(out)
 import sys
-if "--rdm" in sys.argv:
+if "--post5" in sys.argv:
+    print(genp5())
+elif "--rdm" in sys.argv:
     print("\n".join(genm(K) for K in (6, 15)))
 elif "--rdl" in sys.argv:
     print("\n".join(genl(K) for K in (6, 15, 16)))

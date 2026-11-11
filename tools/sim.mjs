@@ -147,7 +147,7 @@ function png(be, scale = 1) {
 // ---- HTTP ----
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json", ".png": "image/png", ".css": "text/css", ".md": "text/plain; charset=utf-8", ".wasm": "application/wasm", ".wav": "audio/wav" };
 const BUTTONS = ["fs_up", "fs_dn", "fx", "home", "push", "mod", "amp", "cab", "dly", "rev"];
-const CONTROLS = [...BUTTONS, "push_long", "dpush", "home_long"];
+const CONTROLS = [...BUTTONS, "push_long", "dpush", "home_long", "fx_long", "feet"];
 const SHIM_TAG = '<script src="/sim/webmidi-shim.js"></script>';
 
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }

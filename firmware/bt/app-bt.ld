@@ -38,15 +38,18 @@ SECTIONS
                   . = ALIGN(4); _c1_start = .; KEEP(*(.c1_text*)) . = ALIGN(4); _c1_end = .;   /* the second core's loop */
                   _rt_end = .; } > RAMTEXT AT > XIP
     _rt_load = LOADADDR(.ram_text);
-    /* v40.1: data in the RAM code window's free end, after the code (the PC guard covers only _rt_start.._rt_end): buffers
-     * the engine marks PX_HI (px_dsp.c), out of the 96 KB RAM. Zeroed by fm1_cstart like .bss. */
-    .bss_hi (NOLOAD) : { . = ALIGN(8); _bss_hi_start = .; *(.bss.hi.*) . = ALIGN(4); _bss_hi_end = .; } > RAMTEXT
+    /* v40.1: data in the RAM code window's free end, after the code (the PC guard covers only _rt_start.._rt_end), out of
+     * the 96 KB RAM. Zeroed by fm1_cstart like .bss. v40.4 (app.ld) moved the engine's buffers marked PX_LO (px_dsp.c: the
+     * IR's spectra, the oversampling's and the lanes' buffers, 14.6 KB) to .bss_lo; here they stay in this window, as in test
+     * builds 12 and 13: .bss_lo holds the baseband's table and the radio's receive pool (this image runs px_nam.c's hot
+     * routines from the flash instead, firmware/build.sh PXN_HOT_RAM). A wild store past them still meets _guard0 */
+    .bss_hi (NOLOAD) : { . = ALIGN(8); _bss_hi_start = .; *(.bss.hi.*) *px_dsp.o(.bss.lo.*) . = ALIGN(4); _bss_hi_end = .; } > RAMTEXT
     /* v40.1, the Bluetooth test image only: data in the first 24 KB of the SRAM below the RAM, which v37's RAM code used
      * at run time and v40 leaves free (the boot ROM loads the boot loader there before the app runs). What goes there is
      * a buffer whose contents are checked before use (nm_stage: CRC, read-back). Zeroed by fm1_cstart like .bss. */
     /* the Bluetooth audio image: the classic baseband's table (DMA: zeroed at boot with the rest of .bss_lo) and the radio's
      * receive pool (link_bulk.c: the phone's packets wait there, 280 ms of SBC at 345 kb/s) */
-    .bss_lo (NOLOAD) : { . = ALIGN(8); _bss_lo_start = .; *(.bss.lo.*) . = ALIGN(8); *(.bd_base)
+    .bss_lo (NOLOAD) : { . = ALIGN(8); _bss_lo_start = .; *(EXCLUDE_FILE(*px_dsp.o) .bss.lo.*) . = ALIGN(8); *(.bd_base)
                          . = ALIGN(4); acl_rx_pool = .; . += 12288; acl_rx_pool_end = .;
                          . = ALIGN(4); _bss_lo_end = .; } > LOWRAM
     /* the decoded music (bt_a2dp.c bt_ring_mem): CPU only, set up by the code that uses it (not zeroed at boot). This 7.5 KB

@@ -25,6 +25,7 @@ uint32_t ble_heap_min_free(void);
 /* ble_test.c */
 void ble_vm_load(void);              /* ble_rf.c: the stored radio records (VM 106 to 108), read only */
 extern uint32_t ble_vm_have, ble_vm_area;
+uint32_t ble_vm_flags(void);         /* ble_rf.c: ble_vm_have, plus bits 8-10 for the measured calibration (scan failed, trim failed, measured) */
 uint32_t ble_vm_trim(void);          /* the first two bytes of VM 106 (the crystal trim), for the status line */
 void ble_test_start(void);           /* radio on, controller up, one advertisement */
 void ble_test_poll(void);

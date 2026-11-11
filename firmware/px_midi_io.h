@@ -5,7 +5,7 @@
  * midi_in_q (4-byte USB-MIDI event packets, with the millisecond they arrived) and sends what is put in midi_out_q.
  * SysEx never takes this road: it goes to the update code (ota.c) and the editor (px_editor.h) only.
  * The including file provides px_midi.h, usb.c's rings, PRESET, cur_preset, load_preset, master_vol, ui_mode / ui_item /
- * ui_nitems (ui.h), st_midi and st_commit (px_store.h), and ms_now.
+ * ui_nitems (ui.h), st_midi, st_usb and st_commit (px_store.h), and ms_now.
  *
  * The ring must be emptied: usb.c leaves the host's USB packet unread (NAK) while the ring is nearly full, and the
  * editor's and installer's SysEx come in the same packets. Nothing drained it before this file.
@@ -18,6 +18,7 @@ static px_midi_clock_t mid_clk;
 static void midi_persist(void)                  /* the page's HOME: save the settings (the sound is not touched) */
 {
     st_midi = px_midi_cfg_pack(&mid_cfg);
+    st_usb = (uint8_t)((st_usb & ~1u) | (px_ua_on & 1u));   /* v42: USB AUDIO (px_usb.h then presents the device anew) */
     ft_box(0, 186, 240, "SAVING...", &FT_MD, UI_ACC, UI_BG, 1);
     if (st_ok) (void)st_commit();
 }

@@ -1,871 +1,166 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: GPL-3.0-only
-     OpenPocket web editor: the pedal's presets and its current sound, live, over USB-MIDI (Chrome / Edge).
-     Protocol: EDITOR-PROTOCOL.md; transport: pxedit.js. One file, no library. -->
+     OpenPocket web editor: the pedal's presets, its current sound, its NAM models and cabinet IRs, and MIDI control,
+     live over USB-MIDI (Chrome / Edge). Protocol: EDITOR-PROTOCOL.md; transport: pxedit.js. No library, no build step:
+     editor.css, editor.js (start, connection, sections) and one module per section (edsound.js, edpresets.js,
+     edmodels.js, edmidi.js) on edcore.js. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0d0f0e">
 <title>OpenPocket Editor</title>
+<meta name="description" content="Edit a Donner Pocket X or M-VAVE BlackBox running OpenPocket from the browser, over USB.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&display=swap">
-<style>
-/* The pedal's own screen, bigger: its colours (RGB565 from firmware/ui.h), its font (Inter SemiBold / Bold),
-   its layout (header, 6 x 2 tiles, block page, footer). One dark look, on purpose: it is the pedal's. */
-:root{
-  --room:#111211;        /* around the screen */
-  --bezel:#1b1d1b;
-  --bg:#080808;          /* UI_BG 0x0841 */
-  --panel:#181c18;       /* UI_PANEL 0x18E3 */
-  --off:#202420;         /* C_OFF 0x2124 */
-  --line:#282828;        /* C_LINE 0x2945 */
-  --txt:#efefef;         /* UI_TXT */
-  --dim:#848284;         /* UI_DIM */
-  --acc:#ffa600;         /* UI_ACC 0xFD20 */
-  --red:#ff4040; --grn:#4ccf5a;
-  --blk:#ffa600;         /* the focused block's colour (set by script) */
-  color-scheme:dark;
-}
-*{box-sizing:border-box}
-[hidden]{display:none!important}
-a.btn{color:var(--txt)}
-body{margin:0;background:var(--room);color:var(--txt);font:500 15px/1.4 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
-  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:18px 40px}
-button,select,input{font:inherit;color:inherit}
-button{cursor:pointer}
-.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
-
-/* top bar */
-.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px}
-.brand{font-weight:800;font-size:22px;letter-spacing:-.01em}
-.brand b{color:var(--acc)}
-.brand small{font-weight:600;font-size:12px;letter-spacing:.12em;color:var(--dim);margin-left:8px;text-transform:uppercase}
-.status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);min-width:0}
-.dot{width:9px;height:9px;border-radius:50%;background:#444;flex:none}
-.dot.on{background:var(--grn);box-shadow:0 0 0 3px #4ccf5a22}
-.status span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.spacer{flex:1}
-.btn{border:1px solid #333;background:#1c1f1c;border-radius:9px;padding:9px 14px;font-weight:600;font-size:14px;line-height:1;white-space:nowrap}
-.btn:hover:not(:disabled){border-color:#555}
-.btn.go{background:var(--acc);border-color:var(--acc);color:#1a1000}
-.btn:disabled{opacity:.4;cursor:default}
-.btn.small{padding:7px 10px;font-size:13px;border-radius:8px}
-
-.msg{min-height:20px;font-size:13.5px;color:var(--dim)}
-.msg.err{color:var(--red)} .msg.ok{color:var(--grn)}
-.prog{height:4px;background:#222;border-radius:4px;overflow:hidden}
-.prog i{display:block;height:100%;width:0;background:var(--acc);transition:width .15s}
-
-.layout{display:grid;grid-template-columns:330px minmax(0,1fr);gap:16px;align-items:start}
-@media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr)}.list{max-height:420px}}
-
-/* ---- the preset list ---- */
-.side{background:var(--bezel);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0}
-.side h2,.card h2{margin:0;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:700}
-.tools{display:flex;flex-wrap:wrap;gap:6px}
-.list{background:var(--bg);border-radius:10px;overflow:auto;max-height:640px;padding:4px}
-.row{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;
-  font-weight:600;font-size:14px;letter-spacing:.01em}
-.row:hover{background:#161816}
-.row .n{color:var(--dim);font-variant-numeric:tabular-nums}
-.row .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.row .tag{font-size:10.5px;letter-spacing:.08em;color:var(--dim);font-weight:700}
-.row.user .tag{color:var(--acc)}
-.row.cur{background:var(--panel);box-shadow:inset 3px 0 0 var(--acc)}
-.row.cur .n{color:var(--acc)}
-.slotbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-/* v37: TONE3000 (the Select flow) */
-.t3k{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 8px}
-.t3k .logo{font-weight:800;letter-spacing:.04em;font-size:15px;color:#fff}
-.t3kcard{border:1px solid #2a2e2a;border-radius:10px;padding:10px;margin:0 0 10px;display:grid;gap:8px}
-.t3kcard .top{display:grid;grid-template-columns:64px minmax(0,1fr);gap:10px;align-items:center}
-.t3kcard .img{width:64px;height:64px;border-radius:8px;object-fit:cover;background:#222}
-.t3kcard .ttl{font-weight:700;overflow:hidden;text-overflow:ellipsis}
-.t3kcard .sub{color:var(--dim);font-size:12.5px}
-.t3kcard .by{display:flex;align-items:center;gap:6px;font-size:13px;min-width:0}
-.t3kcard .by img{width:20px;height:20px;border-radius:50%;background:#222}
-.t3kcard .mrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;font-size:13px}
-.t3kcard .mrow span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.t3kcard .foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--dim)}
-.t3kcard .logo{font-weight:800;letter-spacing:.04em;color:#fff}
-.t3kcard select{background:#1c1f1c;color:var(--txt);border:1px solid #333;border-radius:7px;padding:5px}
-/* v37: NAM models */
-.namlist{max-height:360px}
-.namlist .row{grid-template-columns:34px minmax(0,1fr) auto;cursor:default}
-.namlist .row .acts{display:flex;gap:4px}
-.namlist .row.empty .nm{color:var(--dim);font-weight:500}
-.side .note{margin:0;font-size:12.5px;line-height:1.45;color:var(--dim)}
-.side .note code{font-size:12px}
-.a2{font-size:10px;letter-spacing:.06em;color:var(--acc);border:1px solid var(--acc);border-radius:4px;padding:0 4px;margin-left:6px;vertical-align:1px}
-.slotbar .lbl{font-size:12.5px;color:var(--dim);margin-right:auto}
-
-/* ---- the screen ---- */
-.device{background:var(--bezel);border-radius:22px;padding:16px;min-width:0}
-.screen{background:var(--bg);border-radius:8px;overflow:hidden;display:flex;flex-direction:column}
-.hdr{display:flex;align-items:center;gap:10px;padding:12px 16px 8px}
-.hdr .num{font-weight:800;font-size:30px;color:var(--acc);font-variant-numeric:tabular-nums;line-height:1}
-.hdr input{flex:1;min-width:0;background:transparent;border:0;border-bottom:1px dashed transparent;font-weight:800;font-size:30px;
-  line-height:1.1;letter-spacing:-.005em;padding:0;text-transform:none;outline:none}
-.hdr input:hover{border-bottom-color:#444}
-.hdr input:focus{border-bottom-color:var(--acc)}
-.hdr .star{font-weight:800;font-size:30px;color:var(--acc);width:18px}
-.hdr .vol{font-size:13px;color:var(--dim);font-weight:600;white-space:nowrap}
-
-.tiles{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px 8px;padding:8px 14px 14px;touch-action:none}
-.tile{position:relative;height:50px;border-radius:3px;background:var(--off);color:var(--dim);display:grid;place-items:center;
-  font-weight:700;font-size:16px;letter-spacing:.02em;user-select:none;cursor:grab;outline:1px solid transparent;outline-offset:1px}
-.tile.on{color:#000}
-.tile.sel{outline-color:#fff}
-.tile.sel::after{content:"";position:absolute;left:0;right:0;bottom:-6px;height:3px;background:#fff;border-radius:2px}
-.tile.drag{opacity:.35}
-.tile.ghost{position:fixed;z-index:20;pointer-events:none;box-shadow:0 10px 30px #000a;width:var(--w);transform:translate(-50%,-50%) scale(1.06);cursor:grabbing}
-.tile .pw{position:absolute;top:4px;right:4px;width:14px;height:14px;border-radius:50%;border:2px solid currentColor;opacity:.55;background:transparent;padding:0}
-.tile .pw:hover{opacity:1}
-.tile:focus-visible{outline:2px solid var(--acc)}
-
-.page{border-top:1px solid var(--line);padding:12px 16px 16px;display:flex;flex-direction:column;gap:10px}
-.bl{display:flex;align-items:center;gap:10px;font-weight:600;font-size:14px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
-.bl .mv{display:flex;gap:4px;margin-left:auto}
-.onoff{border:0;background:transparent;font-weight:800;font-size:15px;letter-spacing:.06em;color:var(--dim);padding:4px 2px}
-.onoff.on{color:var(--blk)}
-.type{display:grid;grid-template-columns:44px minmax(0,1fr) 44px;align-items:center;background:var(--panel);border-radius:4px}
-.type button{border:0;background:transparent;color:var(--acc);font-weight:800;font-size:26px;height:48px}
-.type select{appearance:none;-webkit-appearance:none;border:0;background:transparent;text-align:center;text-align-last:center;font-weight:800;
-  font-size:26px;letter-spacing:.01em;height:48px;cursor:pointer;min-width:0;outline:none}
-.type select option{background:#111;font-size:15px;font-weight:600}
-.params{display:flex;flex-direction:column;gap:4px;margin-top:4px}
-.prm{display:grid;grid-template-columns:120px minmax(0,1fr) 72px;align-items:center;gap:12px;font-weight:600;font-size:16px;padding:4px 0}
-.prm label{letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.prm .val{text-align:right;font-variant-numeric:tabular-nums}
-.prm .val.tx{color:var(--acc)}
-input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:28px;background:transparent;cursor:pointer;margin:0;
-  --p:50%;outline:none}
-input[type=range]::-webkit-slider-runnable-track{height:12px;background:linear-gradient(90deg,var(--blk) var(--p),#2a2d2a var(--p));border-radius:1px}
-input[type=range]::-moz-range-track{height:12px;background:#2a2d2a;border-radius:1px}
-input[type=range]::-moz-range-progress{height:12px;background:var(--blk)}
-input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:6px;height:22px;margin-top:-5px;background:#fff;border-radius:1px}
-input[type=range]::-moz-range-thumb{width:6px;height:22px;background:#fff;border:0;border-radius:1px}
-input[type=range]:focus-visible::-webkit-slider-thumb{outline:2px solid var(--acc)}
-.ftr{display:flex;align-items:center;gap:10px;background:var(--panel);padding:8px 14px;font-weight:600;font-size:13px;color:var(--dim)}
-.ftr .load{margin-left:auto;font-variant-numeric:tabular-nums}
-.ftr .load.byp{color:var(--red)}
-.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px}
-.actions select{background:#1c1f1c;border:1px solid #333;border-radius:9px;padding:8px 10px;font-weight:600;font-size:14px;max-width:100%}
-.ask{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#2a2112;border:1px solid #6b4b0f;border-radius:10px;padding:10px 12px;font-size:14px}
-.ask[hidden]{display:none}
-.ask span{margin-right:auto;min-width:0}
-.idle{padding:60px 20px;text-align:center;color:var(--dim);display:flex;flex-direction:column;gap:12px;align-items:center}
-.idle h3{margin:0;color:var(--txt);font-size:20px;font-weight:800}
-.idle p{margin:0;max-width:52ch}
-.idle a{color:var(--acc)}
-@media (max-width:560px){
-  .hdr .num,.hdr input,.hdr .star{font-size:22px}
-  .tile{height:44px;font-size:12.5px;padding-top:8px}
-  .tile .pw{top:3px;right:3px;width:9px;height:9px;border-width:1.5px}
-  .tiles{gap:9px 5px;padding-inline:10px}
-  #hint{display:none}
-  .type select{font-size:19px}
-  .prm{grid-template-columns:86px minmax(0,1fr) 56px;font-size:14px;gap:8px}
-}
-</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="editor.css">
 </head>
-<body>
-<div class="wrap">
-  <div class="top">
-    <div class="brand">OPEN<b>POCKET</b><small>editor</small></div>
-    <div class="status"><i class="dot" id="dot"></i><span id="status">not connected</span></div>
-    <div class="spacer"></div>
-    <a class="btn" href="./" style="text-decoration:none">Installer</a>
-    <button class="btn go" id="connect">Connect</button>
-  </div>
-  <div class="prog" id="prog" hidden><i id="progi"></i></div>
-  <div class="msg" id="msg"></div>
-  <div class="ask" id="ask" hidden><span id="asktext"></span><button class="btn small go" id="askyes">OK</button><button class="btn small" id="askno">Cancel</button></div>
+<body data-conn="idle" data-view="sound">
+<a class="skip" href="#main">Skip to the editor</a>
 
-  <div class="layout">
-    <aside class="side">
-      <h2>Presets</h2>
-      <div class="tools">
-        <button class="btn small" id="expall" disabled>Export all</button>
-        <button class="btn small" id="imp" disabled>Import file…</button>
-        <input type="file" id="file" accept=".json,application/json" hidden>
-      </div>
-      <div class="list" id="list" role="listbox" aria-label="Presets"></div>
-      <div class="slotbar">
-        <span class="lbl" id="slotlbl">Slot —</span>
-        <button class="btn small" id="up" disabled title="Move this preset up one slot">↑</button>
-        <button class="btn small" id="down" disabled title="Move this preset down one slot">↓</button>
-        <button class="btn small" id="factory" disabled title="Put this slot back to its factory preset">Factory</button>
-      </div>
-      <h2 id="namh" hidden>NAM models<span class="a2">A2</span></h2>
-      <p class="note" id="namnote" hidden>The AMP block's <b>NAM</b> type plays these neural captures (pick one with its
-        MODEL setting). Load your own: an A2 capture (<code>.nam</code>) into a user slot, or browse TONE3000 and pick one
-        there.</p>
-      <div class="t3k" id="t3k" hidden><span class="logo" aria-label="TONE3000">TONE3000</span>
-        <button class="btn small" id="t3kbrowse" title="Choose an A2 capture on TONE3000 and load it into a user slot">Browse TONE3000…</button></div>
-      <div class="t3kcard" id="t3kcard" hidden></div>
-      <div class="list namlist" id="namlist" hidden aria-label="NAM models"></div>
-      <input type="file" id="namfile" accept=".nam,application/json" hidden>
-      <h2 id="irh" hidden>Cabinet IRs</h2>
-      <p class="note" id="irnote" hidden>The CAB block's <b>USER IR</b> type plays these impulse responses (pick one with its
-        IR setting). Load a cabinet IR from a <code>.wav</code> file: the pedal keeps its first 23 ms, at 44.1 kHz, and sets
-        its level like the other cabinets.</p>
-      <div class="list namlist" id="irlist" hidden aria-label="Cabinet IRs"></div>
-      <input type="file" id="irfile" accept=".wav,audio/wav,audio/x-wav,audio/wave" hidden>
-    </aside>
-
-    <main class="device">
-      <div class="screen" id="screen">
-        <div class="idle" id="idle">
-          <h3>Connect your pedal</h3>
-          <p>Plug the Pocket X or BlackBox in with USB, then press <b>Connect</b> and allow MIDI devices. The pedal needs
-          OpenPocket v32 or newer: older versions can be updated from the <a href="./">installer</a>.</p>
-          <p>Everything you change here plays at once on the pedal, and what you change on the pedal shows here.</p>
-        </div>
-        <div id="ui" hidden>
-          <div class="hdr">
-            <span class="num" id="num">01</span>
-            <input id="name" maxlength="13" spellcheck="false" autocomplete="off" aria-label="Preset name">
-            <span class="star" id="star"></span>
-            <span class="vol">LIVE</span>
-          </div>
-          <div class="tiles" id="tiles" aria-label="Signal chain: drag a tile to move the block"></div>
-          <div class="page">
-            <div class="bl"><span id="bname">AMP</span><button class="onoff" id="onoff">ON</button>
-              <span class="mv"><button class="btn small" id="mvl" title="Move this block earlier in the chain">◀</button><button class="btn small" id="mvr" title="Move this block later in the chain">▶</button></span></div>
-            <div class="type"><button id="tprev" aria-label="Previous type">&lt;</button><select id="type" aria-label="Type"></select><button id="tnext" aria-label="Next type">&gt;</button></div>
-            <div class="params" id="params"></div>
-          </div>
-          <div class="ftr"><span id="hint">DRAG A TILE: MOVE THE BLOCK · ⏻ ON A TILE: ON/OFF</span><span class="load" id="load">C1 —%</span></div>
-        </div>
-      </div>
-      <div class="actions" id="actions" hidden>
-        <button class="btn go" id="save">Save</button>
-        <button class="btn" id="revert">Revert</button>
-        <span style="flex:1"></span>
-        <label for="saveto" style="font-size:13px;color:var(--dim)">Save to</label>
-        <select id="saveto"></select>
-        <button class="btn" id="saveas">Save as</button>
-        <button class="btn" id="export1">Export preset</button>
-      </div>
-    </main>
+<header class="bar">
+  <a class="brand" href="./" title="OpenPocket installer">OPEN<b>POCKET</b><span>Editor</span></a>
+  <nav class="tabs" id="tabs" aria-label="Sections">
+    <button type="button" data-go="presets" class="narrow-only"><svg class="ic"><use href="#i-list"/></svg><span>Presets</span></button>
+    <button type="button" data-go="sound"><svg class="ic"><use href="#i-sliders"/></svg><span>Sound</span></button>
+    <button type="button" data-go="models"><svg class="ic"><use href="#i-wave"/></svg><span>Models</span></button>
+    <button type="button" data-go="midi"><svg class="ic"><use href="#i-midi"/></svg><span>MIDI</span></button>
+  </nav>
+  <div class="bar-end">
+    <button type="button" class="meter" id="load" popovertarget="loadpop" hidden aria-label="DSP load">
+      <span class="meter-l">DSP</span><span class="meter-bar"><i id="loadbar"></i><b id="loadpeak"></b></span><span class="meter-v" id="loadv">–</span>
+    </button>
+    <button type="button" class="conn" id="conn" popovertarget="connpop" hidden><i class="dot"></i><span id="status">Not connected</span></button>
   </div>
+</header>
+
+<div class="pop" id="loadpop" popover aria-label="DSP load details"></div>
+<div class="pop" id="connpop" popover aria-label="Connection"></div>
+<div class="pop menu" id="menu" popover role="menu"></div>
+
+<div class="lostbar" id="lostbar" hidden role="alert">
+  <svg class="ic"><use href="#i-alert"/></svg>
+  <span>The pedal stopped answering. Plug it back in: the editor reconnects by itself.</span>
+  <button type="button" class="btn small" id="reconnect">Reconnect now</button>
 </div>
 
-<script type="module">
-import { Editor, presetToJSON, presetFromJSON, filePresets, parsePresetFile, clonePreset } from "./pxedit.js";
-import { parseNam, levelTrim, packModel, readDi } from "./pxnam.js";
-import { parseWav, prepareIr, packIr, irName } from "./pxir.js";
-import { t3kReady, t3kRedirect, t3kSelect, t3kSignIn, t3kTone, t3kModels, t3kDownload } from "./pxt3k.js";
+<div class="shell" id="shell">
+  <aside class="presets" id="presets" aria-labelledby="presets-h">
+    <div class="presets-head">
+      <h2 id="presets-h">Presets</h2>
+      <button type="button" class="btn small" id="imp" title="Import presets from a file">Import</button>
+      <button type="button" class="btn small" id="expall" title="Save all 52 presets in one file">Back up all</button>
+      <input type="file" id="file" accept=".json,application/json" hidden>
+    </div>
+    <label class="search"><svg class="ic"><use href="#i-search"/></svg>
+      <input type="search" id="psearch" placeholder="Search presets, amps, effects" autocomplete="off" spellcheck="false" aria-label="Search presets" aria-keyshortcuts="/"></label>
+    <div class="chips" id="pfilter" role="group" aria-label="Show">
+      <button type="button" data-f="all" aria-pressed="true">All</button>
+      <button type="button" data-f="user" aria-pressed="false">Yours</button>
+      <button type="button" data-f="factory" aria-pressed="false">Factory</button>
+    </div>
+    <div class="list" id="list" role="listbox" aria-label="Presets" tabindex="0"></div>
+    <p class="list-empty" id="listempty" hidden></p>
+  </aside>
 
-const $ = (id) => document.getElementById(id);
-let access = null, ed = null, cat = null, info = null;
-let st = null;            // { slot, dirty, saved, focus, preset }
-let slots = [];           // [{ slot, saved, name }]
-let focus = 5, busy = false, dragging = null, pingTimer = null;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const pad2 = (n) => String(n).padStart(2, "0");
+  <main id="main" tabindex="-1">
+    <!-- before a pedal answers: first run and every way it can fail -->
+    <section class="gate" id="gate" aria-live="polite"></section>
 
-function say(t, kind = "") { const m = $("msg"); m.textContent = t; m.className = "msg" + (kind ? " " + kind : ""); }
-function progress(f) { $("prog").hidden = f === null; $("progi").style.width = `${Math.round((f || 0) * 100)}%`; }
-let askFn = null;
-function ask(text, yes = "OK") {
-  return new Promise((res) => {
-    $("asktext").textContent = text; $("askyes").textContent = yes; $("ask").hidden = false;
-    askFn = (v) => { $("ask").hidden = true; askFn = null; res(v); };
-  });
-}
-$("askyes").onclick = () => askFn && askFn(true);
-$("askno").onclick = () => askFn && askFn(false);
+    <section class="view" id="view-sound" aria-labelledby="sound-h">
+      <h1 class="vh" id="sound-h">Sound</h1>
+      <div class="phead">
+        <span class="num" id="num" aria-hidden="true">01</span>
+        <div class="pname">
+          <input id="name" maxlength="13" spellcheck="false" autocomplete="off" aria-label="Preset name">
+          <span class="state" id="star"></span>
+        </div>
+        <div class="pacts">
+          <button type="button" class="btn" id="compare" aria-pressed="false" title="Hear the saved preset, then come back to your changes">Compare</button>
+          <button type="button" class="btn" id="revert" title="Drop the changes and load the saved preset again">Revert</button>
+          <button type="button" class="btn" id="saveas">Save as…</button>
+          <button type="button" class="btn primary" id="save" aria-keyshortcuts="Control+S Meta+S">Save</button>
+          <button type="button" class="btn icon" id="pmore" aria-label="More for this preset" aria-haspopup="menu"><svg class="ic"><use href="#i-more"/></svg></button>
+        </div>
+      </div>
 
-// ---- connection ----
-async function connect() {
-  if (!navigator.requestMIDIAccess) { say("This browser has no Web MIDI: use Chrome or Edge on a computer.", "err"); return; }
-  try { access = access || await navigator.requestMIDIAccess({ sysex: true }); }
-  catch (e) { say("MIDI access was refused. Allow MIDI devices for this page and try again.", "err"); return; }
-  access.onstatechange = () => { if (!ed && !busy) connect(); };
-  busy = true; $("connect").disabled = true;
-  try {
-    say("Looking for the pedal…");
-    const e = new Editor(access);
-    info = await e.connect();
-    if (!info) {
-      say("No pedal with the editor found. Is it plugged in and running OpenPocket v32 or newer? (Update it from the installer.)", "err");
-      return;
-    }
-    ed = e;
-    ed.onLost = lost;
-    $("status").textContent = `${info.identity.replace("_9", " · OpenPocket v").replace(/v(\d+)$/, "v$1")}`;
-    $("dot").classList.add("on");
-    say("Reading the pedal's catalogue…"); progress(0);
-    cat = await ed.catalog(progress);
-    progress(null);
-    st = await ed.state();
-    focus = st.focus;
-    slots = await ed.list();
-    await loadNam();
-    await loadIr();
-    ed.onState = onPush;
-    await ed.watch(true);
-    $("idle").hidden = true; $("ui").hidden = false; $("actions").hidden = false;
-    ["expall", "imp", "up", "down", "factory"].forEach((id) => { $(id).disabled = false; });
-    $("connect").textContent = "Reconnect";
-    renderAll();
-    say(`Connected to ${info.identity} on ${info.port}.`, "ok");
-    clearInterval(pingTimer);
-    pingTimer = setInterval(ping, 1000);
-  } catch (e) {
-    progress(null);
-    say(`The pedal stopped answering (${e.message}). Check the cable and press Connect.`, "err");
-    ed = null;
-  } finally { busy = false; $("connect").disabled = false; }
-}
-function lost() {
-  clearInterval(pingTimer);
-  if (ed) ed.close();
-  ed = null;
-  $("dot").classList.remove("on");
-  $("status").textContent = "disconnected";
-  say("The pedal is not answering any more. Plug it back in and press Connect.", "err");
-}
-async function ping() {
-  if (!ed) return;
-  try {
-    const p = await ed.ping();
-    const l = $("load");
-    l.textContent = `${p.bypass ? "BYP" : p.c1 ? "C1" : "C0"} ${p.load}%`;
-    l.classList.toggle("byp", p.bypass);
-  } catch (_) { }
-}
-$("connect").onclick = connect;
+      <div class="chain-wrap">
+        <span class="cap-io" aria-hidden="true">IN</span>
+        <div class="chain" id="tiles" role="group" aria-label="Signal chain, in the order the sound passes through"></div>
+        <span class="cap-io" aria-hidden="true">OUT</span>
+      </div>
+      <p class="hint" id="hint">Drag a block to move it. Arrow keys choose a block, Space switches it, Alt + arrows move it.</p>
 
-// ---- v37: NAM models (factory + user slots) ----
-let nam = null, namDi = null, namSlot = -1;
-async function loadNam() {
-  const on = !!(ed && ed.hasNam);
-  ["namh", "namnote", "namlist", "t3k"].forEach((id) => { $(id).hidden = !on; });
-  if (!on) $("t3kcard").hidden = true;
-  if (!on) return;
-  nam = await ed.namList();
-  renderNam();
-}
-function renderNam() {
-  const box = $("namlist");
-  box.textContent = "";
-  for (const m of nam.models) {
-    const row = document.createElement("div");
-    row.className = "row" + (m.user && !m.used ? " empty" : "");
-    row.innerHTML = `<span class="n">${m.user ? "U" + pad2(m.slot + 1) : "F" + pad2(m.index + 1)}</span><span class="nm"></span>` +
-      (m.user ? `<span class="acts"><button class="btn small">Load…</button>${m.used ? '<button class="btn small">Clear</button>' : ""}</span>`
-              : `<span class="tag">FACTORY</span>`);
-    row.querySelector(".nm").textContent = m.user && !m.used ? "empty" : m.name;
-    if (m.user) {
-      const b = row.querySelectorAll("button");
-      b[0].onclick = () => { namSlot = m.slot; $("namfile").value = ""; $("namfile").click(); };
-      if (b[1]) b[1].onclick = () => namClear(m);
-    }
-    box.appendChild(row);
-  }
-}
-async function namRefresh() {
-  nam = await ed.namList();
-  await ed.namTexts();
-  renderNam();
-  renderAll();
-}
-$("namfile").onchange = async () => {
-  const f = $("namfile").files[0];
-  if (!f || !ed || namSlot < 0) return;
-  if (busy) { say("Wait for the current operation to end.", "err"); return; }
-  busy = true;
-  try { await namInstall(await f.text(), f.name, namSlot); }
-  finally { busy = false; }
-};
-async function namInstall(text, fileName, slot) {   // a .nam file into user slot `slot` (caller holds busy)
-  namSlot = slot;
-  try {
-    const m = parseNam(text, fileName);
-    say(`Measuring the level of ${m.name}…`); progress(0.02);
-    await sleep(30);
-    if (!namDi) namDi = readDi(await (await fetch("nam_di.wav")).arrayBuffer());
-    const lv = levelTrim(m.weights, namDi);
-    say(`Sending ${m.name} to user slot ${namSlot + 1}…`);
-    const rc = await ed.namUpload(namSlot, packModel(m.name, m.weights, lv), (x) => progress(0.05 + 0.95 * x));
-    progress(null);
-    if (rc) throw new Error(rc === 2 ? "the pedal could not write its flash" : "the pedal refused the model");
-    await namRefresh();
-    say(`${m.name} is in user slot ${namSlot + 1} (level ${lv >= 0 ? "+" : ""}${lv.toFixed(1)} dB). Choose it with the AMP ` +
-      `block's NAM type, MODEL "${m.name}".${m.note ? " Note: " + m.note + "." : ""}`, "ok");
-  } catch (e) {
-    progress(null);
-    say(`Model not loaded: ${e.message}`, "err");
-  }
-}
+      <div class="block" id="block">
+        <div class="block-head">
+          <span class="swatch" aria-hidden="true"></span>
+          <h2 id="bname">AMP</h2>
+          <span class="pos" id="bpos"></span>
+          <span class="grow"></span>
+          <span class="mv">
+            <button type="button" class="btn icon small" id="mvl" aria-label="Move this block earlier in the chain"><svg class="ic"><use href="#i-left"/></svg></button>
+            <button type="button" class="btn icon small" id="mvr" aria-label="Move this block later in the chain"><svg class="ic"><use href="#i-right"/></svg></button>
+          </span>
+          <button type="button" class="switch" id="onoff" role="switch" aria-checked="false"><i></i><span>Off</span></button>
+        </div>
+        <div class="type">
+          <button type="button" id="tprev" aria-label="Previous type"><svg class="ic"><use href="#i-left"/></svg></button>
+          <select id="type" aria-label="Type"></select>
+          <button type="button" id="tnext" aria-label="Next type"><svg class="ic"><use href="#i-right"/></svg></button>
+        </div>
+        <div class="params" id="params"></div>
+        <div class="blocknote" id="blocknote" hidden></div>
+      </div>
+    </section>
 
-// ---- v37: TONE3000: choose a capture there (their Select flow, in a pop-up), load one of its A2 models ----
-let t3kSel = null;      // { tone, models }
-$("t3kbrowse").onclick = async () => {
-  if (!t3kReady()) {
-    say("TONE3000 browsing is not set up in this editor yet (it needs OpenPocket's TONE3000 app key). Download the A2 " +
-      "capture from tone3000.com and load the .nam file with a user slot's Load… button.", "err");
-    return;
-  }
-  if (busy || !ed) return;
-  try {
-    say("Choose a capture in the TONE3000 window (A2 captures only)…");
-    const sel = await t3kSelect();
-    say("Signing in to TONE3000…");
-    await t3kSignIn(sel);
-    const [tone, models] = await Promise.all([t3kTone(sel.tone_id), t3kModels(sel.tone_id)]);
-    t3kSel = { tone, models };
-    renderT3k();
-    say(models.length ? `${tone.title}: choose a model and a user slot.` :
-      `${tone.title} has no A2 model: the pedal plays A2 captures only. Choose another one.`, models.length ? "" : "err");
-  } catch (e) {
-    say(e.message === "cancelled" ? "TONE3000: nothing chosen." : `TONE3000: ${e.message}`,
-      e.message === "cancelled" ? "" : "err");
-  }
-};
-function renderT3k() {
-  const c = $("t3kcard");
-  c.textContent = "";
-  if (!t3kSel) { c.hidden = true; return; }
-  const { tone, models } = t3kSel, u = tone.user || {};
-  c.innerHTML = `<div class="top"><img class="img" alt=""><div style="min-width:0"><div class="ttl"></div>` +
-    `<div class="sub"></div><a class="by" target="_blank" rel="noopener"><img alt=""><span></span></a></div></div>` +
-    `<div class="ms"></div><div class="foot"><span>Into</span><select aria-label="User slot"></select>` +
-    `<span class="logo">TONE3000</span><a target="_blank" rel="noopener" class="tl">open on TONE3000</a></div>`;
-  const img = c.querySelector(".img");
-  if (tone.images && tone.images[0]) img.src = tone.images[0]; else img.style.visibility = "hidden";
-  c.querySelector(".ttl").textContent = tone.title || "Tone";
-  c.querySelector(".sub").textContent = [tone.gear, tone.format].filter(Boolean).join(" · ").toUpperCase();
-  const by = c.querySelector(".by");
-  if (u.url) by.href = u.url;
-  if (u.avatar_url) by.querySelector("img").src = u.avatar_url; else by.querySelector("img").remove();
-  by.querySelector("span").textContent = u.display_name || u.username || "";
-  if (tone.url) c.querySelector(".tl").href = tone.url; else c.querySelector(".tl").remove();
-  const sel = c.querySelector("select");
-  const users = nam.models.filter((m) => m.user);
-  const first = users.find((m) => !m.used) || users[0];
-  for (const m of users) {
-    const o = document.createElement("option");
-    o.value = m.slot; o.textContent = `U${pad2(m.slot + 1)} ${m.used ? m.name : "(empty)"}`;
-    if (first && m.slot === first.slot) o.selected = true;
-    sel.appendChild(o);
-  }
-  const ms = c.querySelector(".ms");
-  for (const m of models) {
-    const r = document.createElement("div");
-    r.className = "mrow";
-    r.innerHTML = `<span></span><button class="btn small go">Load</button>`;
-    r.querySelector("span").textContent = m.name || `model ${m.id}`;
-    r.querySelector("button").onclick = () => t3kLoad(m, +sel.value);
-    ms.appendChild(r);
-  }
-  c.hidden = false;
-}
-async function t3kLoad(m, slot) {
-  if (busy || !ed) return;
-  const u = nam.models.find((x) => x.user && x.slot === slot);
-  if (u && u.used && !await ask(`Replace ${u.name} in user slot ${slot + 1}?`, "Replace")) return;
-  busy = true;
-  try {
-    say(`Downloading ${m.name} from TONE3000…`);
-    const text = await t3kDownload(m);
-    await namInstall(text, (t3kSel.tone.title || m.name || "MODEL"), slot);
-    renderT3k();
-  } catch (e) { say(`TONE3000: ${e.message}`, "err"); }
-  finally { busy = false; }
-}
-async function namClear(m) {
-  if (busy || !ed) return;
-  if (!await ask(`Clear user slot ${m.slot + 1} (${m.name})? Presets using it play without an amp until you load another model there.`, "Clear")) return;
-  busy = true;
-  try {
-    const rc = await ed.namErase(m.slot);
-    await namRefresh();
-    say(rc ? "The pedal could not erase the slot." : `User slot ${m.slot + 1} is empty.`, rc ? "err" : "ok");
-  } catch (e) { say(`Not cleared: ${e.message}`, "err"); }
-  finally { busy = false; }
-}
+    <section class="view" id="view-models" aria-labelledby="models-h">
+      <h1 class="vh" id="models-h">Models and cabinets</h1>
+      <div class="mgrid">
+        <div class="mcol">
+          <section class="card bank" id="nam" data-kind="nam"></section>
+          <section class="card bank" id="ir" data-kind="ir"></section>
+        </div>
+        <section class="card t3k" id="t3k" aria-label="TONE3000"></section>
+      </div>
+      <input type="file" id="namfile" accept=".nam,application/json" multiple hidden>
+      <input type="file" id="irfile" accept=".wav,audio/wav,audio/x-wav,audio/wave" multiple hidden>
+    </section>
 
-// ---- v38: cabinet IRs (8 user slots) ----
-let irs = null, irSlot = -1;
-async function loadIr() {
-  const on = !!(ed && ed.hasIr);
-  ["irh", "irnote", "irlist"].forEach((id) => { $(id).hidden = !on; });
-  if (!on) return;
-  irs = await ed.irList();
-  renderIr();
-}
-function renderIr() {
-  const box = $("irlist");
-  box.textContent = "";
-  for (const m of irs) {
-    const row = document.createElement("div");
-    row.className = "row" + (m.used ? "" : " empty");
-    row.innerHTML = `<span class="n">IR${m.slot + 1}</span><span class="nm"></span>` +
-      `<span class="acts"><button class="btn small">Load…</button>${m.used ? '<button class="btn small">Clear</button>' : ""}</span>`;
-    row.querySelector(".nm").textContent = m.used ? m.name : "empty";
-    const b = row.querySelectorAll("button");
-    b[0].onclick = () => { irSlot = m.slot; $("irfile").value = ""; $("irfile").click(); };
-    if (b[1]) b[1].onclick = () => irClear(m);
-    box.appendChild(row);
-  }
-}
-async function irRefresh() {
-  irs = await ed.irList();
-  await ed.irTexts();
-  renderIr();
-  renderAll();
-}
-$("irfile").onchange = async () => {
-  const f = $("irfile").files[0];
-  if (!f || !ed || irSlot < 0) return;
-  if (busy) { say("Wait for the current operation to end.", "err"); return; }
-  busy = true;
-  try {
-    const name = irName(f.name);
-    const w = parseWav(await f.arrayBuffer());
-    const ir = prepareIr(w);
-    say(`Sending ${name} to IR slot ${irSlot + 1}…`);
-    const rc = await ed.irUpload(irSlot, packIr(name, ir.h), (x) => progress(x));
-    progress(null);
-    if (rc) throw new Error(rc === 2 ? "the pedal could not write its flash" : "the pedal refused the IR");
-    await irRefresh();
-    say(`${name} is in IR slot ${irSlot + 1}${ir.note ? " (" + ir.note + ")" : ""}. Choose it with the CAB block's ` +
-      `USER IR type, IR "${name}".`, "ok");
-  } catch (e) {
-    progress(null);
-    say(`IR not loaded: ${e.message}`, "err");
-  } finally { busy = false; }
-};
-async function irClear(m) {
-  if (busy || !ed) return;
-  if (!await ask(`Clear IR slot ${m.slot + 1} (${m.name})? Presets using it play without a cabinet until you load another IR there.`, "Clear")) return;
-  busy = true;
-  try {
-    const rc = await ed.irErase(m.slot);
-    await irRefresh();
-    say(rc ? "The pedal could not erase the slot." : `IR slot ${m.slot + 1} is empty.`, rc ? "err" : "ok");
-  } catch (e) { say(`Not cleared: ${e.message}`, "err"); }
-  finally { busy = false; }
-}
+    <section class="view" id="view-midi" aria-labelledby="midi-h">
+      <h1 class="vh" id="midi-h">MIDI</h1>
+      <div class="midigrid">
+        <section class="card" id="midiconn" aria-labelledby="midiconn-h"></section>
+        <section class="card" id="midimon" aria-labelledby="midimon-h"></section>
+        <section class="card wide" id="midimap" aria-labelledby="midimap-h"></section>
+      </div>
+    </section>
+  </main>
+</div>
 
-// ---- pushes from the pedal ----
-function onPush(s) {
-  const slotChanged = !st || s.slot !== st.slot;
-  st = s;
-  focus = s.focus;
-  if (slotChanged) refreshList();
-  renderAll(true);
-}
-async function refreshList() { if (ed) { slots = await ed.list(); renderList(); } }
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<dialog class="dlg" id="dlg" aria-labelledby="dlg-h"></dialog>
 
-// ---- rendering ----
-const blk = (b) => cat.blocks[b];
-const typ = (b) => blk(b).types[st.preset.type[b]] || blk(b).types[0];
-function renderAll(fromPush = false) {
-  renderHeader(); renderTiles(); renderPage(fromPush); renderList(); renderSaveTo();
-}
-function renderHeader() {
-  $("num").textContent = pad2(st.slot + 1);
-  if (document.activeElement !== $("name")) $("name").value = st.preset.name;
-  $("star").textContent = st.dirty ? "*" : "";
-  $("save").disabled = !st.dirty;
-  $("revert").disabled = !st.dirty;
-}
-function renderTiles() {
-  const box = $("tiles");
-  box.textContent = "";
-  st.preset.order.forEach((b, i) => {
-    const t = document.createElement("div");
-    const on = st.preset.on[b];
-    t.className = "tile" + (on ? " on" : "") + (b === focus ? " sel" : "") + (dragging && dragging.b === b ? " drag" : "");
-    t.style.background = on ? blk(b).color : "";
-    t.textContent = blk(b).label;
-    t.dataset.b = b; t.dataset.i = i;
-    t.tabIndex = 0;
-    t.setAttribute("role", "button");
-    t.setAttribute("aria-label", `${blk(b).name}, ${on ? "on" : "off"}, position ${i + 1}`);
-    const pw = document.createElement("button");
-    pw.className = "pw"; pw.title = on ? "Switch off" : "Switch on"; pw.setAttribute("aria-label", pw.title);
-    pw.onpointerdown = (e) => e.stopPropagation();
-    pw.onclick = (e) => { e.stopPropagation(); toggle(b); };
-    t.appendChild(pw);
-    t.onpointerdown = (e) => startDrag(e, t, b);
-    t.onkeydown = (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFocus(b); }
-      else if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.preventDefault(); moveBlock(b, e.key === "ArrowLeft" ? -1 : 1, true); }
-    };
-    box.appendChild(t);
-  });
-}
-function renderPage(fromPush) {
-  const b = focus, B = blk(b), T = typ(b);
-  document.documentElement.style.setProperty("--blk", B.color);
-  $("bname").textContent = B.name;
-  const on = st.preset.on[b];
-  $("onoff").textContent = on ? "ON" : "OFF";
-  $("onoff").classList.toggle("on", !!on);
-  const sel = $("type");
-  if (sel.dataset.b !== String(b) || sel.options.length !== B.types.length) {
-    sel.textContent = "";
-    B.types.forEach((t, i) => { const o = document.createElement("option"); o.value = i; o.textContent = t.name; sel.appendChild(o); });
-    sel.dataset.b = b;
-  }
-  sel.value = st.preset.type[b];
-  const box = $("params");
-  const sig = `${b}:${st.preset.type[b]}`;
-  if (box.dataset.sig !== sig) {
-    box.textContent = "";
-    T.params.forEach((p, k) => {
-      const row = document.createElement("div");
-      row.className = "prm";
-      const id = `p${k}`;
-      row.innerHTML = `<label for="${id}"></label><input type="range" id="${id}" min="0" max="100" step="1"><span class="val"></span>`;
-      row.querySelector("label").textContent = p.name;
-      const r = row.querySelector("input");
-      r.oninput = () => { showVal(k); sendParam(b, k, +r.value); };
-      r.onpointerdown = () => { r.dataset.held = "1"; };
-      r.onpointerup = r.onpointercancel = () => { delete r.dataset.held; };
-      box.appendChild(row);
-    });
-    box.dataset.sig = sig;
-  }
-  T.params.forEach((p, k) => {
-    const r = $(`p${k}`);
-    if (!(fromPush && (r.dataset.held || document.activeElement === r && pendingParam))) r.value = st.preset.p[b][k];
-    showVal(k);
-  });
-  const pos = st.preset.order.indexOf(b);
-  $("mvl").disabled = pos <= 0; $("mvr").disabled = pos >= st.preset.order.length - 1;
-}
-function showVal(k) {
-  const r = $(`p${k}`), v = +r.value, p = typ(focus).params[k];
-  const t = p && p.texts && p.texts[v];
-  const el = r.parentElement.querySelector(".val");
-  el.textContent = t || String(v);
-  el.classList.toggle("tx", !!t);
-  r.style.setProperty("--p", `${v}%`);
-}
-function renderList() {
-  const box = $("list");
-  box.textContent = "";
-  for (const s of slots) {
-    const row = document.createElement("div");
-    row.className = "row" + (s.saved ? " user" : "") + (st && s.slot === st.slot ? " cur" : "");
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", st && s.slot === st.slot ? "true" : "false");
-    row.tabIndex = 0;
-    row.innerHTML = `<span class="n">${pad2(s.slot + 1)}</span><span class="nm"></span><span class="tag">${s.saved ? "USER" : ""}</span>`;
-    row.querySelector(".nm").textContent = s.name;
-    row.onclick = () => pickSlot(s.slot);
-    row.onkeydown = (e) => { if (e.key === "Enter") pickSlot(s.slot); };
-    box.appendChild(row);
-  }
-  if (st) {
-    $("slotlbl").textContent = `Slot ${pad2(st.slot + 1)}${slots[st.slot] && slots[st.slot].saved ? " · your preset" : " · factory preset"}`;
-    $("up").disabled = st.slot === 0; $("down").disabled = st.slot === slots.length - 1;
-    $("factory").disabled = !(slots[st.slot] && slots[st.slot].saved);
-  }
-}
-function renderSaveTo() {
-  const sel = $("saveto"), keep = sel.value;
-  sel.textContent = "";
-  for (const s of slots) { const o = document.createElement("option"); o.value = s.slot; o.textContent = `${pad2(s.slot + 1)} ${s.name}`; sel.appendChild(o); }
-  sel.value = keep !== "" && keep !== undefined && sel.querySelector(`option[value="${keep}"]`) ? keep : String(st.slot);
-}
+<svg hidden>
+  <defs>
+    <symbol id="i-list" viewBox="0 0 20 20"><path d="M7 5h10M7 10h10M7 15h10M3.25 5h.5M3.25 10h.5M3.25 15h.5"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 20 20"><path d="M5 3v5M5 12v5M10 3v2M10 9v8M15 3v8M15 15v2"/><circle cx="5" cy="10" r="2"/><circle cx="10" cy="7" r="2"/><circle cx="15" cy="13" r="2"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 20 20"><path d="M2 10h2.5l2-6 3.5 12 3-9 1.5 3H18"/></symbol>
+    <symbol id="i-midi" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.25"/><path d="M6 9.25h.01M14 9.25h.01M7.5 12.75h.01M12.5 12.75h.01M10 13.75h.01"/></symbol>
+    <symbol id="i-search" viewBox="0 0 20 20"><circle cx="9" cy="9" r="5.25"/><path d="M13 13l4 4"/></symbol>
+    <symbol id="i-more" viewBox="0 0 20 20"><path d="M4.5 10h.01M10 10h.01M15.5 10h.01"/></symbol>
+    <symbol id="i-left" viewBox="0 0 20 20"><path d="M12 5l-5 5 5 5"/></symbol>
+    <symbol id="i-right" viewBox="0 0 20 20"><path d="M8 5l5 5-5 5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
+    <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 20 20"><path d="M10 3.5l7.5 13h-15zM10 8.5v3.5M10 14.5h.01"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 20 20"><path d="M4.5 10h11"/></symbol>
+    <symbol id="i-ext" viewBox="0 0 20 20"><path d="M8 4.5H4.5v11h11V12M11 4.5h4.5V9M15.5 4.5L9 11"/></symbol>
+    <symbol id="i-usb" viewBox="0 0 20 20"><path d="M10 17V5M10 5L7.5 7.5M10 5l2.5 2.5M5.5 9v2.5L10 14M14.5 8v2.5L10 12.5"/></symbol>
+  </defs>
+</svg>
 
-// ---- live editing ----
-let pendingParam = null, sendingParam = false;
-function sendParam(b, k, v) {
-  st.preset.p[b][k] = v;
-  pendingParam = { b, k, v };
-  if (!sendingParam) flushParam();
-}
-async function flushParam() {
-  sendingParam = true;
-  try {
-    for (;;) {
-      while (pendingParam) {
-        const q = pendingParam; pendingParam = null;
-        await ed.setParam(q.b, q.k, q.v);
-      }
-      await syncState();
-      if (!pendingParam) break;                     // a value that came in meanwhile goes out too
-    }
-  } catch (_) { } finally { sendingParam = false; }
-}
-async function syncState() { st = await ed.state(); renderHeader(); }
-async function act(fn) {
-  if (!ed) return;
-  try { await fn(); } catch (e) { say(`The pedal did not answer (${e.message}).`, "err"); }
-}
-function setFocus(b) {
-  focus = b; renderTiles(); renderPage();
-  act(() => ed.focus(b));
-}
-function toggle(b) {
-  act(async () => { st.preset.on[b] = await ed.setOn(b, !st.preset.on[b]); await syncState(); renderTiles(); renderPage(); });
-}
-$("onoff").onclick = () => toggle(focus);
-function setType(t) {
-  const n = blk(focus).types.length;
-  t = (t + n) % n;
-  act(async () => { st.preset.type[focus] = await ed.setType(focus, t); await syncState(); renderPage(); });
-}
-$("type").onchange = () => setType(+$("type").value);
-$("tprev").onclick = () => setType(st.preset.type[focus] - 1);
-$("tnext").onclick = () => setType(st.preset.type[focus] + 1);
-$("name").onchange = () => act(async () => { st.preset.name = await ed.name($("name").value); $("name").value = st.preset.name; await syncState(); renderHeader(); });
-$("name").onkeydown = (e) => { if (e.key === "Enter") $("name").blur(); };
-
-// block order: drag a tile, or the ◀ ▶ buttons, or Alt + arrows on a tile
-async function sendOrder(order) {
-  await act(async () => { if (await ed.order(order) === 0) st.preset.order = order; await syncState(); renderTiles(); renderPage(); });
-}
-function moveBlock(b, d, keepFocus) {
-  const o = [...st.preset.order], i = o.indexOf(b), j = i + d;
-  if (j < 0 || j >= o.length) return;
-  [o[i], o[j]] = [o[j], o[i]];
-  sendOrder(o).then(() => { if (keepFocus) document.querySelector(`.tile[data-b="${b}"]`)?.focus(); });
-}
-$("mvl").onclick = () => moveBlock(focus, -1);
-$("mvr").onclick = () => moveBlock(focus, 1);
-function startDrag(e, el, b) {
-  if (e.button !== 0) return;
-  const x0 = e.clientX, y0 = e.clientY, w = el.getBoundingClientRect().width;
-  let ghost = null, order = null;
-  e.preventDefault();                                 // (the tiles are rebuilt while dragging: listen on the window)
-  const move = (ev) => {
-    if (!ghost && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
-    if (!ghost) {
-      dragging = { b }; order = [...st.preset.order];
-      ghost = el.cloneNode(true); ghost.classList.add("ghost"); ghost.style.setProperty("--w", `${w}px`);
-      document.body.appendChild(ghost); renderTiles();
-    }
-    ghost.style.left = `${ev.clientX}px`; ghost.style.top = `${ev.clientY}px`;
-    // the tile under the pointer: the dragged block takes its place
-    const tiles = [...$("tiles").children];
-    let best = -1, bd = 1e9;
-    tiles.forEach((t, i) => { const r = t.getBoundingClientRect(); const d = Math.hypot(ev.clientX - (r.left + r.width / 2), ev.clientY - (r.top + r.height / 2)); if (d < bd) { bd = d; best = i; } });
-    const cur = order.indexOf(b);
-    if (best >= 0 && best !== cur) { order.splice(cur, 1); order.splice(best, 0, b); st.preset.order = [...order]; renderTiles(); }
-  };
-  const up = () => {
-    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up);
-    if (ghost) { ghost.remove(); dragging = null; renderTiles(); sendOrder(order); }
-    else setFocus(b);
-  };
-  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
-}
-
-// ---- slots ----
-async function pickSlot(slot) {
-  if (!ed || slot === st.slot) return;
-  if (st.dirty && !(await ask(`"${st.preset.name}" has unsaved changes. Load ${pad2(slot + 1)} ${slots[slot].name} anyway?`, "Load"))) return;
-  act(async () => { await ed.select(slot); st = await ed.state(); renderAll(); });
-}
-$("save").onclick = () => act(async () => {
-  const rc = await ed.save(st.slot);
-  if (rc) { say(`Saving failed (error ${rc}).`, "err"); return; }
-  st = await ed.state(); slots = await ed.list(); renderAll(); say(`Saved in slot ${pad2(st.slot + 1)}.`, "ok");
-});
-$("revert").onclick = () => act(async () => { await ed.select(st.slot); st = await ed.state(); renderAll(); say("Back to the saved sound.", "ok"); });
-$("saveas").onclick = async () => {
-  const to = +$("saveto").value;
-  if (to !== st.slot && !(await ask(`Save "${st.preset.name}" into slot ${pad2(to + 1)}, replacing ${slots[to].name}?`, "Save"))) return;
-  act(async () => {
-    const rc = await ed.save(to);
-    if (rc) { say(`Saving failed (error ${rc}).`, "err"); return; }
-    st = await ed.state(); slots = await ed.list(); renderAll(); say(`Saved in slot ${pad2(to + 1)}.`, "ok");
-  });
-};
-async function swapWith(d) {
-  const a = st.slot, b = a + d;
-  if (b < 0 || b >= slots.length) return;
-  await act(async () => {
-    const A = await ed.slotGet(a), B = await ed.slotGet(b);
-    await ed.slotPut(a, B.saved ? B.preset : B.preset, false);
-    await ed.slotPut(b, A.saved ? A.preset : A.preset, false);
-    const rc = await ed.commit();
-    if (rc) { say(`Moving failed (error ${rc}).`, "err"); return; }
-    const dirty = st.dirty, cur = clonePreset(st.preset);
-    await ed.select(b);
-    if (dirty) await ed.put(cur);                 // the unsaved changes follow the preset
-    st = await ed.state(); slots = await ed.list(); renderAll();
-    say(`Moved to slot ${pad2(b + 1)}.`, "ok");
-  });
-}
-$("up").onclick = () => swapWith(-1);
-$("down").onclick = () => swapWith(1);
-$("factory").onclick = async () => {
-  if (!(await ask(`Put slot ${pad2(st.slot + 1)} back to its factory preset? "${slots[st.slot].name}" will be lost.`, "Restore"))) return;
-  act(async () => {
-    const rc = await ed.slotPut(st.slot, null, true);
-    if (rc) { say(`Failed (error ${rc}).`, "err"); return; }
-    await ed.select(st.slot); st = await ed.state(); slots = await ed.list(); renderAll(); say("Factory preset restored.", "ok");
-  });
-};
-
-// ---- files ----
-function download(name, obj) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 1)], { type: "application/json" }));
-  const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-const fileSafe = (s) => (s || "preset").trim().replace(/[^A-Za-z0-9 _-]+/g, "").replace(/\s+/g, "-").toLowerCase() || "preset";
-$("export1").onclick = () => { download(`${fileSafe(st.preset.name)}.json`, filePresets([presetToJSON(st.preset, cat, st.slot)])); say("Preset exported.", "ok"); };
-$("expall").onclick = () => act(async () => {
-  const all = [];
-  for (let s = 0; s < slots.length; s++) { progress(s / slots.length); const g = await ed.slotGet(s); all.push({ ...presetToJSON(g.preset, cat, s), factory: !g.saved }); }
-  progress(null);
-  const d = new Date();
-  download(`openpocket-presets-${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}.json`, filePresets(all));
-  say(`All ${slots.length} presets exported.`, "ok");
-});
-$("imp").onclick = () => $("file").click();
-$("file").onchange = async () => {
-  const f = $("file").files[0];
-  $("file").value = "";
-  if (!f || !ed) return;
-  let list;
-  try { list = parsePresetFile(await f.text()); } catch (e) { say(`${f.name}: not an OpenPocket preset file.`, "err"); return; }
-  if (!list.length) { say(`${f.name} holds no preset.`, "err"); return; }
-  if (list.length === 1) {
-    // one preset: it becomes the current sound (listen, then Save or Save as)
-    const r = presetFromJSON(list[0], cat, st.preset);
-    await act(async () => {
-      if (await ed.put(r.preset)) { say("The pedal refused this preset.", "err"); return; }
-      st = await ed.state(); renderAll();
-      say(`"${r.preset.name}" loaded as the current sound: Save or Save as to keep it.${r.warn.length ? " Note: " + r.warn.join("; ") : ""}`, r.warn.length ? "" : "ok");
-    });
-    return;
-  }
-  const withSlot = list.filter((o) => Number.isInteger(o.slot) && o.slot >= 1 && o.slot <= slots.length);
-  const users = list.filter((o) => !o.factory).length;
-  if (!(await ask(`${f.name}: ${list.length} presets. Write them into their slots (${withSlot.length} with a slot number)? The presets now in those slots will be replaced.`, "Import"))) return;
-  await act(async () => {
-    const warn = [];
-    let i = 0;
-    for (const o of withSlot) {
-      progress(i++ / withSlot.length);
-      const s = o.slot - 1;
-      if (o.factory) { await ed.slotPut(s, null, false); continue; }
-      const base = (await ed.slotGet(s)).preset;
-      const r = presetFromJSON(o, cat, base);
-      warn.push(...r.warn.map((w) => `${pad2(o.slot)}: ${w}`));
-      if (await ed.slotPut(s, r.preset, false)) warn.push(`${pad2(o.slot)}: refused`);
-    }
-    const rc = await ed.commit();
-    progress(null);
-    if (rc) { say(`Writing the presets failed (error ${rc}).`, "err"); return; }
-    await ed.select(st.slot);
-    st = await ed.state(); slots = await ed.list(); renderAll();
-    say(`${withSlot.length} presets imported (${users} of yours).${warn.length ? " Notes: " + warn.slice(0, 4).join("; ") : ""}`, warn.length ? "" : "ok");
-  });
-};
-</script>
+<script type="module" src="editor.js"></script>
 </body>
 </html>

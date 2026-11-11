@@ -46,20 +46,30 @@ The factory presets use them; the fitted amps of v34 are still there as the othe
 1. Get a capture in the **A2** format: on [TONE3000](https://www.tone3000.com/) and in NAM's own trainer, A2 files
    are offered beside the older formats. The pedal reads the A2-Lite part of an A2 file. The older A1 files
    ("standard", "lite", "feather", "nano") do not run on the pedal and are refused with that reason.
-2. Open the web editor (`editor.html`), connect the pedal, and under **NAM models** pick a free slot and the `.nam` file.
-   The editor checks it, measures its level and sends it to the pedal (about 2 seconds; the sound mutes a moment
-   while the flash is written).
-3. In a preset, set the AMP type to **NAM** and turn **MODEL** to that slot.
+2. Open the web editor (`editor.html`), connect the pedal, and in **Models** press **Add .nam files** (several at once,
+   or drop them on the panel). The editor checks each file, measures its level and sends it to the next free slot
+   (about 2 seconds each; the sound mutes a moment while the flash is written). A file the pedal cannot play is listed
+   with the reason. An empty slot's own button loads a file into that slot.
+3. In a preset, set the AMP type to **NAM** and choose the capture in **MODEL** (your captures are listed by slot).
 
-Or press **Browse TONE3000** in the same panel: TONE3000's own tone browser opens in a pop-up (sign in there; it shows
-A2 captures only), and the chosen tone comes back with its creator and its A2 models; **Load** puts one into the
-user slot chosen beside it. This uses TONE3000's public API ([tone3000.com/api](https://www.tone3000.com/api)), its
-"Select" flow: OAuth 2.0 with PKCE and OpenPocket's publishable key (`T3K_CLIENT_ID` in `docs/pxt3k.js`), the sign-in
-coming back through `docs/t3k.html`. The access token lives in the page only while it is open. It needs that key and
+Or press **Browse TONE3000** in the same section: TONE3000's own tone browser opens in a pop-up (sign in there; it shows
+A2 captures only), and the chosen tone comes back with its creator, its description and its A2 models; **Get** puts one
+into the slot chosen beside it. While signed in, the editor also lists your TONE3000 favorites and downloads, and the
+trending and latest tones. This uses TONE3000's public API ([tone3000.com/api](https://www.tone3000.com/api)), its
+"Select" flow and the lists a free application may read (not its search, which stays in TONE3000's own browser):
+OAuth 2.0 with PKCE and OpenPocket's publishable key (`T3K_CLIENT_ID` in `docs/pxt3k.js`), the sign-in coming back
+through `docs/t3k.html`. The access token lives in the page only while it is open. It needs that key and
 `https://isod89.github.io/openpocket/t3k.html` registered as a redirect URI in TONE3000's settings.
 
+**The library.** The pedal stores a capture but cannot send it back. So the editor keeps every capture you add in the
+browser (IndexedDB, on that computer only), with where it came from. That is what lets it rename a capture, move it to
+another slot or swap two (the presets that use them are rewritten to follow), and keep more captures than the pedal has
+slots: **Remove from the pedal** leaves the capture in the library, **Send to the pedal** brings it back. A capture
+loaded from another browser shows as "not in this browser's library": load its file again to rename or move it.
+Each slot shows how many saved presets use it, and removing a capture names them first.
+
 The 16 user slots are in the pedal's flash at 0xC0000..0xE0000, outside the area a firmware update rewrites: your
-models stay through updates. Clear a slot from the same panel.
+models stay through updates.
 
 Most captures are made at 48 kHz. The pedal runs at 44.1 kHz, so such a model plays with its tone about 1.5
 semitones lower (the amp's filters sit 8% lower). The editor says so when it loads one. The factory models are
@@ -110,6 +120,40 @@ trained at 44.1 kHz and are not affected.
   bit for bit (`tests/engine/lp_test.c`: every model, the split moved at random, the second core's work at random
   moments; the pipeline on every NAM preset; on the pedal a development build checks it with both cores at boot). The
   load shown is the busier core's. The hand-over queue (6 KB) sits in the cache RAM after the vector unit's buffers.
+- v40.4: CPU1 works on through the interrupts (`lp_job` is one worker for as long as the layer split is on). Before, its
+  job ended with the block's last network block, which CPU0 hands over at the end of its own share: CPU1 idled at the
+  start of each block, the next interrupt waited for it, and the two cores' work had to fit one after the other in a
+  block (the effects before the amp, CPU0's layers, then one network block on CPU1). A chain could use only about 88 %
+  of each core, and after a change of type, order or model, when the interrupt runs block after block to catch up
+  with the time it was held off, that wait counted as load and engaged the safety bypass on chains that fit. Now each
+  interrupt asks the worker for the effects after the amp; it finishes the network blocks handed over before the
+  request first (the effects play their output), runs the effects, and returns to the network. The interrupt waits
+  only for the output it sends. The network blocks handed over late in a block are finished during the next one, so
+  each core's work may fill its block. The split is set in one step from the two cores' other work as timed (the
+  effects before the amp on CPU0, the effects after it and the lanes on CPU1) and the network's parts
+  (`pxn_lp_share`); in the first two blocks after a change, before CPU1's work is timed, CPU0 takes as many layers
+  as fit in 80 % of its block. CPU1 takes layers over at once; CPU0 takes more only as CPU1 has finished them for the
+  blocks before (`pxn_lp_a`), or waits for it once when told to (`pxn_lp_force`: a rise of two layers or more). The
+  output does not depend on any of it (`tests/engine/lp_test.c`).
+- v40.5: CPU0's waits for CPU1 end after a limit. CPU1's worker is one job for as long as the split runs, so the
+  limit of `fm1_cpu1_wait` (8 ms, then CPU1 is retired as LATE and CPU0 goes on alone) did not apply to the interrupt's
+  waits for it: in `a_lp_post` (its output), in `pxn_lp_a` (the queue full) and in a forced rise (`pxn_lp_wait`). A CPU1
+  that stopped without a fault would have held the audio interrupt until the watchdog reset the pedal. These waits now
+  end after the same 8 ms (`pxn_lp_clock`, set after the start-up check; none on the PC): `pxn_lp_a` returns without
+  handing the block over, CPU1 is retired (LATE), and the next collect goes to one core with the engine reset, as for a
+  CPU1 that faults. `tests/engine/lp_stuck.c` checks the network's side with a second core that never moves.
+- v40.5: `post5` (`tools/gen_rdq.py --post5`) does `post4`'s work two frames a turn for every layer with an output: the
+  residual's 9 weights are read once for the two frames, and every load and store is written with an instruction that
+  computes (free with a multiply or multiply-add; with a 1-cycle instruction it costs only its own time), each value
+  loaded 2 instructions or more before its use. No word outside the job is read. An odd first frame and the last layer
+  go to `post4`. A turn takes 109 cycles against 159 for two of `post4`'s frames. `tests/test_post5.py` runs the
+  assembly text itself through a model of its instructions against the C post, on the PC; the pedal checks it at
+  start-up like the others and times it.
+- v40.5: `rdm6`, `rdm15` and `post5` run from the flash, the other routines from RAM as before. On this chip code in RAM
+  is fetched at about 1.5 cycles a word and code in the instruction cache at 1 cycle a word; these three are rows of
+  6-byte instructions that work for 2 cycles each, so from RAM they waited for their own instructions. They are 6.6 KB
+  and run all the time, so they stay in the cache. The network takes 6 % less time for it. The Bluetooth test image
+  keeps them in RAM (`PXN_HOT_RAM`): its radio code runs from the flash all the time, and that was not measured.
 - Each layer's history ring has its first 3 frames mirrored after its end, so 4 frames can be read straight from any
   position: the tap pointers just move on by 4 frames per group. On the pedal a layer's whole block of groups runs in one call
   (`pxn_rdl6/15/16_asm`, generated by `tools/gen_rdq.py --rdl`), its tap table on the stack.

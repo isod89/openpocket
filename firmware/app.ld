@@ -31,12 +31,13 @@ SECTIONS
                   . = ALIGN(4); _c1_start = .; KEEP(*(.c1_text*)) . = ALIGN(4); _c1_end = .;   /* the second core's loop */
                   _rt_end = .; } > RAMTEXT AT > XIP
     _rt_load = LOADADDR(.ram_text);
-    /* v40.1: data in the RAM code window's free end, after the code (the PC guard covers only _rt_start.._rt_end): buffers
-     * the engine marks PX_HI (px_dsp.c), out of the 96 KB RAM. Zeroed by fm1_cstart like .bss. */
+    /* v40.1: data in the RAM code window's free end, after the code (the PC guard covers only _rt_start.._rt_end), out of
+     * the 96 KB RAM. Zeroed by fm1_cstart like .bss. (v40.4: the engine's buffers moved to .bss_lo; the code needs the room.) */
     .bss_hi (NOLOAD) : { . = ALIGN(8); _bss_hi_start = .; *(.bss.hi.*) . = ALIGN(4); _bss_hi_end = .; } > RAMTEXT
-    /* v40.1, the Bluetooth test image only: data in the first 24 KB of the SRAM below the RAM, which v37's RAM code used
-     * at run time and v40 leaves free (the boot ROM loads the boot loader there before the app runs). What goes there is
-     * a buffer whose contents are checked before use (nm_stage: CRC, read-back). Zeroed by fm1_cstart like .bss. */
+    /* v40.1: data in the first 24 KB of the SRAM below the RAM, which v37's RAM code used at run time and v40 leaves free
+     * (the boot ROM loads the boot loader there before the app runs). Zeroed by fm1_cstart like .bss. The Bluetooth test
+     * image's upload staging buffer (nm_stage: checked before use by CRC and read-back); v40.4: the engine's buffers marked
+     * PX_LO (px_dsp.c: the IR's spectra, the oversampling's and the lanes' buffers, 13.8 KB), which were in .bss_hi. */
     .bss_lo (NOLOAD) : { . = ALIGN(8); _bss_lo_start = .; *(.bss.lo.*) . = ALIGN(4); _bss_lo_end = .; } > LOWRAM
     .data : { . = ALIGN(4); _data_start = .; *(.data*) *(.sdata*) *(.*_data) . = ALIGN(4); _data_end = .; } > RAM AT > XIP
     _data_load = LOADADDR(.data);

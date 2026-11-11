@@ -45,7 +45,7 @@ static uint32_t pop_out(void) { return mo_r != mo_w ? midi_out_q[mo_r++ % MQ] : 
 enum { M_CHAIN, M_BLOCK, M_EDIT, M_TUNER, M_SAVE, M_MOVE, M_MIDI };
 static px_preset_t PRESET;
 static uint32_t cur_preset, master_vol = 80, ui_mode = M_CHAIN, ui_item;
-static uint8_t st_midi, st_ok = 1;
+static uint8_t st_midi, st_usb, st_ok = 1;
 static int commits;
 static int ui_nitems(void) { return 2 + px_nparams(PX_B_AMP, PRESET.type[PX_B_AMP]); }
 static void load_preset(uint32_t i) { px_preset_factory(&PRESET, (int)i); }
@@ -189,6 +189,14 @@ int main(void)
         mid_cfg.chan = 6; mid_cfg.send = 0;
         midi_persist();
         ok(commits == (int)c0 + 1 && st_midi == px_midi_cfg_pack(&mid_cfg), "leaving the MIDI page writes the settings byte to the store, once");
+        ok(st_usb == 0, "USB AUDIO off: the USB settings byte stays 0");
+        px_ua_on = 1; st_usb = 0x80;
+        midi_persist();
+        ok(commits == (int)c0 + 2 && st_usb == 0x81, "USB AUDIO on: bit 0 of the USB settings byte, the other bits kept");
+        px_ua_on = 0;
+        midi_persist();
+        ok(st_usb == 0x80, "USB AUDIO off again: bit 0 cleared");
+        st_usb = 0;
     }
     reset();
     {

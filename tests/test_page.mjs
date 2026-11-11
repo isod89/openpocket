@@ -62,8 +62,8 @@ await page.addInitScript(() => {
   navigator.requestMIDIAccess = async () => access;
 });
 let buf = "";
-function startSim() {
-sim = spawn(join(ROOT, "build", "devsim"), [join(FIX, "firmware", "flash_old.bin")], { stdio: ["pipe", "pipe", "inherit"] });
+function startSim(...args) {
+sim = spawn(join(ROOT, "build", "devsim"), [join(FIX, "firmware", "flash_old.bin"), ...args], { stdio: ["pipe", "pipe", "inherit"] });
 sim.stdout.on("data", (d) => {
   buf += d.toString();
   let i;
@@ -94,6 +94,8 @@ await page.waitForFunction(() => /PocketX_924/.test(document.getElementById("msg
   document.getElementById("msg").classList.contains("err"), null, { timeout: 240000 });
 const msg = await page.textContent("#msg");
 ok(/PocketX_924/.test(msg), `result: ${msg}`);
+ok(/OpenPocket v24/.test(msg) && await page.isVisible("#next") && /WHATS-NEW-v24\.md$/.test(await page.getAttribute("#notes", "href")), "the result names the version and links the editor and the release notes");
+ok(await page.$$eval("#steps span", (s) => s.length > 0 && s.every((e) => e.className === "done")), "every stage shows done, none still lit");
 await page.waitForTimeout(1500);
 ok(/OpenPocket v24/.test(await page.textContent("#d-fw")), "the page now sees OpenPocket v24");
 await page.screenshot({ path: join(OUT, "page_3_done.png"), fullPage: true });
@@ -103,6 +105,8 @@ ok(simLog.some((l) => /step2 rc=0/.test(l)), "the simulated pedal wrote the new 
 sim.stdin.end(); sim = null; simLog.length = 0; buf = "";
 await page.reload();
 await page.waitForTimeout(300);
+ok(!(await page.isVisible("#rescueOn")), "rescue mode sits in the advanced section, folded");
+await page.click("details summary[data-t=rescue]");
 await page.check("#rescueOn");
 await page.waitForFunction(() => /rescue mode armed/.test(document.getElementById("log").textContent), null, { timeout: 15000 });
 await page.click("#connect");
@@ -113,6 +117,21 @@ await page.waitForFunction(() => /PocketX_924/.test(document.getElementById("msg
 ok(/PocketX_924/.test(await page.textContent("#msg")), "rescue: the pedal appears, the install runs by itself");
 ok(!(await page.isChecked("#rescueOn")), "rescue: the mode turns itself off once done");
 await page.screenshot({ path: join(OUT, "page_4_rescue.png"), fullPage: true });
+
+// V21 on its own is not proof that the factory bank is readable.
+sim.stdin.end(); sim = null; simLog.length = 0; buf = "";
+await page.reload();
+startSim("--stock", "BlackBox_021");
+await page.click("#connect");
+await page.waitForSelector("#verify-factory:enabled", { timeout: 15000 });
+ok(await page.isVisible("#v21-factory"), "BlackBox V21: the factory sound controls are visible");
+await page.click("#verify-factory");
+await page.waitForSelector("#msg.err", { timeout: 15000 });
+ok(/sound bank/.test(await page.textContent("#msg")), "BlackBox V21: no bank reply means verification failed");
+await page.click("#factory-uboot");
+await page.waitForFunction(() => /USB recovery requested/.test(document.getElementById("msg").textContent));
+ok(simLog.includes("uboot") && !simLog.some((l) => /step[12]/.test(l)), "BlackBox V21: recovery asks for UBOOT without running an OTA");
+
 // a test channel: only through ?channel=NAME, from its own folder, with its banner; the normal page has none
 cpSync(join(FIX, "firmware"), join(SITE, "firmware", "midi-test"), { recursive: true });
 {

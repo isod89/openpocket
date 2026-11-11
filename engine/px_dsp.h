@@ -111,8 +111,15 @@ void        px_nam_fast(void *base, unsigned bytes);   /* memory away from the C
 #define     PX_NAM_LP_BYTES PXN_LP_BYTES
 void        px_nam_lp_mem(void *base, unsigned bytes);
 uint32_t    px_nam_lp_queued(void);
+int         px_nam_lp_split_used(void);               /* v40.4: the last block's share (it follows the one asked without */
+void        px_nam_lp_force(void);                    /* waiting for the other core, unless forced: px_nam.c pxn_lp_a) */
+uint32_t    px_nam_lp_handed(void);                   /* v40.4: blocks handed over so far; one handed over before that */
+int         px_nam_lp_before(uint32_t upto);          /* count is not finished; the network's work in layers 0..s, in */
+uint32_t    px_nam_lp_share(int s);                   /* 1/1024 of the whole */
 void        px_nam_lp_split(int s);
 int         px_nam_lp_split_now(void);
+void        px_nam_lp_clock(uint32_t (*ticks)(void), uint32_t limit);   /* v40.5: CPU0's waits for the other core end */
+int         px_nam_lp_gave_up(void);                  /* after limit ticks; 1 = one did (retire that core, reset) */
 int         px_nam_name(int model, char *buf12);         /* 1 = the model exists ("U5 EMPTY" otherwise) */
 /* the user slots, provided by the firmware (flash; px_dsp.c has a weak, empty stand-in):
  * 1 = slot holds a model; its name (11 chars max), its level trim (dB); w (1871 floats) only if w != 0 */

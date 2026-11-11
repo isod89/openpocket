@@ -62,7 +62,7 @@ void ble_test_state(char *out) { ble_status_text(out); }
 /* the long advertising line, with the baseband registers read now (0x28000 control, 0x28028 enables, 0x28030 pending, 0x28038 status) */
 void ble_test_adv_line(char *out)
 {
-    ble_adv_text(out, ble_vm_have, ble_vm_area >> 12, ble_vm_trim(), *(volatile uint32_t *)0x28000u, *(volatile uint32_t *)0x28028u, *(volatile uint32_t *)0x28030u, *(volatile uint32_t *)0x28038u,
+    ble_adv_text(out, ble_vm_flags(), ble_vm_area >> 12, ble_vm_trim(), *(volatile uint32_t *)0x28000u, *(volatile uint32_t *)0x28028u, *(volatile uint32_t *)0x28030u, *(volatile uint32_t *)0x28038u,
                  (FM1_ICFG(45) >> ((45u & 7u) * 4u)) & 0xFu, (FM1_ICFG(29) >> ((29u & 7u) * 4u)) & 0xFu, *(volatile uint32_t *)0x2FC80u);
 }
 

@@ -44,8 +44,25 @@ firmware read in three passes), `docs/NAM.md` (the fixed-point network), `docs/B
 - **Hardware loops** (`rep N { ... }`) have no branch cost. The compiler uses them for simple counted loops. The stock
   firmware's sample loops are all hardware loops.
 - **Flash code runs through the instruction cache** (XIP), shared by both cores. A cache miss on flash is expensive. The
-  stock firmware keeps every per-sample routine in RAM (section 9). We keep the NAM hand routines in flash next to their
-  callers (see the call-range rule in section 2).
+  stock firmware keeps every per-sample routine in RAM (section 9), and so does OpenPocket since v40, with one
+  exception (next point).
+- **Code in RAM is fetched more slowly than code in the cache** (measured, v40.5, sixteen copies of one instruction in a
+  counted loop): a 6-byte instruction that works for 1 cycle takes 2.14 cycles from RAM and 1.49 from the flash; a
+  6-byte `smax` paired with a load 2.27 against 2.08. RAM delivers an instruction word in about 1.5 cycles, the cache
+  one every cycle, and a hardware loop (`rep`, bodies up to 32 bytes) fetches nothing after its first turn. Compiled
+  float code is not affected (a float operation is 4 bytes for 2 cycles), and the effect loops run no faster from the
+  flash (tried: the same load, more jitter). The NAM network's hand loops are multiply-adds paired with loads, 6 bytes
+  for 2 cycles: from RAM they wait for their own instructions. `rdm6`, `rdm15` and `post5` (6.6 KB) therefore lie in
+  the flash (`PXN_HOT`, `engine/px_nam.c`): the whole network takes 6 % less time, and editor traffic and knob turns
+  over USB (flash code on CPU0, 100 requests a second) do not change a heavy chain's load or its peaks.
+- **The cycle costs, in a hardware loop** (measured, v40.4 and v40.5; a timer tick is 15 cycles): a load 2, a store 1.5,
+  an ALU instruction 1, a 32x32 multiply or a 64-bit multiply-add 2, a float add or multiply 2 each, a float division
+  4, a taken branch 6.4, a call and return about 90. A 16-bit load or store written with a multiply or multiply-add in
+  one instruction (`#`) is free; written with a 1-cycle instruction it costs its own time (the instruction is then
+  free). A value used by the instruction after its load costs 1 more cycle. Multiply-adds into the same accumulator
+  one after the other take 3 cycles each (2 when two or more accumulators take turns), and 64-bit shifts of the same
+  pair 2 each (1 when they alternate). Loads and stores in turn cost less than the same number grouped (a load and a
+  store 2.5 to 3 cycles together). The two cores do not slow each other's memory accesses.
 - **libm precision matters.** Our first `cosf` (sin(x + pi/2), error 4e-6) made biquads at 30 Hz with 4x oversampling
   unstable, giving NaN and then permanent silence on the pedal while the PC (system libm) was fine. Always simulate with
   the libm you ship (`firmware/px_math.c`).
@@ -74,6 +91,13 @@ firmware read in three passes), `docs/NAM.md` (the fixed-point network), `docs/B
      on this block, then both share the network. This costs one extra block of latency (`tests/engine/pipe_test.c`: same
      output, one block later).
   4. **v39 "wet lanes"**: delay and reverb run beside the chain, two blocks late (section 8).
+- **Lesson from v40.4 (measured):** a job per interrupt that must end before the next one puts the two cores' work in
+  series. With the network split by layers, CPU1's last network block could only start when CPU0 had finished its own
+  share, so a block needed CPU0's share plus one network block on CPU1 (12 % of the block) within 2.9 ms: loads above
+  about 88 % a core made the interrupt wait. After the interrupt has been held off (a preset change holds it off for
+  10 ms), it runs block after block until it has caught up with the converters, and every such wait then counts as
+  load. Let CPU1 run one worker across the interrupts, ask it for the output-critical work by a counter, and wait only
+  for that.
 - **Lesson from v39 (measured as a defect):** with pattern 3 we gave CPU1 the delay and reverb as a job in the gap
   after the block, before the next interrupt. The gap was too short, because the network shares its work between the
   cores and only half of the freed time came back to the gap. The job was cut every block and the wet sound came out
@@ -119,6 +143,10 @@ PCM ring at `0x1F29EE0`, inside the cache-way range above (**likely**: the stock
 - **RAM is the scarce resource.** Count `.data + .bss + CPU1 stack (3 KB) + the SDK driver's bss` against 96 KB, and
   `.pool` against 248 KB and the RAM code against `RAMTEXT` (88 KB) since v40, on every change. We compile the objects for the target and add up the section sizes even when
   we cannot link.
+- **Reading a crash screen's `EMU`** (the core's `EMU_MSG`, bit names from the SDK's `cpu/wl82/debug.c`): bit 0 misaligned
+  access, 1 illegal instruction, 2 division by zero, 3 stack overflow (the stack guard), 8 ETM watchpoint, 16 to 20 FPU
+  (invalid, infinity, tiny, huge, inexact). `DBG` is the bus side (writes into guarded ranges, unmapped addresses, the PC
+  limit).
 - **Stack guard:** felucca's EMU stack limit faults any `sp` outside `[_ustack_lo, _sstack_top]`. Task stacks placed in
   ordinary RAM (an RTOS, the BLE controller) crash at once with the guard on (section 11).
 
@@ -133,7 +161,7 @@ PCM ring at `0x1F29EE0`, inside the cache-way range above (**likely**: the stock
 | `0x00000..0x04000` | flash header, boot config: **never written** |
 | `0x04000..0xA3000` | the application area (the update loader rewrites only this) |
 | `0xA3000..0xFF000` | where the bootloader looks for update records: anything that ends like a record can be erased by an update, so user data there must be skipped by the loader (`loader/ldr_core.c`) |
-| `0xA5000` | stock "VM" (settings; holds the radio calibration records, VM 106..108, 187) |
+| `0xA5000` | stock "VM" (settings; holds the radio calibration records, VM 106..108, 187). On a Pocket X backup (`fm1-1.bin`, its official firmware) the active VM area is at **`0xA1000`**, inside OpenPocket's application area: installing OpenPocket overwrites it, and that pedal's radio records are gone (`ble_rf.c` gives defaults then) |
 | `0xBA000..0xBD000` | stock file `EXT_RESERVED/usr` (12 KB) |
 | `0xBE000` | stock BTIF (Bluetooth pairing) |
 | `0xBF000..0xFF000` | stock file `EXT_RESERVED/pd40j` (256 KB): 20 amp models x 8 KB, 20 cabinets x 4 KB at `+0x28000`, the preset bank at `+0x3C000` (80 x 92 B + `PATCHEND`), the `GLB1` settings log at `+0x3E000` (`STOCK-FIRMWARE.md` 10.4). OpenPocket's own areas below reuse this range: installing OpenPocket overwrites the stock user data |
@@ -166,6 +194,10 @@ window (`SFCENC_CON`, `fm1_flash.h`, `ble_vm.h`), not through `0x02xxxxxx`.
   We copied that in v30. On a Pocket X the same engine then measured **77 % instead of 61 %** CPU, with crackles
   (v32), so v33 went back to the boot loader's levels (the link was not proven). Do not change the supplies without
   measuring the DSP load before and after.
+  **The Bluetooth work (branch `ble-v41`): with the radio on, the boot loader's levels are not enough**: the second core misread its jobs and was retired
+  (`BYP` on every preset), and CPU0 read bad pointers (crashes; one a bus error at an address with bit 21 set, the
+  misread pattern). Raising VDC14 and SYSVDD alone did not stop it: the radio now starts after the stock firmware's whole
+  power setup (v30's: the levels, the DC-DC, VDDIO, `WLDO12_AUTO`), with the audio held for the switch-over.
 - **Crash and boot diagnostics that paid off:** a `.noinit` record of the last boot (stage reached, blocks of audio
   played, load, NaN count, reset source, crash PC/RETS); a boot guard (two failed starts → safe mode, then back to the
   loader); the crash screen with `VEC`, `PC`, `RETS` looked up in `symbols.txt`.
@@ -370,8 +402,9 @@ Measured on the pedal or proven on the PC against a reference. The engine is `en
   0..100). The channel (or OMNI) and the input gain (-10..+10 dB) are kept in the `GLB1` log.
 - **`wet_audio` is not pinned to a core** (JieLi pins a task only when its name starts with `#C0`/`#C1`).
 - **Preset (92 bytes):** volume 0..100, the order (a permutation of 0..5), on[6], model[6], 6 x 6 parameters.
-- **Interrupt priorities:** audio 4, radio 2, timers 1, on CPU0. The **radio sits below the audio**, so audio always
-  preempts the radio. A hardware-job completion interrupt (IRQ 62) runs on CPU1.
+- **Interrupt priorities:** audio 4, radio 2, timers 1 (7 is the highest). **Every interrupt runs on CPU0** but SOFT4:
+  `request_irq` forces all others there, whatever core is asked (`STOCK-FIRMWARE.md` 19.1). The radio sits below the
+  audio, but its interrupt masks everything while it runs, so the audio waits for it, never the other way round.
 
 ---
 
@@ -402,12 +435,27 @@ What it took to get JieLi's controller (from the SDK's `btctrler.a` / `btstack.a
   or a stray value switches on the Wi-Fi/BT coexistence arbiter (`0x14000` bit 1).
 - **The link:** link `dev_hci_set_event_mask` for real (a stand-in means the host never sees LE meta events), and set
   advertising up again after each disconnection.
-- **Interrupts:** BLE IRQ 45 and 29 at priority 2 (stock's numbers), below audio.
-- **Stack guard:** the controller's task stacks in ordinary RAM trip felucca's stack-limit guard. Build that image with
-  the guard off, or place the stacks inside the window (our linker script now refuses the bad combination).
+- **Interrupts:** BLE IRQ 45 and 29 at priority 2, below the audio interrupt (3), as the library asks and as the stock
+  firmware has them. **Never above the audio:** a v41 test build with them at 4 crashed within seconds, inside the NAM
+  network's hand-written routine in the audio interrupt (a misaligned access, `EMU` bit 0). The library's interrupt
+  handlers mask everything for their whole run (`cli` + a spin lock), as in the stock firmware.
+- **`cpu_in_irq`:** the SDK's is `icfg & 0xFF`, and the link scheduler calls `le_hw_suspend` from the interrupt, where a
+  "no" takes the task's way (it waits on the baseband's busy flag). But the build that advertised and connected on a
+  BlackBox always said no, and the first v41 builds that used `icfg & 0xFF` were never seen by a phone: OpenPocket says no
+  again until the low byte is read on the pedal outside an interrupt.
+- **Timers from the interrupt:** the link scheduler adds and removes timeouts inside the interrupt; the timer table needs
+  a lock.
+- **Stack guard:** the controller's task stacks in ordinary RAM trip felucca's stack-limit guard. The Bluetooth release (branch
+  `ble-v41`) puts them right below the main stacks and lowers the guard window's bottom to them; the test image keeps
+  them in NOINIT with the guard off (the linker script refuses any other combination).
+- **Never put the controller's data or stacks in the data cache used as RAM** (v37 did): the cache controller serves it,
+  the same one that feeds the two cores' instructions from the flash.
+- **The audio path must run from RAM when the radio runs** (v40): the radio's code is in flash and would push flash DSP
+  code out of the instruction cache both cores share. This was v37's `BYP` at 150 %.
 - **Radio calibration:** read the stock VM records raw (VM 106..108 to the radio replay, VM 187 the unit's calibration).
-- **Not verified:** sound under a link, long runs, bonding across a power cycle, flash writes during a link (the
-  library's interrupt code runs from flash).
+- **Not verified:** sound under a link (the `ble-v41` branch's release: no crackle while idle, crackles while a phone sends a stream of CC), long runs (the stock firmware re-calibrates
+  the radio when the temperature drifts; OpenPocket does not), bonding across a power cycle. Flash writes mask every
+  interrupt while the flash is busy, the radio's too, so the library's flash code is never fetched then.
 
 ---
 

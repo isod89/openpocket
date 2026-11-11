@@ -1,8 +1,9 @@
 # OpenPocket editor protocol (SysEx over USB-MIDI)
 
 The web editor (`docs/editor.html`, `docs/pxedit.js`) talks to the pedal with this protocol. The firmware side is
-`firmware/px_editor.h`; `tests/edsim.c` runs the same code on a PC for the tests. Protocol version 3 (OpenPocket v38: the cabinet IR commands 24..27; version 2: v37, without them;
-version 1: v32 to v36, also without the NAM commands 19..22).
+`firmware/px_editor.h`; `tests/edsim.c` runs the same code on a PC for the tests. Protocol version 4 (OpenPocket v42: `USB_AUDIO`, command 28; version 3: v38, the cabinet IR commands 24..27; version 2: v37, without them;
+version 1: v32 to v36, also without the NAM commands 19..22). A later version only adds commands: an editor written for
+an earlier one works unchanged.
 
 ## Framing
 
@@ -42,7 +43,7 @@ The 12 blocks, by index: 0 GATE, 1 COMP, 2 PITCH, 3 SFX, 4 DRIVE, 5 AMP, 6 CAB, 
 | 15 COMMIT | — | rc (0 ok, 2 flash). Writes every slot to the flash (one write, about 0.3 s) |
 | 16 SAVE | slot | slot, rc. Saves the current sound into the slot, writes the flash, the slot becomes the current one (as the pedal's SAVE) |
 | 17 WATCH | on (0/1) | on. While on, the pedal pushes `STATE` (cmd 5) when the sound, the slot or the focused block changes on the pedal; it stops by itself 5 s after the last request |
-| 18 PING | — | DSP load % (0..127), flags (bit 0: bypass, bit 1: second core); since v40.1 also the peak load % since the preset was set and since boot (0..127 each), the late blocks and the blocks at the soft clipper since boot (2 bytes each: bits 0-6, 7-13, wrapping), the bytes of the main stack and of the interrupt stack never used since boot (2 bytes each, in units of 4 bytes); the Bluetooth test image adds the lowest free bytes of its heap and of its deepest task's stack (the same coding). Since v40.2 then a count n and n figures of 2 bytes each (bits 0-6, 7-13): each block's share of an audio block's time over the last second in %, in the engine's block order, then the NAM network's; the network's way of running (its mode); its start-up timing of each way of running (11, in 0.1 % of real time, 0 = not available); and where one core's time goes in that timing (9 parts, 0.1 %: input, layers, rests, post, rings and output, the whole, the head's groups and rest, the tap tables); then the layer split (0 off, else 1 + the last layer CPU0 runs), then CPU0's and CPU1's load and their peaks since the preset was set (%, with the layer split; else 0). `node tools/op.mjs dsp` reads them per preset |
+| 18 PING | — | DSP load % (0..127), flags (bit 0: bypass, bit 1: second core); since v40.1 also the peak load % since the preset was set and since boot (0..127 each), the late blocks and the blocks at the soft clipper since boot (2 bytes each: bits 0-6, 7-13, wrapping), the bytes of the main stack and of the interrupt stack never used since boot (2 bytes each, in units of 4 bytes); the Bluetooth test image adds the lowest free bytes of its heap and of its deepest task's stack (the same coding). Since v40.2 then a count n and n figures of 2 bytes each (bits 0-6, 7-13): each block's share of an audio block's time over the last second in %, in the engine's block order, then the NAM network's; the network's way of running (its mode); its start-up timing of each way of running (11, in 0.1 % of real time, 0 = not available); and where one core's time goes in that timing (9 parts, 0.1 %: input, layers, rests, post, rings and output, the whole, the head's groups and rest, the tap tables); then the layer split (0 off, else 1 + the last layer CPU0 runs), then CPU0's and CPU1's load and their peaks since the preset was set (%, with the layer split; else 0; since v40.4 these peaks and the peak load above start again two blocks after a change, when the split is first set for the new sound: CPU0 runs the two blocks before at up to 80 % on purpose). Since v40.3 then the last change of type, order or NAM model: from the change to the sound back after it (0.1 ms; 0 while it still fades in), the engine's set in it (0.1 ms), how long the last LOADING was shown (ms; 0 = never) and how many were shown since boot. `node tools/op.mjs dsp` reads them per preset |
 | 19 NAM_LIST | — | factory models (12), user slots (16), then per model (factory first, then the user slots): present (0/1), name string (11 characters at most; an empty user slot reads "U5 EMPTY") |
 | 20 NAM_WRITE | piece (2 bytes: bits 0-6, 7-13), 128 packed bytes | the 2 piece bytes, rc (0 ok, 1 invalid). Piece i holds bytes 112 i .. 112 i + 111 of a model (the last piece fewer), packed 7 bit: groups of a byte of high bits (bit j = bit 7 of byte j) then 7 bytes. Stored in RAM only |
 | 21 NAM_COMMIT | slot (0..15) | slot, rc (0 ok, 1 invalid: header, a weight that is not a number, CRC; 2 flash). Checks the pieces received and writes them to the user slot |
@@ -52,6 +53,7 @@ The 12 blocks, by index: 0 GATE, 1 COMP, 2 PITCH, 3 SFX, 4 DRIVE, 5 AMP, 6 CAB, 
 | 25 IR_WRITE | piece (2 bytes), 128 packed bytes | the 2 piece bytes, rc (0 ok, 1 invalid). As `NAM_WRITE`: piece i holds bytes 112 i .. 112 i + 111 of an IR (2112 bytes, 19 pieces). Stored in RAM only (the same buffer as `NAM_WRITE`: one upload at a time) |
 | 26 IR_COMMIT | slot (0..7) | slot, rc (0 ok, 1 invalid: header, CRC; 2 flash). Checks the pieces received and writes them to the slot |
 | 27 IR_ERASE | slot (0..7) | slot, rc (0 ok, 1 invalid, 2 flash). Empties the slot |
+| 28 USB_AUDIO | nothing, or on (0/1) | on (0/1), rc (0 ok, 1 this firmware has no USB audio, 2 flash), state, n (20), then n counts of 4 bytes each (bits 0-6, 7-13, 14-20, 21-27). Without an argument it only reads. With one it sets the USB AUDIO setting and, if it changed, writes it to the flash; see "USB audio" below |
 
 ### NAM models (protocol 2)
 
@@ -79,6 +81,36 @@ with several sizes; a plain A2-Lite WaveNet also works), measures its loudness o
 level trim so that every model plays at -20 LUFS on that clip, then sends 68 `NAM_WRITE` and one `NAM_COMMIT`.
 A1 models (the older "standard" / "lite" / "feather" WaveNets) and other architectures are refused: the pedal's CPU
 runs A2-Lite only.
+
+### USB audio (protocol 4)
+
+`USB_AUDIO` reads and sets the pedal's USB AUDIO setting ([USB-AUDIO.md](USB-AUDIO.md)), the same one as the fourth
+row of the pedal's MIDI page. After a change the pedal sends this reply, and 150 ms later it leaves USB for one second
+and comes back as another USB device, with or without the audio streams. The MIDI port goes away with it: the editor
+must connect again (after about 3 s).
+
+`state`: bit 0, the computer has the record stream open; bit 1, it is reading it; bit 2, it has the playback stream
+open; bit 3, its playback is sounding.
+
+The 20 counts, since the pedal started (they wrap at 2^28), in this order (a client reads `n` of them):
+
+| # | Count |
+| --- | --- |
+| 1..3 | record stream: times started, packets sent, frames sent |
+| 4 | record ring empty: a packet repeated its last frame. It rises when a change of type, order or model or a save holds the audio for a moment (the sound is silent then) |
+| 5 | record ring full: a block was dropped because the computer was not reading |
+| 6 | the computer asked for a packet and none was ready |
+| 7 | the computer stopped reading for more than 20 ms with the stream still open |
+| 8, 9 | packets one frame longer and one frame shorter than the pattern (how the pedal's clock is followed) |
+| 10, 11 | the record ring's lowest and highest fill at a block's start, in frames, since the stream started |
+| 12..14 | playback stream: times started, packets received, frames received |
+| 15, 16 | playback ring empty (the playback starts over) and full (a packet dropped) |
+| 17 | the time the last audio block spent on USB audio, in timer ticks (a block has 69,648) |
+| 18 | record packets the computer took late: it left a USB frame or more without asking for one. Nothing the pedal can mend; macOS does it now and then in the first second of a stream |
+| 19 | playback packets that came late: a USB frame or more without one |
+| 20 | audio blocks whose output was asked for before their input (`firmware/px_aorder.h`). They are sent in the right order since v42; before, each was a block sent twice and one lost. It rises about twice a second while a stream is open, and with MIDI traffic, with or without USB audio |
+
+The Bluetooth test image has no USB audio: it answers `0, 1, 0, 0`.
 
 ### Cabinet IRs (protocol 3)
 

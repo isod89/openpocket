@@ -4,12 +4,20 @@
 #  - engine: every block x model x extreme knob, signal / silence / overload, with the pedal's own libm (px_math.c):
 #    no NaN; long runs (3 s pluck + 8 s silence): nothing runs away (only delays at FDBK 100 hold on, by design)
 #  - the two-core pipeline (PRE / NAM / POST stages) gives the plain engine's output one block later
+#  - NAM hand routines: their start-up check and dispatch with C stand-ins under the sanitizers; post5's assembly text
+#    against the C post through a model of its instructions (tests/test_post5.py)
+#  - (not run here, it needs the git history: tests/equiv.sh REF, this tree's engine against commit REF's, bit for bit)
 #  - changes without clicks (v38): knob changes glide to exactly where a full set goes, blocks on / off fade, fewer clicks
 #  - USER IR (v38): the partitioned FFT convolution against the direct FIR, slots, names
 #  - wet lanes (v39): the delay through its lane as inline bit for bit, the reverb's tail lag frames later, the pipeline
 #  - NAM: engine/px_nam.c against tools/nam_a2.py with every factory model (needs numpy)
 #  - MIDI: the musical-MIDI code (firmware/px_midi.h) on a PC: decoder, CC map, messages sent, settings byte, clock
 #  - preset store: save / reload / power cut at every step of a save (firmware/px_store.h on a simulated flash)
+#  - the audio callbacks' order (v42, firmware/px_aorder.h): the I2S driver calls the output's callback before the
+#    input's when its interrupt enters late; every output block must still be the sound of that interrupt's guitar block
+#  - USB audio (v42): the USB device code and the audio glue (bsp/chip/usb.c, firmware/px_uaudio.h) against a model of
+#    the controller and a computer: with the setting off the descriptors are the earlier device's byte for byte; with
+#    it on, the descriptors, the requests, 10 minutes of each stream with the clocks apart (no gap, no repeat)
 #  - LED map + lights driver (led_probe.h, px_leds.h): PC7 enable after the first byte, the 595 timing, the table
 #  - button lights (px_lights.h): each block lights its button, FX for its group, HOME blinks in the tuner
 #  - packages: tools/pxpkg.py rebuilds the official PocketX_016 app area byte for byte (needs the official file)
@@ -23,6 +31,8 @@
 #  - Bluetooth audio (docs/BT-AUDIO-TEST.md): the ring and its rate (tests/test_bt_ring.c), the radio pools' allocator
 #    (test_bt_lbuf.c), the compiler runtime it adds (test_bt_rt.c), SBC through Android's encoder and decoder (test_bt_sbc.c), the third-party sources (test_bt_sources.mjs)
 #    and the Bluetooth images' task message queues (test_ble_taskq.c: messages of the library's sizes, whole, in order)
+#  - editor: docs/pxedit.js against the simulated pedal (tests/edsim.c), PING's figures, and the editor's own logic
+#    (docs/pxmidi.js: the Control Change map against docs/MIDI.md, learned controls; docs/pxlib.js: the model library)
 #  - pages: docs/index.html, docs/editor.html and the pedal skin in headless Chromium (needs Playwright: npm i playwright
 #    && npx playwright install chromium)
 set -e
@@ -35,10 +45,16 @@ $CC -O2 -Iengine tests/engine/long.c engine/px_dsp.c firmware/px_math.c -lm -o b
 $CC -O2 -Iengine tests/engine/pipe_test.c engine/px_dsp.c firmware/px_math.c -lm -o build/pipe_test && build/pipe_test | tail -1
 # v40.2: the network split between the cores by layers, against one core and through the pipeline
 $CC -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -DPXN_EMUVEC -Iengine tests/engine/lp_test.c firmware/px_math.c -lm -o build/lp_test && build/lp_test | tail -1
+# v40.5: CPU0's waits for a second core that never moves end after the limit (a stuck CPU1: LATE, not the watchdog)
+$CC -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Iengine tests/engine/lp_stuck.c firmware/px_math.c -lm -o build/lp_stuck && build/lp_stuck | tail -1
 # v40.2: the NAM hand routines' start-up check, timing and dispatch, with C stand-ins under the sanitizers (a fault there
 # would be a boot loop on the pedal)
 $CC -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -DPXN_HAND=1 -Iengine tests/engine/hand_test.c firmware/px_math.c -lm -o build/hand_test && build/hand_test | tail -1
 $CC -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -DPXN_HAND=1 -DPXN_LEAN=1 -Iengine tests/engine/hand_test.c firmware/px_math.c -lm -o build/hand_test_lean && build/hand_test_lean | tail -1   # (the Bluetooth image's)
+# v40.5: post5's assembly text itself, run by a model of its instructions against the C post (tests/test_post5.py), and
+# the same with one offset changed, which must fail
+python3 tests/test_post5.py
+if python3 tests/test_post5.py "r6 = [sp+40]" "r6 = [sp+44]" > /dev/null 2>&1; then echo "test_post5 accepts a wrong routine"; exit 1; fi
 $CC -O2 -Iengine -Ifirmware tests/engine/change_test.c firmware/px_math.c -lm -o build/change_test && build/change_test | tail -1
 $CC -O2 -Iengine -Ifirmware tests/engine/ir_test.c firmware/px_math.c -lm -o build/ir_test && build/ir_test | tail -1
 $CC -O2 -Iengine tests/engine/wet_test.c engine/px_dsp.c firmware/px_math.c -lm -o build/wet_test && build/wet_test | tail -1
@@ -47,6 +63,18 @@ $CC -O2 -DPXN_EMUVEC -Iengine tests/engine/nam_test.c engine/px_nam.c -o build/n
 if python3 -c "import numpy" 2>/dev/null; then mkdir -p build/nam; python3 tests/test_nam.py build/nam_test > build/nam/log.txt || { cat build/nam/log.txt; exit 1; }; tail -1 build/nam/log.txt; else echo "(numpy not installed: NAM comparison skipped)"; fi
 echo "== preset store"
 $CC -O1 -Iengine tests/test_store.c engine/px_dsp.c firmware/px_math.c -lm -o build/test_store && build/test_store | tail -2
+echo "== audio callbacks' order (the output block is its interrupt's, whichever callback the driver calls first)"
+$CC -O1 -Wall -Ifirmware tests/test_aorder.c -o build/test_aorder && build/test_aorder | tail -1
+echo "== USB audio (the device code and the audio glue against a model of the controller and a computer)"
+UAF="-O1 -Wall -Wno-unused-function -Wno-int-to-pointer-cast -Iengine -Ifirmware -Ifirmware/bsp/chip"
+$CC $UAF tests/test_usb_audio.c -lm -o build/test_usb_audio
+$CC $UAF -DT_REF tests/test_usb_audio.c -lm -o build/test_usb_audio_ref      # the USB device as it was before v42
+build/test_usb_audio desc > build/usb_desc_off.txt
+build/test_usb_audio_ref > build/usb_desc_ref.txt
+if cmp -s build/usb_desc_off.txt build/usb_desc_ref.txt; then echo "USB AUDIO off: the descriptors are the earlier device's, byte for byte"
+else echo "USB AUDIO off: the descriptors differ from the earlier device's"; diff build/usb_desc_ref.txt build/usb_desc_off.txt; exit 1; fi
+build/test_usb_audio > build/usb_audio.log || { cat build/usb_audio.log; exit 1; }
+tail -1 build/usb_audio.log
 echo "== screen (every page fully drawn)"
 mkdir -p build/ui && $CC -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/uisim tests/uisim.c engine/px_dsp.c firmware/px_math.c -lm
 build/uisim build/ui > build/ui/log.txt
@@ -100,6 +128,7 @@ echo "== editor"
 $CC -O1 -Wall -Wno-unused-function -o build/edsim tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 node tests/test_editor.mjs
 node tests/test_ping.mjs
+node tests/test_editor_logic.mjs
 echo "== log channel (tools/op.mjs log)"
 $CC -O1 -Wall -Wno-unused-function -DOP_BLE_TEST=1 -o build/edsim_diag tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 node tests/test_log.mjs

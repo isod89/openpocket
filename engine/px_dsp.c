@@ -20,14 +20,20 @@
 #define PX_HOT
 #define PX_INL
 #define PX_AINL __attribute__((always_inline))
+#ifndef PX_RUNS
+#define PX_RUNS 1                                      /* v40.4: 0 = every block sample by sample, as before ("blocks over a run of
+                                                          samples", below): the Bluetooth test image, whose flash is full
+                                                          (firmware/build.sh). The same output, more DSP time */
+#endif
 #include <math.h>
 #include <stddef.h>
 #include <string.h>
-#ifdef __PI32V2__   /* on the pedal: a buffer in the free end of the RAM code window (firmware/app.ld .bss_hi), out of the 96 KB RAM */
-#define PX_HI(name) __attribute__((section(".bss.hi." #name)))
+#ifdef __PI32V2__   /* on the pedal: a buffer out of the 96 KB RAM. v40.4: in the 24 KB below it (firmware/app.ld .bss_lo); it was in
+                     * the free end of the RAM code window (.bss_hi), which the audio path's code now needs */
+#define PX_LO(name) __attribute__((section(".bss.lo." #name)))
 #define PX_POOL_TAIL(name) __attribute__((section(".pool.tail." #name)))   /* after the pool's own buffers (app.ld) */
 #else
-#define PX_HI(name)
+#define PX_LO(name)
 #define PX_POOL_TAIL(name)
 #endif
 
@@ -1240,8 +1246,15 @@ int px_nam_lp_b(px_engine *e)
     return r;
 }
 uint32_t px_nam_lp_queued(void) { return pxn_lp_queued(); }
+int px_nam_lp_split_used(void) { return pxn_lp_split_used(); }
+void px_nam_lp_force(void) { pxn_lp_force(); }
+uint32_t px_nam_lp_handed(void) { return pxn_lp_handed(); }
+int px_nam_lp_before(uint32_t upto) { return pxn_lp_before(upto); }
+uint32_t px_nam_lp_share(int s) { return pxn_lp_share(s); }
 void px_nam_lp_split(int s) { pxn_lp_split(s); }
 int px_nam_lp_split_now(void) { return pxn_lp_split_now(); }
+void px_nam_lp_clock(uint32_t (*ticks)(void), uint32_t limit) { pxn_lp_clock(ticks, limit); }
+int px_nam_lp_gave_up(void) { return pxn_lp_gave_up(); }
 void px_nam_helper(int (*run)(void (*fn)(uint32_t), uint32_t arg), int (*wait)(void)) { pxn_set_helper(run, wait); }
 void px_nam_fast(void *base, unsigned bytes) { pxn_set_fast((int32_t *)base, bytes); }
 /* every model is trimmed to -20 LUFS on the DI clip (its level trim); this puts NAM + the 1x12 at GAIN noon at the fitted
@@ -1443,7 +1456,7 @@ static void cab_make(float sr, const px_preset_t *p, cab_set *o)
 #define IR_P (PX_IR_LEN / IR_B)
 typedef char ir_scratch_check[PX_IR_LEN <= (IR_P / 2) * IR_F ? 1 : -1];   /* the IR and ir_load_h's scratch both fit in ir_X */
 static float ir_H[IR_P][IR_F];                         /* the partitions' spectra (packed: [0] DC, [1] Nyquist, re/im) */
-static float ir_X[IR_P][IR_F] PX_HI(ir_X);                       /* the last IR_P input blocks' spectra (a ring, newest at ir_pos) */
+static float ir_X[IR_P][IR_F] PX_LO(ir_X);                       /* the last IR_P input blocks' spectra (a ring, newest at ir_pos) */
 static float ir_in[IR_F], ir_Y[IR_F];                  /* the last two input blocks; the sum of the products */
 static int ir_pos, ir_ok;
 static float fft_w[64];                                /* e^(2 pi i m / 64), m = 0..31: cos, sin */
@@ -2323,7 +2336,7 @@ static void hb2_down(px_hb *s, const float *in, float *out, int n)
     for (int i = 0; i < n; i++) out[i] = 0.5f * (d[2 * i] + d[2 * i + 1]);
 }
 #undef HB_SEC
-static float px_os_m[2 * PX_MAX_BLOCK] PX_HI(px_os_m);                /* (stage 1 <-> 2) */
+static float px_os_m[2 * PX_MAX_BLOCK] PX_LO(px_os_m);                /* (stage 1 <-> 2) */
 static void os_up(px_hb *st, const float *in, float *out, int n, int os)   /* os 2 or 4: st[0] stage 1, st[1] stage 2 */
 {
     if (os == 2) { hb1_up(&st[0], in, out, n); return; }
@@ -2339,8 +2352,11 @@ static void os_down(px_hb *st, const float *in, float *out, int n, int os)   /* 
 
 /* drive_run over n oversampled samples in place, stage by stage (the same operations as drive_run sample by sample);
  * the anti-denormal offset follows the base-rate sample (os samples each) */
-static float px_os_t[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_HI(px_os_t), px_os_h[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_HI(px_os_h),
-             px_os_u[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_HI(px_os_u);
+static float px_os_t[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_LO(px_os_t), px_os_h[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_LO(px_os_h),
+             px_os_u[PX_OVERSAMPLE * PX_MAX_BLOCK] PX_LO(px_os_u);
+/* v40.4: the oversampled sections' input at the base rate (the drive's, or a fitted amp's: one at a time), and the delay's
+ * and the reverb's wet output when they run in the chain: not on px_engine_part's stack (the second core's is 2.8 KB) */
+static float px_os_p[PX_MAX_BLOCK] PX_LO(px_os_p), px_wb[2][PX_MAX_BLOCK] PX_LO(px_wb);
 static void drive_block(px_engine *e, float *u, int n, int os)   /* (static buffers: off the interrupt's stack) */
 {
     float *t = px_os_t, *h = px_os_h;
@@ -2438,7 +2454,7 @@ static inline float rv_lin(const int16_t *m, int at, float k)      /* fractional
     return a + ((float)m[(at + ki + 1) & RV_MASK] - a) * f;
 }
 /* pre-delay, early reflections, Dattorro's 4 input diffusers */
-PX_INL static inline float rv_front(px_engine *e, int16_t *m, int p, const int *b, float rq, float in, float *er)
+PX_AINL static inline float rv_front(px_engine *e, int16_t *m, int p, const int *b, float rq, float in, float *er)
 {
     RV_WR(0, in);
     float r = 0.0f;
@@ -2523,6 +2539,7 @@ static inline float ps_voice(const float *buf, int w, float *ph, float inc, floa
     return rd_frac(buf, PX_PS_N - 1, pa) * g + rd_frac(buf, PX_PS_N - 1, pb) * (1.0f - g);
 }
 #define PS_OFFMAX 512                                  /* one period of low E */
+#if !PX_RUNS
 PX_HOT static float ps_align(const float *buf, int w, float d_ref, float d_new)
 {                                                      /* SOLA: offset that puts the fading-in tap in phase */
     int r0 = w - (int)d_ref, best = 0;
@@ -2544,6 +2561,60 @@ PX_HOT static float ps_align(const float *buf, int w, float d_ref, float d_new)
     }
     return (float)best;
 }
+#else
+/* v40.4: the same search, the same sums in the same order, with less work a term (a search took 41,000 CPU cycles, 4 %
+ * of an audio block, and the church organ starts one every 100 samples): the reference's 16 (then 32) samples are
+ * read once for all the offsets, the candidate's are read straight on where its window does not wrap, and the terms are
+ * written out four at a time. The square root is px_math.c's, operation for operation. */
+PX_AINL static inline float ps_sqrt(float x)            /* firmware/px_math.c sqrtf */
+{
+    if (x <= 0.0f) return 0.0f;
+    union { float f; uint32_t i; } b;
+    b.f = x;
+    b.i = 0x1FBD1DF5u + (b.i >> 1);
+    float y = b.f;
+    y = 0.5f * (y + x / y);
+    y = 0.5f * (y + x / y);
+    y = 0.5f * (y + x / y);
+    return y;
+}
+#define PS_T(i) { const float y_ = q[-(i) * js]; acc += xs[i] * y_; en += y_ * y_; }
+#define PS_TM(i) { const float y_ = buf[(c0 - (i) * js) & (PX_PS_N - 1)]; acc += xs[i] * y_; en += y_ * y_; }
+PX_HOT static float ps_align(const float *buf, int w, float d_ref, float d_new, float *xs)   /* xs: 32 floats of scratch */
+{                                                      /* SOLA: offset that puts the fading-in tap in phase */
+    const int r0 = w - (int)d_ref;
+    int best = 0;
+    float bc = -1e30f;
+    for (int pass = 0; pass < 2; pass++) {             /* coarse (every 8 offsets, every 4th sample), then fine */
+        int lo = pass ? best - 7 : 0, hi = pass ? best + 7 : PS_OFFMAX, st = pass ? 1 : 8, b2 = best;
+        const int js = pass ? 2 : 4, nt = 64 / js;
+        if (lo < 0) lo = 0;
+        for (int i = 0; i < nt; i++) xs[i] = buf[(r0 - i * js) & (PX_PS_N - 1)];
+        for (int o = lo; o <= hi; o += st) {
+            const int c0 = (w - (int)(d_new + (float)o)) & (PX_PS_N - 1);
+            float acc = 0.0f, en = 1e-9f;
+            if (c0 >= 63) {                            /* (the window in one piece) */
+                const float *q = buf + c0;
+                for (int i = 0; i < nt; i += 4) { PS_T(i) PS_T(i + 1) PS_T(i + 2) PS_T(i + 3) }
+            } else
+                for (int i = 0; i < nt; i += 4) { PS_TM(i) PS_TM(i + 1) PS_TM(i + 2) PS_TM(i + 3) }
+            acc = acc / ps_sqrt(en);                   /* normalised: loudness does not bias the choice */
+            if (acc > bc) { bc = acc; b2 = o; }
+        }
+        best = b2;
+    }
+    return (float)best;
+}
+#undef PS_T
+#undef PS_TM
+#endif
+/* v40.4: the runs' work buffers are not on the stack (the second core's is 2.8 KB, and px_engine_part alone takes 1.9 KB
+ * of it): one set a block, in the low RAM. A block's run is never on both cores at once (it is before the amp or after
+ * it), and nothing is kept in them from one call to the next */
+#if PX_RUNS
+static float px_ps_xs[2][32] PX_LO(px_ps_xs);          /* ps_align's reference samples: [0] PITCH, [1] SYN */
+static float px_run_y[2][32] PX_LO(px_run_y);          /* a run's output so far: [0] PITCH, [1] SYN */
+#endif
 PX_INL static inline float ps_voice_al(float *buf, int w, float *ph, float *off, float inc, float W)
 {
     float a0 = *ph, a = wrap1(a0 + inc);
@@ -2552,8 +2623,13 @@ PX_INL static inline float ps_voice_al(float *buf, int w, float *ph, float *off,
     int wa = inc > 0.0f ? (a < a0) : (a > a0);                                  /* tap A restarts (silent) */
     int wb = inc > 0.0f ? (a0 < 0.5f && a >= 0.5f) : (a0 >= 0.5f && a < 0.5f);   /* tap B restarts (silent) */
     float da = 3.0f + a * W, db = 3.0f + b * W;
+#if PX_RUNS
+    if (wa) off[0] = ps_align(buf, w, db + off[1], da, px_ps_xs[1]);   /* (the SYN types without a run of their own) */
+    if (wb) off[1] = ps_align(buf, w, da + off[0], db, px_ps_xs[1]);
+#else
     if (wa) off[0] = ps_align(buf, w, db + off[1], da);
     if (wb) off[1] = ps_align(buf, w, da + off[0], db);
+#endif
     float pa = (float)w - (da + off[0]); if (pa < 0.0f) pa += (float)PX_PS_N;
     float pb = (float)w - (db + off[1]); if (pb < 0.0f) pb += (float)PX_PS_N;
     float s = lfo_sin(a * 0.5f), g = s * s;
@@ -2639,6 +2715,7 @@ PX_INL static inline float syn_run(px_engine *e, int t, float x)
 {
     float y = 0.0f;
     switch (t) {
+#if !PX_RUNS                                           /* (with the runs: syn_organ_run) */
     case PX_SYN_ORGAN: case PX_SYN_CHURCH: {
         float xs = syn_keys(e, x);
         e->syn_buf[e->syn_w] = xs;
@@ -2666,6 +2743,7 @@ PX_INL static inline float syn_run(px_engine *e, int t, float x)
         y = px_tanh(y * 1.3f) * 0.77f;                 /* tone-wheel / pipe: no harsh peaks */
         return y * e->syn_kg * e->syn_out + x * e->syn_dry + e->dn;
     }
+#endif
     case PX_SYN_STRINGS: case PX_SYN_CHOIR: {
         float xs = syn_keys(e, x);
         e->syn_buf[e->syn_w] = xs;
@@ -2807,6 +2885,276 @@ PX_INL static inline float syn_run(px_engine *e, int t, float x)
     }
     }
 }
+
+/* ---- v40.4: blocks over a run of samples, pass by pass ----
+ * px_engine_part ran these blocks sample by sample inside its own loop: every sample went through the block switch and
+ * the type switch, and the block's state was read from and written to the engine at each one (the function is too large
+ * for the compiler to keep any of it in registers). Each routine below runs one block type over the run, its state in
+ * locals; a block with several voices runs them one after the other over the run (a pass each), which leaves few
+ * enough values alive for the registers. The operations on each sample, and their order, are the per-sample code's:
+ * the output is the same, bit for bit (the engine's golden output). */
+#if PX_RUNS
+#define PS_RUN 32                                      /* a run: the shifters read up to 1,985 samples back in a 2,048-sample
+                                                          ring, so no more than 63 new samples may be written ahead of them */
+/* a shifter voice over n samples from ring position w: y[k] += its sample x lvl (ps_voice_al, with *ph and off in locals) */
+PX_AINL static inline float ps_step(const float *buf, int w, float *pa0, float *po0, float *po1, float inc, float W, float *xs)
+{
+    const float a0 = *pa0, a = wrap1(a0 + inc);
+    *pa0 = a;
+    float b = a + 0.5f; if (b >= 1.0f) b -= 1.0f;
+    const int wa = inc > 0.0f ? (a < a0) : (a > a0);
+    const int wb = inc > 0.0f ? (a0 < 0.5f && a >= 0.5f) : (a0 >= 0.5f && a < 0.5f);
+    const float da = 3.0f + a * W, db = 3.0f + b * W;
+    if (wa) *po0 = ps_align(buf, w, db + *po1, da, xs);
+    if (wb) *po1 = ps_align(buf, w, da + *po0, db, xs);
+    float pa = (float)w - (da + *po0); if (pa < 0.0f) pa += (float)PX_PS_N;
+    float pb = (float)w - (db + *po1); if (pb < 0.0f) pb += (float)PX_PS_N;
+    const float s = lfo_sin(a * 0.5f), g = s * s;
+    return rd_frac(buf, PX_PS_N - 1, pa) * g + rd_frac(buf, PX_PS_N - 1, pb) * (1.0f - g);
+}
+static __attribute__((noinline)) void ps_voice_run(const float *buf, int w, float *ph, float *off, float inc, float W,
+                                                   float lvl, float *y, int n, float *xs)
+{
+    float a0 = *ph, o0 = off[0], o1 = off[1];
+    for (int k = 0; k < n; k++) {
+        y[k] = y[k] + ps_step(buf, w, &a0, &o0, &o1, inc, W, xs) * lvl;
+        if (++w >= PX_PS_N) w = 0;
+    }
+    *ph = a0; off[0] = o0; off[1] = o1;
+}
+/* the key gate (syn_keys) over n samples: the levelled input into the shifters' ring from w, each sample's key gain,
+ * and where a key went down */
+typedef struct { float kg[PS_RUN]; uint8_t kon[PS_RUN]; } syn_keyv;
+static syn_keyv px_syn_kv PX_LO(px_syn_kv);
+PX_AINL static inline void syn_keys_run(px_engine *e, const float *xb, int w, syn_keyv *kv, int n)
+{
+    float env = e->syn_env, slow = e->syn_slow, kg = e->syn_kg;
+    int key = e->syn_key;
+    const float ea = e->syn_ea, er = e->syn_er, sr2 = e->syn_sr2, thr = e->syn_thr, ka = e->syn_ka, kr = e->syn_kr;
+    float *buf = e->syn_buf;
+    for (int k = 0; k < n; k++) {
+        const float x = xb[k], a = px_abs(x);
+        env += (a - env) * (a > env ? ea : er);
+        slow += (env - slow) * (env > slow ? ea : sr2);
+        const int on = key ? (env > thr * 0.5f) : (env > thr);
+        kv->kon[k] = (uint8_t)(on && !key);
+        key = on;
+        kg += ((on ? 1.0f : 0.0f) - kg) * (on ? ka : kr);
+        if (kg < 1e-6f) kg = 0.0f;
+        const float g = 0.25f / (slow + 0.004f);
+        buf[w] = x * (g > 12.0f ? 12.0f : g);
+        if (++w >= PX_PS_N) w = 0;
+        kv->kg[k] = kg;
+    }
+    e->syn_env = env; e->syn_slow = slow; e->syn_kg = kg; e->syn_key = key;
+}
+PX_AINL static inline float syn_tap_l(const float *cb, int cw, float d)
+{
+    float pos = (float)cw - d; if (pos < 0.0f) pos += (float)PX_SYN_CB;
+    return rd_frac(cb, PX_SYN_CB - 1, pos);
+}
+/* SYN ORGAN and CHURCH (syn_run's first case) */
+static __attribute__((noinline)) void syn_organ_run(px_engine *e, int organ, float *xb, int n0, float strim)
+{
+    for (int at = 0; at < n0; at += PS_RUN, xb += PS_RUN) {
+        const int n = n0 - at < PS_RUN ? n0 - at : PS_RUN, w0 = e->syn_w;
+        float *const y = px_run_y[1], *const xs = px_ps_xs[1];
+        syn_keyv *const kv = &px_syn_kv;
+        syn_keys_run(e, xb, w0, kv, n);
+        {   /* the 8' (the guitar itself, low-passed) */
+            float lp = e->syn_lp;
+            const float lpk = e->syn_lpk, d8 = e->syn_d8;
+            const float *buf = e->syn_buf;
+            int w = w0;
+            for (int k = 0; k < n; k++) {
+                lp += lpk * (buf[w] - lp);
+                if (++w >= PX_PS_N) w = 0;
+                y[k] = lp * d8;
+            }
+            e->syn_lp = lp;
+        }
+        ps_voice_run(e->syn_buf, w0, &e->syn_ph[0], e->syn_off[0], e->syn_inc[0], e->syn_W[0], e->syn_lvl[0], y, n, xs);
+        ps_voice_run(e->syn_buf, w0, &e->syn_ph[1], e->syn_off[1], e->syn_inc[1], e->syn_W[1], e->syn_lvl[1], y, n, xs);
+        if (e->syn_nv > 2 && !organ)
+            ps_voice_run(e->syn_buf, w0, &e->syn_ph[2], e->syn_off[2], e->syn_inc[2], e->syn_W[2], e->syn_lvl[2], y, n, xs);
+        {   /* a key down starts the percussion (its voice only while it sounds) and the click */
+            float perc = e->syn_perc, a0 = e->syn_ph[2], o0 = e->syn_off[2][0], o1 = e->syn_off[2][1];
+            const float pk = e->syn_pk, plvl = e->syn_plvl, inc = e->syn_inc[2], W = e->syn_W[2];
+            const int pv = organ && e->syn_nv > 2;
+            int w = w0;
+            for (int k = 0; k < n; k++) {
+                if (kv->kon[k]) perc = 1.0f;
+                if (pv && perc > 0.002f) {
+                    y[k] = y[k] + ps_step(e->syn_buf, w, &a0, &o0, &o1, inc, W, xs) * plvl * perc;
+                    perc *= pk;
+                }
+                if (++w >= PX_PS_N) w = 0;
+            }
+            e->syn_perc = perc;
+            if (pv) { e->syn_ph[2] = a0; e->syn_off[2][0] = o0; e->syn_off[2][1] = o1; }
+            e->syn_w = w;
+        }
+        {
+            float click = e->syn_click, lfo0 = e->syn_lfo[0];
+            uint32_t rnd = e->syn_rnd;
+            int cw = e->syn_cw;
+            const float clk = e->syn_clk, cdep = e->syn_cdep[0], linc = e->syn_linc[0], cbase = e->syn_cbase,
+                        out = e->syn_out, dry = e->syn_dry;
+            float *cb = e->syn_cb;
+            for (int k = 0; k < n; k++) {
+                float v = y[k];
+                if (kv->kon[k]) click = 1.0f;
+                if (click > 1e-4f) {                   /* key click: a 2 ms burst */
+                    rnd = rnd * 1664525u + 1013904223u;
+                    v += ((float)(rnd >> 8) * (2.0f / 16777216.0f) - 1.0f) * click * clk;
+                    click *= 0.985f;
+                }
+                if (cdep > 0.0f) {                     /* church: slow celeste */
+                    cb[cw] = v;
+                    lfo0 = wrap1(lfo0 + linc);
+                    const float t = syn_tap_l(cb, cw, cbase + cdep * lfo_sin(lfo0));
+                    if (++cw >= PX_SYN_CB) cw = 0;
+                    v = 0.6f * v + 0.6f * t;
+                }
+                v = px_tanh(v * 1.3f) * 0.77f;         /* tone-wheel / pipe: no harsh peaks */
+                const float dn = ((at + k) & 1) ? 1e-15f : -1e-15f;
+                xb[k] = (v * kv->kg[k] * out + xb[k] * dry + dn) * strim;
+            }
+            e->syn_click = click; e->syn_lfo[0] = lfo0; e->syn_rnd = rnd; e->syn_cw = cw;
+        }
+    }
+    e->dn = ((n0 - 1) & 1) ? 1e-15f : -1e-15f;
+}
+/* PITCH's shifters: POLY OCT, WHAMMY, HARMONY, DETUNE */
+static __attribute__((noinline)) void pitch_run(px_engine *e, int whammy, float *xb, int n0, float strim)
+{
+    for (int at = 0; at < n0; at += PS_RUN, xb += PS_RUN) {
+        const int n = n0 - at < PS_RUN ? n0 - at : PS_RUN, w0 = e->ps_w;
+        float *const y = px_run_y[0], *const xs = px_ps_xs[0];
+        {
+            const float dry = e->ps_dry;
+            float *buf = e->ps_buf;
+            int w = w0;
+            for (int k = 0; k < n; k++) {
+                const float x = xb[k];
+                buf[w] = x;
+                if (++w >= PX_PS_N) w = 0;
+                y[k] = x * dry;
+            }
+            e->ps_w = w;
+        }
+        if (whammy) {                                  /* (one voice, its ratio gliding at every sample) */
+            float r = e->ps_r, a0 = e->ps_ph[0], o0 = e->ps_off[0][0], o1 = e->ps_off[0][1], inc = e->ps_inc[0];
+            const float rt = e->ps_rt, gl = e->ps_glide, invW = e->ps_invW, W = e->ps_W[0], lvl = e->ps_lvl[0];
+            int w = w0;
+            for (int k = 0; k < n; k++) {
+                r += (rt - r) * gl;
+                inc = (1.0f - r) * invW;
+                if (e->ps_nv > 0) y[k] = y[k] + ps_step(e->ps_buf, w, &a0, &o0, &o1, inc, W, xs) * lvl;
+                if (++w >= PX_PS_N) w = 0;
+            }
+            e->ps_r = r; e->ps_inc[0] = inc;
+            e->ps_ph[0] = a0; e->ps_off[0][0] = o0; e->ps_off[0][1] = o1;
+        } else
+            for (int v = 0; v < e->ps_nv; v++)
+                ps_voice_run(e->ps_buf, w0, &e->ps_ph[v], e->ps_off[v], e->ps_inc[v], e->ps_W[v], e->ps_lvl[v], y, n, xs);
+        for (int k = 0; k < n; k++) xb[k] = y[k] * strim;
+    }
+    e->dn = ((n0 - 1) & 1) ? 1e-15f : -1e-15f;
+}
+static float px_cab_h[64 + 2 * PX_MAX_BLOCK] PX_LO(px_cab_h);   /* the last 64 inputs and the run's in a row; the run's output */
+/* the cabinet's fine structure (cab_detail) over n samples: the taps one after the other over the run, on the last 64
+ * inputs laid out in a row (each tap then reads straight on), then the breakup resonators, two at a time */
+static __attribute__((noinline)) void cab_detail_run(px_engine *e, float *xb, int n, float strim)
+{
+    const px_cabd *c = &e->cd;
+    float *const h = px_cab_h, *const y = px_cab_h + 64 + PX_MAX_BLOCK;
+    float *rb = e->cab_rb;
+    const int w0 = e->cab_rw;                          /* rb[(w0 + d) & 63]: the input d samples before the last one */
+    for (int d = 0; d < 64; d++) h[63 - d] = rb[(w0 + d) & 63];
+    for (int k = 0; k < n; k++) { const float x = xb[k]; h[64 + k] = x; rb[(w0 - 1 - k) & 63] = x; y[k] = 0.0f; }
+    e->cab_rw = (w0 - n) & 63;
+    int t = 0;
+    for (; t + 3 < c->nt; t += 4) {                    /* (four taps a pass, each sample's sum in the taps' order) */
+        const float g0 = c->tg[t], g1 = c->tg[t + 1], g2 = c->tg[t + 2], g3 = c->tg[t + 3];
+        const float *q0 = h + 64 - (c->ti[t] & 63), *q1 = h + 64 - (c->ti[t + 1] & 63), *q2 = h + 64 - (c->ti[t + 2] & 63),
+                    *q3 = h + 64 - (c->ti[t + 3] & 63);
+        for (int k = 0; k < n; k++) y[k] = y[k] + g0 * q0[k] + g1 * q1[k] + g2 * q2[k] + g3 * q3[k];
+    }
+    for (; t < c->nt; t++) {
+        const float g = c->tg[t], *q = h + 64 - (c->ti[t] & 63);
+        for (int k = 0; k < n; k++) y[k] += g * q[k];
+    }
+    const float *xp = h + 63;                          /* x[n-1] */
+    for (int m = 0; m + 1 < PX_CABM; m += 2) {
+        const float a0 = c->m[m][0], a1 = c->m[m][1], a2 = c->m[m][2], b0 = c->m[m + 1][0], b1 = c->m[m + 1][1], b2 = c->m[m + 1][2];
+        float s0 = e->cab_ms[m][0], s1 = e->cab_ms[m][1], t0 = e->cab_ms[m + 1][0], t1 = e->cab_ms[m + 1][1];
+        for (int k = 0; k < n; k++) {
+            const float x1 = xp[k], ya = a0 * s0 + a1 * s1 + a2 * x1, yb = b0 * t0 + b1 * t1 + b2 * x1;
+            s1 = s0; s0 = ya; t1 = t0; t0 = yb;
+            y[k] = y[k] + ya + yb;
+        }
+        e->cab_ms[m][0] = s0; e->cab_ms[m][1] = s1; e->cab_ms[m + 1][0] = t0; e->cab_ms[m + 1][1] = t1;
+    }
+    const float dg = c->dg, cg = e->cab_g;
+    for (int k = 0; k < n; k++) xb[k] = y[k] * dg * cg * strim;
+}
+typedef char px_cabm_even[(PX_CABM & 1) ? -1 : 1];     /* (the resonators run in pairs) */
+/* GATE, COMP */
+static __attribute__((noinline)) void gate_run(px_engine *e, int on, float *xb, int n, float strim)
+{
+    float env = e->gate_env, g = e->gate_g;
+    const float thr = e->gate_thr, rel = e->gate_rel;
+    for (int k = 0; k < n; k++) {
+        float x = xb[k];
+        if (on) {
+            const float a = px_abs(x);
+            env = (a > env) ? a : a + (env - a) * 0.9995f;
+            const float tg = (env > thr) ? 1.0f : 0.0f;
+            g = (tg > g) ? tg : tg + (g - tg) * rel;
+            if (g < 1e-6f) g = 0.0f;                   /* closed: exact zero, never a denormal */
+            x *= g;
+        }
+        x += (k & 1) ? 1e-15f : -1e-15f;
+        xb[k] = x * strim;
+    }
+    e->gate_env = env; e->gate_g = g;
+    if (n > 0) e->dn = ((n - 1) & 1) ? 1e-15f : -1e-15f;
+}
+static __attribute__((noinline)) void comp_run(px_engine *e, int swell, float *xb, int n, float strim)
+{
+    float env = e->cmp_env;
+    const float att = e->cmp_att, rel = e->cmp_rel, make = e->cmp_make;
+    if (swell) {
+        float slow = e->cmp_slow, sw = e->cmp_sw;
+        const float slowk = e->cmp_slowk, thr = e->cmp_thr, rise = e->cmp_rise;
+        int lw = e->cmp_lw;
+        for (int k = 0; k < n; k++) {
+            const float x = xb[k], a = px_abs(x), c = (a > env) ? att : rel;
+            env = a + (env - a) * c;
+            slow += (env - slow) * slowk;
+            if (env > 1.5f * slow + thr) sw = 0.0f;    /* new pick attack */
+            else sw += (1.0f - sw) * rise;
+            e->cmp_la[lw] = x;
+            lw = (lw + 1) & 127;
+            xb[k] = e->cmp_la[lw] * sw * sw * make * strim;
+        }
+        e->cmp_slow = slow; e->cmp_sw = sw; e->cmp_lw = lw;
+    } else {
+        const float ck = e->cmp_k, mix = e->cmp_mix;
+        for (int k = 0; k < n; k++) {
+            float x = xb[k];
+            const float a = px_abs(x), c = (a > env) ? att : rel;
+            env = a + (env - a) * c;
+            const float y = x * make / (1.0f + ck * env * 4.0f);
+            x = x + (y - x) * mix;
+            xb[k] = x * strim;
+        }
+    }
+    e->cmp_env = env;
+    if (n > 0) e->dn = ((n - 1) & 1) ? 1e-15f : -1e-15f;
+}
+#endif
 
 /* ---- v38: the delay and the reverb over a block, each type's branches decided once for the block (on the pedal a taken
  * branch costs about 8 cycles: the per-sample code had 6 to 10 of them). Each call with constants is its own copy of
@@ -2979,7 +3327,7 @@ static void rv_block(px_engine *e, const float *xb, float *wo, int n)
 }
 
 /* ---- v39: the wet lanes (px_dsp.h). [lane][buffer][frame]: 2 KB of RAM ---- */
-static float px_wl[2][2][PX_WL_N] PX_HI(px_wl);
+static float px_wl[2][2][PX_WL_N] PX_LO(px_wl);
 static void wl_clear(px_engine *e)
 {
     e->wl_b = 0;
@@ -3130,6 +3478,10 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
             } else if (p->on[PX_B_CAB] && e->cab_n) {
                 if (px_fx_int) fq_chain(e->cab, (px_fq *)e->fq_cab, e->cab_n, xb, n);
                 else bq_chain(e->cab, e->cab_n, xb, n);
+#if PX_RUNS
+                if (e->cab_firon) cab_detail_run(e, xb, n, strim);
+                else
+#endif
                 for (int k = 0; k < n; k++) {
                     float x = xb[k];
                     if (e->cab_firon) x = cab_detail(&e->cd, x, e->cab_rb, &e->cab_rw, e->cab_ms);
@@ -3145,7 +3497,7 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
                 const int both = pair && amp_os;
                 const int os = (!both && e->drv_os == 2) ? 2 : PX_OVERSAMPLE, no = os * n;
                 px_hb *set = os == 2 ? e->os_c : (pair || !amp_os) ? e->os_a : e->os_b;
-                float *ub = px_os_u, pre[PX_MAX_BLOCK];
+                float *ub = px_os_u, *const pre = px_os_p;
                 for (int k = 0; k < n; k++) {
                     e->dn = (k & 1) ? 1e-15f : -1e-15f;
                     float x = drive_pre(e, xb[k]);
@@ -3181,7 +3533,7 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
                     e->wl_p[L] = (uint16_t)(e->wl_p[L] + n);
                     e->wl_n[L][e->wl_b] = e->wl_p[L];
                 } else {
-                    float wb[PX_MAX_BLOCK];
+                    float *const wb = px_wb[L];           /* (the lanes off: one core runs the whole chain) */
                     if (L) {
                         rv_block(e, xb, wb, n);
                         const float dg = 1.0f - 0.4f * e->rv_mix;
@@ -3197,7 +3549,7 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
         }
         if (sblk == PX_B_AMP && !pair && amp_os) {       /* the fitted amp's own oversampled preamp (set A), over the block;
                                                             its tone stack and power amp then sample by sample below */
-            float *ub = px_os_u, pre[PX_MAX_BLOCK];
+            float *ub = px_os_u, *const pre = px_os_p;
             for (int k = 0; k < n; k++) {
                 float x = bq_run(&e->amp_tight, xb[k]);
                 pre[k] = bq_run(&e->amp_bright, x) * sag_pre;
@@ -3211,6 +3563,24 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
             }
             os_down(e->os_a, ub, xb, n, PX_OVERSAMPLE);
         }
+        /* v40.4: the blocks that run over the block pass by pass (above); the others sample by sample, below */
+#if PX_RUNS
+        if (sblk == PX_B_SYN && (syn_t == PX_SYN_ORGAN || syn_t == PX_SYN_CHURCH)) {
+            syn_organ_run(e, syn_t == PX_SYN_ORGAN, xb, n, strim);
+            goto faded;
+        }
+        if (sblk == PX_B_PITCH && p->on[PX_B_PITCH] && pit_t != PX_PIT_OCTAVER) {
+            pitch_run(e, pit_t == PX_PIT_WHAMMY, xb, n, strim);
+            goto faded;
+        }
+        if (sblk == PX_B_GATE) { gate_run(e, p->on[PX_B_GATE], xb, n, strim); goto faded; }
+        if (sblk == PX_B_COMP && p->on[PX_B_COMP]) { comp_run(e, cmp_t == PX_CMP_SWELL, xb, n, strim); goto faded; }
+        if (sblk == PX_B_EQ && p->on[PX_B_EQ]) {       /* its filters one after the other over the block, as the cabinet's */
+            bq_chain(e->eq, e->eq_n, xb, n);
+            for (int k = 0; k < n; k++) xb[k] *= strim;
+            goto faded;
+        }
+#endif
         for (int k = 0; k < n; k++) {
         e->dn = (k & 1) ? 1e-15f : -1e-15f;
         float x = xb[k];
@@ -3265,6 +3635,7 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
                     u = bq_run(&e->oct_uphp, u);
                     x = x * e->oct_dry + s1 * e->oct_s1 + s2 * e->oct_s2 + u * e->oct_up;
                 } else {
+#if !PX_RUNS                                           /* (with the runs: pitch_run) */
                     e->ps_buf[e->ps_w] = x;
                     if (pit_t == PX_PIT_WHAMMY) {
                         e->ps_r += (e->ps_rt - e->ps_r) * e->ps_glide;
@@ -3275,6 +3646,7 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
                         y += ps_voice_al(e->ps_buf, e->ps_w, &e->ps_ph[v], e->ps_off[v], e->ps_inc[v], e->ps_W[v]) * e->ps_lvl[v];
                     if (++e->ps_w >= PX_PS_N) e->ps_w = 0;
                     x = y;
+#endif
                 }
             }
         break;

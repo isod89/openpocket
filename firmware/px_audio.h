@@ -80,28 +80,12 @@ int gpio_set_pull_down(uint32_t g, int on)   { jl_rmw(g, 0x14, on); return 0; }
 static px_engine g_eng __attribute__((section(".pool"), aligned(8)));   /* ~250 KB: "POOL" RAM region */
 static float a_in[A_FR], a_out[A_FR];
 #if OP_BT_AUDIO
-/* output, 24-bit right-aligned. Test build 12 (the Bluetooth audio image only, until the ear confirms it): two slots. The SDK's
- * handler (iis.bc iis_irq_handler) calls a_dec (the output) and a_enc (the input and the DSP) each when it finds its own
- * half-done flag up, so their order follows the interrupt's entry latency, and with one buffer every change of order repeated a
- * block and skipped the next: a click on any note sounding, with no late block. a_enc's block goes to slot a_wslot; a_dec sends
- * the block before the newest whatever the order (one block, 2.9 ms, more latency than the input-first order test build 11
- * mostly ran). (Test build 12's DLY key at power-on, the output in one slot as build 11 sent it, is gone in build 13) */
-static int32_t a_res[2][A_FR] __attribute__((section(".bss.hi.a_res"), aligned(8)));   /* (the RAM code window's free end) */
-static uint32_t a_nenc, a_ndec;                        /* blocks made (a_enc), blocks sent (a_dec) */
-static volatile uint8_t a_wslot, a_jslot;              /* the slot a_enc's block goes to; the one CPU1's job writes */
-#define A_RES (a_res[a_wslot & 1u])                   /* (masked: a CPU1 misread of a_wslot stays inside the array) */
-#define A_JSLOT() (a_jslot = a_wslot)
-/* the callbacks' order (the log's isr line, OC): two a_dec (1) or two a_enc (2) in a row are a change of order; and the
- * entries by the flags they find (EN, fm1_alnk0_irq) */
-static volatile uint32_t a_en_s[5], a_dd, a_ee, a_dd_s, a_ee_s;
-static volatile uint8_t a_last_cb;
-#define A_ORDER(me) do { if (a_last_cb == (me)) { if ((me) == 1u) { a_dd++; a_dd_s++; } else { a_ee++; a_ee_s++; } } \
-                         a_last_cb = (me); } while (0)
+/* output, 24-bit right-aligned, in the RAM code window's free end (app-bt.ld .bss_hi), where test builds 12 and 13 kept two
+ * slots against the callbacks' order; v42's px_aorder.h sends each block in its own interrupt whichever callback comes first */
+static int32_t a_res[A_FR] __attribute__((section(".bss.hi.a_res"), aligned(8)));
+static volatile uint32_t a_en_s[5];                    /* the entries by the flags they find (the log's isr line, EN) */
 #else
 static int32_t a_res[A_FR];                            /* output, 24-bit right-aligned */
-#define A_RES a_res
-#define A_JSLOT() ((void)0)
-#define A_ORDER(me) ((void)0)
 #endif
 static volatile float a_lvl[2];                        /* input L / R: mean square, in 24-bit steps */
 /* input level in dB below full scale (dBFS), rounded; -199 = digital silence */
@@ -113,6 +97,9 @@ static int a_level_db(int ch)
 }
 static volatile float a_gain = 0.64f;                  /* MASTER volume (knob), applied at the output */
 static volatile uint32_t a_load, a_peak, a_blocks;     /* DSP load in % */
+/* v40.4: the smoothed loads' sums (the load x 8). Smoothed in whole per cent, (load * 7 + pct) / 8 rounded down at every
+ * block: a load reached from below stopped up to 7 short (79 % read 73), one reached from above read right */
+static uint32_t a_lds, a_cls[2];
 /* v37: what can be heard as a crackle. a_xrun: blocks that took longer than their 2.9 ms (the output then repeats or
  * misses part of a block), a_xrun_at the block of the last one; a_clip: blocks whose output reached the soft clipper's
  * knee (0.8 of full scale; it used to be a hard clip at full scale) */
@@ -125,6 +112,10 @@ static float a_mg = 1.0f;
  * it back in (~6 ms each way). Knob changes and blocks on / off are handed to the audio side (a_kp, a_kpend) and applied
  * at the start of its next block, where they glide and fade (px_engine_knobs): the interrupt is never held off for them. */
 static volatile float a_xf = 1.0f;                     /* the change fade's gain now */
+/* v40.3: the last full change, for PING (ticks): the last change seen (any), the full one's, the engine's set (how
+ * long), the sound back (the end of the fade-in, written by the audio side) */
+static volatile uint32_t a_sw0, a_swc, a_swset, a_sw1;
+static volatile uint8_t a_swin;                        /* 1 from a full change until its fade-in ends */
 static float a_gv = 0.64f;                             /* the volume as it glides */
 static volatile uint8_t a_xft = 1;                     /* where the change fade goes: 1 sound, 0 silence */
 static px_preset_t a_kp;
@@ -144,6 +135,12 @@ static uint32_t a_wcut_base;                           /* (test build 12) the cu
 #define A_WCUT_KEEP() ((void)0)
 #endif
 static volatile uint8_t a_nan;                         /* engine output a NaN/Inf: needs a reset */
+/* v42: USB audio (px_usb.h, docs/USB-AUDIO.md). While the USB AUDIO setting is on, each output block goes through
+ * px_ua_block in a_send (CPU0, the I2S interrupt): the block to the computer, the computer's playback into the output.
+ * a_uat: the ticks it took, part of CPU0's work in a block (0 while the setting is off: the loads are then as before) */
+static volatile uint8_t a_ua;
+static uint32_t a_uat;
+static void px_ua_block(int32_t *d, uint32_t n);
 static volatile uint32_t a_nan_count;
 static int a_running;
 
@@ -155,6 +152,7 @@ static bt_ring_t bt_ring;
 static const float bt_gain = 0.5f;                     /* -6 dB: the phone's own volume does the rest */
 static float bt_mix[A_FR] __attribute__((section(".bss.lo2.bt_mix")));   /* (beside the ring: app-bt.ld .bss_lo2) */
 #endif
+
 /* DSP work for one block: a_in -> a_res (gain, clipping) + load measurement. Runs on the 2nd core (CPU1)
  * when available, otherwise on CPU0 in the interrupt. */
 static void dsp_out(void);
@@ -212,6 +210,7 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
 #endif
             }
             a_xf = xf;
+            if (xf == 1.0f && a_swin) { a_sw1 = fm1_ticks(); a_swin = 0; }
         } else if (tg == 0.0f) {
             for (uint32_t i = 0; i < A_FR; i++) a_out[i] = 0.0f;
 #if OP_BT_AUDIO
@@ -223,7 +222,6 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
     const float g = a_gain;                            /* v38: the volume glides there (~3 ms), no zipper */
     float gv = a_gv;
     int clip = 0;
-    int32_t *const res = A_RES;
     for (uint32_t i = 0; i < A_FR; i++) {
         gv += (g - gv) * 0.008f;
 #if OP_BT_AUDIO
@@ -237,7 +235,7 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
             v = v < 0.0f ? -m : m;
             clip = 1;
         }
-        res[i] = (int32_t)(v * 8388607.0f);
+        a_res[i] = (int32_t)(v * 8388607.0f);
     }
     a_gv = gv;
     if (clip) a_clip++;
@@ -245,7 +243,8 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
 static void dsp_load(uint32_t t0, uint32_t lim)        /* the block's load, the safety bypass (over lim % 8 blocks running) */
 {
     uint32_t pct = (fm1_ticks() - t0) * 100u / A_BUDGET;
-    a_load = (a_load * 7u + pct) / 8u;
+    a_lds += pct - a_lds / 8u;
+    a_load = a_lds / 8u;
     if (pct > a_peak) a_peak = pct;
     if (pct > a_peak_all) a_peak_all = pct;
     if (pct >= 100u && !a_hold) { a_xrun++; a_xrun_at = a_blocks; }
@@ -297,17 +296,18 @@ static int a_hwait(void) { return fm1_cpu1_wait(); }
  * the same block's state (tests/engine/pipe_test.c: the same output as one core, one block later). */
 static float a_nb[2][A_FR];                            /* the network's output: being made / the previous block's */
 static uint8_t a_nbi, a_nbv, a_prun;                  /* a_nb[a_nbi] is this block's; a_nbv: the other one holds one */
-static void post_job(uint32_t prev)
+static void post_run(uint32_t prev, int run, int nbv)   /* run: the engine on; nbv: a_nb[prev] holds a block */
 {
     if (g_eng.wl_on) px_wet_run(&g_eng, 0u, 0);       /* v39.1: the lanes (the previous block's sends), first */
-    if (a_prun && a_nbv) {
+    if (run && nbv) {
         for (uint32_t o = 0; o < A_FR; o += PX_MAX_BLOCK)
             px_engine_part(&g_eng, a_nb[prev] + o, a_out + o, PX_MAX_BLOCK, PX_PART_POST);
-    } else if (!a_prun) {
+    } else if (!run) {
         for (uint32_t i = 0; i < A_FR; i++) a_out[i] = a_in[i];
     } else for (uint32_t i = 0; i < A_FR; i++) a_out[i] = 0.0f;   /* the pipeline's first block */
     dsp_out();
 }
+static void post_job(uint32_t prev) { post_run(prev, a_prun, a_nbv); }
 /* diagnostic 22: CPU1 then goes straight on to the network (pxn_serve), taking the last frames of each 32-frame block
  * while CPU0 takes the first ones and never waits; CPU0 takes more frames in the first blocks by how late CPU1 came
  * to the network in the blocks before (a_late, ticks: POST's end against PRE's) */
@@ -341,68 +341,160 @@ static void dsp_pipe_run(int run)                      /* run: the engine on (el
     a_nbv = (uint8_t)run;
     a_nbi = (uint8_t)prev;
 }
-/* v40.2: the network split between the cores by layers (engine/px_nam.c pxn_lp_*). In each block's interrupt CPU1 runs
- * the blocks after the amp on the block before's network output as before, then finishes this block's 32-frame network
- * blocks (their layers after CPU0's share, the head) as CPU0 hands them over, and goes on after the interrupt until all
- * are done. a_dec waits only for the output (a_lppost: the blocks after the amp done), the next a_enc for the whole job.
- * CPU0 runs the blocks before the amp and the network's first layers, and does not wait. Every layer runs on whole
- * blocks: no per-layer waits, the head on CPU1; the output is the same (tests/engine/lp_test.c). The load shown is the
- * busier core's: CPU0's (a_enc from its start, its wait for CPU1 included, and a_dec's wait) or CPU1's job. How many
- * layers CPU0 takes follows the difference between the two. */
-static volatile uint8_t a_lpstop, a_lppost;
-static uint32_t a_lppend;
-static volatile uint32_t a_lpc1;                       /* (CPU1) its last job's own work, its waits taken out (ticks) */
-static uint32_t a_lpc0, a_decw;                        /* CPU0's own share last block; a_dec's wait for the output (ticks) */
-static int32_t a_lpbal;                                /* CPU1's job minus CPU0's share, smoothed */
+/* v40.2: the network split between the cores by layers (engine/px_nam.c pxn_lp_*). CPU0 runs the blocks before the amp
+ * and the network's first layers in each block's interrupt; CPU1 runs the blocks after the amp on the block before's
+ * network output, the network's other layers and its head. Every layer runs on whole blocks: no per-layer waits; the
+ * output is the same (tests/engine/lp_test.c).
+ * v40.4: CPU1 works on through the interrupts. Until now its job ended with the block's last network block, which CPU0
+ * hands over at the end of its own share: CPU1 idled at the start of each block, the next interrupt waited for it, and
+ * the two cores' work in a block had to fit one after the other (the blocks before the amp + CPU0's share of the
+ * network + one network block on CPU1 within 2.9 ms): a chain could run only up to about 88 % a core, and after a full
+ * change, when the interrupt runs block after block to catch up, the wait counted as load and engaged the bypass on
+ * chains that fit. Now CPU1 runs one worker (lp_job) for as long as the layer split is on: each interrupt asks it for
+ * the blocks after the amp (a_lpreq); it first finishes the network blocks handed over before the request (their
+ * output is what those blocks play), runs them, and goes back to the network. The interrupt waits only for the
+ * output it sends (a_lp_post, in a_dec) and never for the network: the blocks handed over late in a block are finished
+ * during the next one. Each core's work may now fill its block. The load shown is the busier core's: CPU0's interrupt
+ * (its waits included), or what CPU1 has to do in a block (the blocks after the amp, as timed, and its share of the
+ * network). How many layers CPU0 takes follows from the two cores' other work, as timed, and the network's parts
+ * (px_nam_lp_share): set in one step, not layer by layer. */
+static volatile uint8_t a_lpquit;                      /* (CPU0) the worker must return */
+static volatile uint32_t a_lpreq, a_lpdone;            /* requests for the blocks after the amp: asked (CPU0), served (CPU1) */
+static volatile uint32_t a_lparg, a_lpupto;            /* the request: prev | nbv << 1 | run << 2; the network blocks before it */
+static volatile uint32_t a_lptp;                       /* (CPU1) its last blocks after the amp, lanes and output included (ticks) */
+static uint8_t a_lpw;                                  /* the worker runs */
+static uint32_t a_lpc0, a_decw;                        /* CPU0's own share last block; its wait for the output (ticks) */
+static uint32_t a_lpc1;                                /* CPU1's work for a block: a_lptp + its share of the network (ticks) */
+static uint32_t a_lpta;                                /* CPU0's share of the network last block (ticks) */
+static uint32_t a_lpe0, a_lpe1;                        /* the cores' other work, smoothed (ticks x 4; 0: not timed yet) */
+static uint32_t a_encw;                                /* a_enc's wait for the output (ticks: not CPU0's work) */
+static uint8_t a_lpreal;                               /* the last request ran the blocks after the amp (a_lptp is theirs) */
+static uint8_t a_lpstuck;                              /* blocks in a row whose share stayed below the one asked */
+static uint8_t a_lpnew;                                /* blocks timed since the preset was set (up to 6) */
+/* the network's work in layers 0..s, in 1/1024 (px_nam_lp_share), in the RAM code window's free end (app.ld .bss_hi) */
+static uint16_t a_lpsh[PXN_NL] __attribute__((section(".bss.hi.a_lpsh")));
 static uint32_t a_cl[2], a_cpk[2];                     /* v40.2: each core's load (%, smoothed) and peak since the preset was set */
-static void lp_job(uint32_t prev)
+static void lp_job(uint32_t arg)
 {
-    const uint32_t t0 = fm1_ticks();
-    uint32_t idle = 0;
-    for (uint32_t k = a_lppend; k; k--) px_nam_lp_b(&g_eng);
-    post_job(prev);
-    fm1_cpu1_sync();
-    a_lppost = 1;                                      /* (the output is there: a_dec may send it) */
-    fm1_cpu1_sync();
+    uint32_t done = a_lpdone;
+    (void)arg;
     for (;;) {
-        if (px_nam_lp_b(&g_eng)) continue;
-        if (a_lpstop) break;                           /* (stopped and none left: this block's are all done) */
-        const uint32_t ti = fm1_ticks();               /* (waiting for CPU0's next block: not CPU1's work) */
-        while (!px_nam_lp_queued() && !a_lpstop) fm1_cpu1_sync();
-        idle += fm1_ticks() - ti;
+        fm1_cpu1_sync();
+        if (a_lpreq != done) {                         /* an interrupt asked for the blocks after the amp */
+            const uint32_t q = a_lparg, upto = a_lpupto;
+            while (px_nam_lp_before(upto)) px_nam_lp_b(&g_eng);   /* (the network blocks they play, first) */
+            const uint32_t t0 = fm1_ticks();
+            post_run(q & 1u, (int)(q >> 2 & 1u), (int)(q >> 1 & 1u));
+            a_lptp = fm1_ticks() - t0;
+            fm1_cpu1_sync();
+            a_lpdone = ++done;                         /* (the output is there: a_dec may send it) */
+            fm1_cpu1_sync();
+            continue;
+        }
+        if (a_lpquit) break;                           /* (asked to return: the network blocks left stay queued) */
+        px_nam_lp_b(&g_eng);                           /* (the oldest network block handed over, if any) */
     }
-    a_lpc1 = fm1_ticks() - t0 - idle;                  /* its own work (an overrun shows as CPU0's wait at a_enc) */
 }
-static void dsp_lp_run(int run)
+/* the blocks after the amp asked by the interrupt before are done: a_res is whole, and the lanes and those blocks'
+ * state are no longer in use (CPU1 is in the network, or idle) */
+static void a_collect(void);
+static uint32_t a_lp_post(void)                        /* returns the ticks it waited */
 {
-    const uint32_t prev = a_nbi ^ 1u, t0 = fm1_ticks();
-    a_commit();                                        /* (before CPU1 starts: the engine is all ours here) */
-    if (run && a_lpc0) {                               /* the split: a layer's worth (both ways: twice) apart, moved */
-        const int32_t d = (int32_t)a_lpc1 - (int32_t)a_lpc0;
-        a_lpbal += (d - a_lpbal) / 4;
-        const int32_t thr = (int32_t)(pxn_frame_ticks() * 4u * PXN_N / PXN_NL);
-        if (a_lpbal > thr) { px_nam_lp_split(px_nam_lp_split_now() + 1); a_lpbal = 0; }
-        else if (a_lpbal < -thr) { px_nam_lp_split(px_nam_lp_split_now() - 1); a_lpbal = 0; }
+    if (!a_lpw) return 0u;
+    const uint32_t t = fm1_ticks();
+    while (a_lpdone != a_lpreq && fm1_cpu1_busy()) {
+        fm1_cpu1_sync();
+        /* v40.5: not for ever. The worker is one job for as long as the split runs, so fm1_cpu1_busy stays 1 and
+         * fm1_cpu1_wait's limit never applies here: a CPU1 that stopped without a fault would hold the interrupt until
+         * the watchdog. As fm1_cpu1_wait: past FM1_CPU1_TIMEOUT_US it is retired (LATE), a_collect then goes to one core */
+        if (fm1_ticks() - t >= FM1_CPU1_TIMEOUT_US * FM1_TICKS_PER_US) { fm1_cpu1_retire(FM1_CPU1_LATE); break; }
     }
+    if (a_lpdone != a_lpreq) a_collect();              /* (its worker ended without it: dropped) */
+    return fm1_ticks() - t;
+}
+static void lp_split(uint32_t e0, uint32_t e1)         /* the split for the cores' other work e0, e1 (ticks) */
+{
+    /* CPU0: e0 + n sh(s), CPU1: e1 + n (1 - sh(s)), n the network's ticks for a block: the s that brings them
+     * closest; the split in use stays unless another is better by half a layer's work (a layer: n / 25) */
+    const int32_t n = (int32_t)(pxn_frame_ticks() * A_FR), d = (int32_t)e0 - (int32_t)e1 - n;
+    const int now = px_nam_lp_split_used();
+    int best = now;
+    int32_t fb = d + ((n >> 5) * (int32_t)a_lpsh[now] >> 4);          /* (n sh / 512 = 2 n sh / 1024) */
+    if (fb < 0) fb = -fb;
+    fb -= n / 50;
+    for (int k = 0; k < PXN_NL; k++) {
+        int32_t f = d + ((n >> 5) * (int32_t)a_lpsh[k] >> 4);
+        if (f < 0) f = -f;
+        if (f < fb) { fb = f; best = k; }
+    }
+    px_nam_lp_split(best);
+    /* CPU0 takes more layers only as CPU1 has finished them for the blocks before, without waiting for it. With CPU1
+     * behind (it is the busier one) that never comes: for 2 layers or more, or after 4 blocks, CPU0 waits for it once */
+    a_lpstuck = (uint8_t)(best > now ? a_lpstuck + 1u : 0u);
+    if (best >= now + 2 || a_lpstuck >= 4u) { px_nam_lp_force(); a_lpstuck = 0; }
+}
+static void dsp_lp_run(int run, uint32_t t_irq)
+{
+    const uint32_t prev = a_nbi ^ 1u;
+    a_commit();                                        /* (CPU1 is in the network, or idle: the blocks are all ours here) */
+    if (run && a_lpc0) {                               /* the cores' other work last block; the split from it */
+        /* (as timed for the first 6 blocks, the lanes coming in two blocks late; then smoothed) */
+        const uint32_t o0 = a_lpc0 > a_lpta ? a_lpc0 - a_lpta : 0u, o1 = a_lptp;
+        const int fresh = a_lpnew < 6u;
+        if (fresh) a_lpnew++;
+        a_lpe0 = a_lpe0 && !fresh ? a_lpe0 - a_lpe0 / 4u + o0 : o0 * 4u;
+        if (a_lpreal) {                                /* (not the pipeline's first block: silence) */
+            if (!a_lpe1) { a_peak = 0; a_cpk[0] = a_cpk[1] = 0; }   /* (the peaks: from the first split set for this preset) */
+            a_lpe1 = a_lpe1 && !fresh ? a_lpe1 - a_lpe1 / 4u + o1 : o1 * 4u;
+        }
+        if (a_lpe1) lp_split(a_lpe0 / 4u, a_lpe1 / 4u);
+    }
+    a_lpreal = (uint8_t)(run && a_nbv);
     a_prun = (uint8_t)run;
-    a_lppend = px_nam_lp_queued();
-    a_lpstop = 0;
-    a_lppost = 0;
+    a_lparg = prev | (uint32_t)a_nbv << 1 | (uint32_t)(run != 0) << 2;
+    a_lpupto = px_nam_lp_handed();
     fm1_cpu1_sync();
-    const int job = fm1_cpu1_run(lp_job, prev);
-    if (!job) { while (px_nam_lp_b(&g_eng)) { } post_job(prev); a_lpc1 = 0; }   /* (CPU1 off: here) */
+    a_lpreq++;
+    fm1_cpu1_sync();
+    if (!a_lpw) {                                      /* the worker, started (CPU1 off: its work here) */
+        a_lpquit = 0;
+        fm1_cpu1_sync();
+        if (fm1_cpu1_run(lp_job, 0)) { a_lpw = 1; a_job = 1; }
+        else {
+            while (px_nam_lp_b(&g_eng)) { }
+            post_run(prev, run, a_nbv);
+            a_lpdone = a_lpreq; a_lptp = 0;
+        }
+    }
+    uint32_t ta = 0;
     if (run) {
         for (uint32_t o = 0; o < A_FR; o += PX_MAX_BLOCK)
             px_engine_part(&g_eng, a_in + o, a_nb[a_nbi] + o, PX_MAX_BLOCK, PX_PART_PRE);
+        ta = fm1_ticks();
+        if (!a_lpe1 && a_lpw) {
+            /* the first two blocks after a change: CPU1's other work is not timed yet, and it has little (the pipeline
+             * and the lanes fill): CPU0 takes as many layers as fit in 80 % of its block, so that the split then only
+             * has to come down (CPU1 takes layers over at once; CPU0 only as CPU1 has finished them) */
+            const uint32_t n = pxn_frame_ticks() * A_FR, used = ta - t_irq;
+            int s = PXN_NL - 1;
+            while (s > 0 && used + (n >> 5) * a_lpsh[s] / 32u > A_BUDGET * 80u / 100u) s--;
+            px_nam_lp_split(s);
+        }
         for (uint32_t o = 0; o < A_FR; o += PX_MAX_BLOCK)
             px_engine_part(&g_eng, a_nb[a_nbi] + o, a_nb[a_nbi] + o, PX_MAX_BLOCK, PX_PART_NAM);
-        if (!job) while (px_nam_lp_b(&g_eng)) { }
+        /* v40.5: a wait for CPU1 in the network gave up (px_nam.c pxn_lp_late): CPU1 stopped without a fault. Retired
+         * (LATE): a_dec's a_lp_post then finds it gone and a_collect goes to one core, the engine reset (a_c1_off) */
+        if (px_nam_lp_gave_up()) fm1_cpu1_retire(FM1_CPU1_LATE);
+        ta = fm1_ticks() - ta;
+        if (!a_lpw) while (px_nam_lp_b(&g_eng)) { }
     }
-    a_lpc0 = run && job ? fm1_ticks() - t0 : 0u;
-    fm1_cpu1_sync();
-    a_lpstop = 1;
-    fm1_cpu1_sync();
-    if (job) { a_job = 1; A_JSLOT(); }                 /* (collected by the next a_dec or a_enc, or before a recompute) */
+    a_lpta = ta;
+    a_lpc0 = run && a_lpw ? fm1_ticks() - t_irq - a_encw + a_uat : 0u;   /* (from the interrupt: the input, the tuner's samples; USB audio) */
+    /* CPU1's work for a block: the blocks after the amp as last timed, and its share of the network at this split */
+    {
+        const uint32_t n = pxn_frame_ticks() * A_FR;
+        a_lpc1 = run && a_lpw ? a_lptp + (n >> 5) * (1024u - a_lpsh[px_nam_lp_split_now()]) / 32u : 0u;
+    }
     a_nbv = (uint8_t)run;
     a_nbi = (uint8_t)prev;
 }
@@ -410,16 +502,16 @@ static void dsp_pipe(uint32_t t_irq)
 {
     uint32_t t0 = fm1_ticks();
     if (g_eng.nam_lp) {
-        const uint32_t c1 = a_lpc1;                    /* (CPU1's last job, collected by this a_enc) */
-        dsp_lp_run(!a_bypass && !a_hold);
-        const uint32_t c0 = fm1_ticks() - t_irq + a_decw;
+        dsp_lp_run(!a_bypass && !a_hold, t_irq);
+        const uint32_t c1 = a_lpc1, c0 = fm1_ticks() - t_irq + a_decw + a_uat;
         t0 = fm1_ticks() - (c1 > c0 ? c1 : c0);         /* the busier core */
         for (int k = 0; k < 2; k++) {                   /* each core's own (PING's profile) */
             const uint32_t pc = (k ? c1 : c0) * 100u / A_BUDGET;
-            a_cl[k] = (a_cl[k] * 7u + pc) / 8u;
+            a_cls[k] += pc - a_cls[k] / 8u;
+            a_cl[k] = a_cls[k] / 8u;
             if (pc > a_cpk[k]) a_cpk[k] = pc;
         }
-    } else dsp_pipe_run(!a_bypass && !a_hold);
+    } else { dsp_pipe_run(!a_bypass && !a_hold); t0 -= a_uat; }   /* (USB audio's time in a_dec: CPU0's too) */
     dsp_load(t0, 93u);                                 /* (CPU0's whole block here, the UI gets the rest) */
 }
 #endif
@@ -428,10 +520,41 @@ static void a_collect(void)                            /* collects the block in 
 #if DSP_CPU1
     if (a_job) {
         a_job = 0;
+        if (a_lpw) {                                   /* v40.4: the layer split's worker: asked to return (it serves */
+            fm1_cpu1_sync();                           /* a request it has first) */
+            a_lpquit = 1;
+            fm1_cpu1_sync();
+        }
         if (fm1_cpu1_wait() < 0) a_c1_off();           /* dropped: CPU0 takes over (this block is lost) */
+        if (a_lpw) {
+            a_lpw = 0;
+            a_lpdone = a_lpreq;                        /* (served before it returned, or dropped with it) */
+            while (px_nam_lp_b(&g_eng)) { }            /* (the network blocks it left, finished here) */
+        }
     }
 #endif
 }
+
+#if DSP_CPU1 && OP_BLE_TEST
+/* the Bluetooth images turn the flash path off with only CPU0's interrupts off (px_usb.h ota_fread; the radio's start-up burst,
+ * fm1_ble_rf.h): nothing of CPU1's may run from the flash then. A block's job is waited for (fm1_cpu1_wait). v41's layer-split
+ * worker never ends while the split runs, so fm1_cpu1_wait would retire it (LATE) after 8 ms: it is waited for until it idles in
+ * its loop (RAM code) with no request and no network block left, within the same 8 ms. A core that faulted or misread is held
+ * (fm1_cpu1_wait retires it): its fault handler parks in the flash */
+static void a_cpu1_quiet(void)
+{
+    if (a_lpw) {
+        const uint32_t t = fm1_ticks();
+        while ((a_lpdone != a_lpreq || px_nam_lp_queued()) && fm1_cpu1_busy()) {
+            fm1_cpu1_sync();
+            if (fm1_ticks() - t >= FM1_CPU1_TIMEOUT_US * FM1_TICKS_PER_US) { fm1_cpu1_retire(FM1_CPU1_LATE); return; }
+        }
+        if (!fm1_cpu1_on || !(fm1_cpu1_fault.count || fm1_cpu1_mb.rejected)) return;   /* (idle in its loop, or off) */
+    }
+    (void)fm1_cpu1_wait();
+}
+#define FM1_CPU1_QUIET() a_cpu1_quiet()                /* (fm1_ble_rf.h's burst) */
+#endif
 
 /* ---- tuner: the interrupt stores the input decimated by 4 (11025 Hz); the main loop estimates the note ---- */
 #define TN_N 1024u
@@ -498,6 +621,22 @@ static float tuner_estimate(void)      /* frequency in Hz, or 0 (silence / uncle
 #ifndef OP_TESTSIG
 #define OP_TESTSIG 0
 #endif
+/* OP_UADEV 1 (measurements only, never a release): USB audio's figures for the pedal's timing (px_uaudio.h): when the
+ * interrupt's two callbacks run, the USB poll's gaps, the rings' fills; a counter or the computer's playback in the
+ * record stream in place of the sound, so a frame lost or repeated on the way shows exactly; a steady tone as the input;
+ * the output blocks sent in the order the driver asks, as before v42 */
+#ifndef OP_UADEV
+#define OP_UADEV 0
+#endif
+#if OP_UADEV
+static uint8_t ua_dev;                                 /* the modes (px_uaudio.h) */
+static void uad_enc(uint32_t t);
+static void uad_send(void);
+static void uad_tone(float *x);
+#define A_ORDER_OLD (ua_dev & 8u)
+#else
+#define A_ORDER_OLD 0u
+#endif
 #if OP_TESTSIG
 static void a_testsig(void)
 {
@@ -514,18 +653,18 @@ static void a_testsig(void)
     }
 }
 #endif
-static void a_enc(void *priv, uint8_t *data, int len, uint8_t ch)     /* guitar block received */
+static void a_block(const uint8_t *data, int len)      /* a guitar block: its DSP started, or run */
 {
-    (void)priv;
-    if (ch != 1u) return;
-    A_ORDER(2u);
 #if DSP_CPU1
     const uint32_t t_irq = fm1_ticks();
 #endif
-    a_collect();                                       /* a_in must no longer be read by CPU1 */
-#if OP_BT_AUDIO
-    a_wslot = (uint8_t)(a_nenc++ & 1u);                /* (after the collect: the job before has written its slot) */
+#if DSP_CPU1
+    /* a_in must no longer be read by CPU1. v40.4: the layer split's worker stays (it may be in the network): only its
+     * blocks after the amp must be done */
+    a_encw = 0;
+    if (a_lpw && a_c1 && g_eng.nam_lp && px_nam_dual(&g_eng)) a_encw = a_lp_post(); else
 #endif
+    a_collect();
 #if DSP_CPU1
     if (g_eng.wl_on) px_wet_swap(&g_eng);              /* v39: nothing runs: the lanes' buffers change roles */
 #endif
@@ -548,6 +687,9 @@ static void a_enc(void *priv, uint8_t *data, int len, uint8_t ch)     /* guitar 
 #if OP_TESTSIG
     a_testsig();
 #endif
+#if OP_UADEV
+    uad_tone(a_in);
+#endif
     tn_capture(a_in, A_FR);
 #if DSP_CPU1
     /* a NAM amp on two cores (px_nam_dual): pipelined here (dsp_pipe), CPU1 its helper */
@@ -555,7 +697,7 @@ static void a_enc(void *priv, uint8_t *data, int len, uint8_t ch)     /* guitar 
         a_nbv = 0;
         a_commit();                                    /* v39: here, before the lanes run beside the chain */
         if (fm1_cpu1_run(dsp_job, 0)) {
-            a_job = 1; A_JSLOT();
+            a_job = 1;
             if (g_eng.wl_on) px_wet_run(&g_eng, t_irq + A_BUDGET * 85u / 100u, 0);   /* v39: the lanes, on CPU0 */
             return;
         }
@@ -566,48 +708,29 @@ static void a_enc(void *priv, uint8_t *data, int len, uint8_t ch)     /* guitar 
 #endif
     dsp_block();
 }
-static void a_dec(void *priv, uint8_t *data, int len, uint8_t ch)     /* output block to fill */
+static void a_send(int32_t *d, uint32_t n)             /* an output block filled: the block a_block just started */
 {
-    (void)priv; (void)ch;
-#if OP_BT_AUDIO
-    /* test build 12: the block before the newest (lag 1), whichever callback came first. Lag 0: a_dec runs first this period,
-     * so the newest is the one to send (its job, if CPU1 made it, started a period ago); more: the newest but one again; less
-     * (an input callback missed): the newest again */
-    A_ORDER(1u);
-    if ((int32_t)(a_nenc - a_ndec) > 1) a_ndec = a_nenc - 1u;
-    else if ((int32_t)(a_nenc - a_ndec) < 0) a_ndec = a_nenc;
-    const uint32_t s = (a_ndec - 1u) & 1u;
-    a_ndec++;
-#if DSP_CPU1
-    a_decw = 0;
-    if (a_job && a_jslot == s) {                       /* (the job still making the block to send) */
-        if (g_eng.nam_lp) {                            /* v40.2: the layer split: only its output (the job goes on) */
-            const uint32_t t = fm1_ticks();
-            while (!a_lppost && fm1_cpu1_busy()) fm1_cpu1_sync();
-            if (!a_lppost) a_collect();                /* (its job ended without it: dropped) */
-            a_decw = fm1_ticks() - t;
-        } else a_collect();
-    }
+#if OP_UADEV
+    uad_send();
 #endif
-    const int32_t *const r = a_res[s];
-#else
 #if DSP_CPU1
     a_decw = 0;
-    if (a_job && g_eng.nam_lp) {                       /* v40.2: the layer split: only its output (the job goes on) */
-        const uint32_t t = fm1_ticks();
-        while (!a_lppost && fm1_cpu1_busy()) fm1_cpu1_sync();
-        if (!a_lppost) a_collect();                    /* (its job ended without it: dropped) */
-        a_decw = fm1_ticks() - t;
-    } else
+    if (a_lpw) a_decw = a_lp_post();                   /* v40.2: the layer split: only its output (the worker goes on) */
+    else
 #endif
     a_collect();                                       /* the previous block must be finished */
-    const int32_t *const r = a_res;
-#endif
-    int32_t *d = (int32_t *)data;
-    uint32_t n = (uint32_t)len / 8u;
     if (n > A_FR) n = A_FR;
-    for (uint32_t i = 0; i < n; i++) d[2u * i] = d[2u * i + 1u] = r[i];
+    for (uint32_t i = 0; i < n; i++) d[2u * i] = d[2u * i + 1u] = a_res[i];
+#if OP_UAUDIO
+    if (a_ua) {                                        /* v42: USB audio */
+        const uint32_t t = fm1_ticks();
+        px_ua_block(d, n);
+        a_uat = fm1_ticks() - t;
+    }
+#endif
 }
+#define A_ORDER_TICKS (A_BUDGET / 4u)                  /* an a_enc this soon after an a_dec is the same interrupt's (it comes within microseconds) */
+#include "px_aorder.h"                                /* v42: a_enc and a_dec, in whichever order the driver calls them */
 #if OP_BLE_TEST
 /* the Bluetooth test images time the audio interrupt (the log's isr line, bt/bt_a2dp.c): the longest gap between two entries
  * (2.9 ms when on time: more is an interrupt that started late, which a_xrun, timing the DSP alone, does not see) and the
@@ -658,18 +781,21 @@ static int a_wait(volatile uint8_t *v, uint8_t until, uint32_t ms)   /* 1 = *v r
     for (uint32_t t = 0; *v != until; t++) { if (t >= ms * 10u) return 0; fm1_delay_us(100); }
     return 1;
 }
+#if OP_BT_AUDIO
 /* Before the audio interrupt is held for a recompute: wait until silent blocks fill both halves of the output DMA, which keeps
- * playing its two halves over and over while the interrupt is held. A block reaches the DMA one interrupt after it is computed
- * (the output's callback runs before the input's, handbook section 5), and the fade can read 0 before its block is counted:
- * a model of each audio path (one core, the chain on the second core, the NAM network pipelined or split) needs 3 or 4 counted
- * blocks; 5, 14.5 ms, for margin, bounded at 30. Up to test build 10 the hold began as soon as the fade read 0, while the halves
- * still held the last full-level block and a half-faded one: a buzz at the DMA's 172 Hz for the length of the recompute, on
- * every full preset change (every image) */
+ * playing its two halves over and over while the interrupt is held. A block reaches the DMA in the interrupt it is computed in
+ * (px_aorder.h), one later through the NAM pipeline, and the fade can read 0 before its block is counted: 5 counted blocks,
+ * 14.5 ms, for margin, bounded at 30. Up to test build 10 the hold began as soon as the fade read 0, while the halves still held
+ * the last full-level block and a half-faded one: a buzz at the DMA's 172 Hz for the length of the recompute, on every full
+ * preset change (every image) */
 static void a_quiet_dma(void)
 {
     const uint32_t b0 = a_blocks;
     for (uint32_t t = 0; a_blocks - b0 < 5u && t < 300u; t++) fm1_delay_us(100);
 }
+#else
+#define a_quiet_dma() ((void)0)
+#endif
 static void audio_apply(void)                          /* the preset to the engine (main loop) */
 {
     px_preset_t pp;
@@ -688,6 +814,7 @@ static void audio_apply(void)                          /* the preset to the engi
         }
     }
     a_full = 0;
+    a_swc = a_sw0;
     /* anything else: the output fades out, the engine is set (the interrupt held off meanwhile: a late block now only
      * repeats silence), and the output fades back in */
     if (live) {
@@ -695,6 +822,7 @@ static void audio_apply(void)                          /* the preset to the engi
         for (uint32_t t = 0; a_xf != 0.0f && t < 400u; t++) fm1_delay_us(100);   /* (40 ms at most) */
         a_quiet_dma();
     }
+    const uint32_t t0 = fm1_ticks();
     if (a_running) fm1_irq_mask(FM1_IRQ_ALNK0);
     a_collect();                                       /* CPU1 must not process during the recompute */
 #if DSP_CPU1
@@ -704,11 +832,16 @@ static void audio_apply(void)                          /* the preset to the engi
 #if DSP_CPU1
     px_nam_lp(&g_eng, a_c1 && OP_NAM_LP && px_nam_dual(&g_eng));
 #endif
+    a_swset = fm1_ticks() - t0;
     a_kpend = 0;
 #if DSP_CPU1
     a_nbv = 0;                                         /* (the pipeline restarts from silence) */
 #endif
     a_bypass = 0; a_over = 0; a_peak = 0; a_cpk[0] = a_cpk[1] = 0;
+#if DSP_CPU1
+    a_lpc0 = 0; a_lpe0 = a_lpe1 = 0; a_lptp = 0; a_lpreal = 0; a_lpstuck = 0; a_lpnew = 0;   /* v40.4: the cores' other work is timed anew */
+#endif
+    if (a_xf != 1.0f) a_swin = 1; else a_sw1 = fm1_ticks();   /* (not faded out: the audio was not running) */
     a_irq_gap_skip();
     if (a_running) fm1_irq_unmask(FM1_IRQ_ALNK0);
     a_xft = 1;
@@ -893,6 +1026,7 @@ static void audio_start(void)
     op_stage(ST_ENG_SET, "ENGINE SET...");
 #if DSP_CPU1
     a_c1 = fm1_cpu1_on;                                /* started by app_main at the very start (fm1_cpu1_start) */
+    for (int i = 0; i < PXN_NL; i++) a_lpsh[i] = (uint16_t)px_nam_lp_share(i);
     px_wet_mode(&g_eng, a_c1 && OP_WET_LANES, A_WLAG);   /* v39: the wet lanes, with the 2nd core */
 #endif
     audio_volume(master_vol);
@@ -936,19 +1070,31 @@ static void audio_prof(uint32_t now)                    /* (main loop) once a se
     }
     a_wcut = a_wcut_base + g_eng.wl_late;
 }
-/* call from the main loop: applies preset changes (40 ms debounce) */
-static void audio_poll(uint32_t now)
+/* v40.3: the status corner shows LOADING (a_ld, from the main loop) while the sound waits for a NAM model, the MODEL
+ * knob's 40 ms: from 20 ms after the change until the new model plays, 300 ms at least (no flash); a preset is set at
+ * once, its model with it, so it shows nothing. For PING: how long the last one was shown (ms), how many since boot */
+static uint8_t a_ld;
+static uint32_t a_ldms, a_ldn;
+static int audio_nam_load(void)                        /* 1 = the preset needs another NAM model */
+{
+    return PRESET.type[PX_B_AMP] == PX_AMP_NAM && px_nam_model(PRESET.p[PX_B_AMP][0]) != g_eng.nam_idx;
+}
+/* call from the main loop, after the controls and before the screen: applies preset changes (40 ms debounce; v40.3: a
+ * preset loaded, at once) */
+static void audio_poll(uint32_t now, int at_once)
 {
     audio_prof(now);
-    static uint32_t last_h, t_change, t_apply, vol_shown = 1000u;
-    static int pending;
+    static uint32_t last_h, t_change, t_apply, t_ld, vol_shown = 1000u;
+    static int pending, nam;
     if (a_nan) audio_reset();
     uint32_t h = ui_hash();
-    if (h != last_h) { last_h = h; t_change = now; pending = 1; }
+    if (h != last_h) { last_h = h; t_change = now; pending = 1; nam = audio_nam_load(); a_sw0 = fm1_ticks(); }
+    if (pending && nam && !a_ld && now - t_change >= 20u) { a_ld = 1; t_ld = now; a_ldn++; }
     /* 40 ms after the last change; v38: while a knob turns, every 40 ms too (it glides: no need to wait for the end) */
-    if (pending && (now - t_change >= 40u ||
+    if (pending && (at_once || now - t_change >= 40u ||
                     (now - t_apply >= 40u && !a_kpend && px_engine_change(&g_eng, &PRESET) == PX_CH_KNOBS))) {
         pending = 0; t_apply = now; audio_apply();
     }
+    if (a_ld && !pending && now - t_ld >= 300u && (!a_swin || now - t_ld >= 1000u)) { a_ld = 0; a_ldms = now - t_ld; }
     if (master_vol != vol_shown) { vol_shown = master_vol; audio_volume(master_vol); }
 }

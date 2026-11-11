@@ -104,6 +104,7 @@ int pxn_rdm_state(void);              /* rdm (rdl two rows at a time): 0 failed 
 uint32_t pxn_post_ticks(int v);        /* mode 0 timed with post2 (0) and post3 (1) */
 int pxn_post3_state(void);             /* 0 post3 failed its check, 1 slower than post2, 2 in use */        /* where mode 0's time goes (pxn_tune): see px_nam.c */
 int pxn_post4_state(void);             /* 0 post4 failed its check, 1 slower, 2 in use (layers read from their rings) */
+int pxn_post5_state(void);             /* 0 post5 failed its check, 1 slower, 2 in use (post4's frames two at a time) */
 int pxn_rdq_in_use(void);
 int pxn_rdq_checked(void);              /* all three passed the start-up check */
 uint32_t pxn_bench_part(int32_t *scratch, uint32_t (*ticks)(void), int part, int reps);
@@ -123,6 +124,13 @@ void pxn_lp_reset(void);
 void pxn_lp_split(int s);
 int pxn_lp_split_now(void);
 uint32_t pxn_lp_queued(void);
+int pxn_lp_split_used(void);             /* v40.4: the s of the last block handed over (it follows the s asked: px_nam.c) */
+void pxn_lp_force(void);                 /* the next block takes the s asked, waiting for the other core if it must */
+uint32_t pxn_lp_handed(void);            /* v40.4: blocks handed over so far */
+int pxn_lp_before(uint32_t upto);        /* 1 = a block handed over before that count is not finished */
+uint32_t pxn_lp_share(int s);            /* the network's work in layers 0..s, in 1/1024 of the whole */
+void pxn_lp_clock(uint32_t (*ticks)(void), uint32_t limit);   /* v40.5: CPU0's waits for the other core end after limit */
+int pxn_lp_gave_up(void);                /* v40.5: 1 = one did (the other core is stuck): the caller retires it, resets */
 void pxn_lp_a(pxn_model *m, const float *in, float *out);
 int pxn_lp_b(pxn_model *m);
 int pxn_lp_equiv(pxn_model *m);          /* against one core, the other core serving: blocks that differ */

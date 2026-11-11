@@ -3,11 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>OpenPocket · TONE3000</title>
 <style>
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f110f;color:#e8e8e8;
-  font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px;box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0d0f0e;color:#ececea;
+  font:15px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px;box-sizing:border-box}
 p{max-width:34em;text-align:center}
+a{color:#ffa600}
 </style>
 </head>
 <body>
@@ -17,14 +19,14 @@ p{max-width:34em;text-align:center}
 // (same origin only), which checks the state and finishes the sign-in. Nothing is kept here.
 (function () {
   var q = new URLSearchParams(location.search), d = { t3k: 1 };
-  ["code", "state", "tone_id", "error", "error_description"].forEach(function (k) { if (q.get(k)) d[k] = q.get(k); });
+  ["code", "state", "tone_id", "canceled", "error", "error_description"].forEach(function (k) { if (q.get(k)) d[k] = q.get(k); });
   if (window.opener && !window.opener.closed) {
     window.opener.postMessage(d, location.origin);
     setTimeout(function () { window.close(); }, 300);
     document.getElementById("m").textContent = "Done: you can close this window.";
   } else {
-    document.getElementById("m").textContent = "Open the OpenPocket editor and choose “Browse TONE3000” there: this page only " +
-      "passes TONE3000's answer back to it.";
+    document.getElementById("m").innerHTML = "This page only passes TONE3000's answer back to the editor. Open the " +
+      '<a href="editor.html#models">OpenPocket editor</a> and choose “Browse TONE3000” there.';
   }
   history.replaceState(null, "", location.pathname);
 })();

@@ -26,12 +26,12 @@ tested (issue #1: a restart loop after power cycles in some versions, rescue mod
 - [ ] Connect the pedal, check that it is found, press Install, wait for "Done". Do not unplug while it works.
 - [ ] The pedal restarts. The boot screen shows **v37 MIDI TEST**.
 - [ ] The sound is normal: play a few presets, each block of one preset, the tuner (hold HOME). Note the number at the bottom
-      right ("C1 42%"): baseline DSP load with the same preset: ______ %.
+      right ("DSP 42%"): baseline DSP load with the same preset: ______ %.
 - [ ] Open the web editor (`editor.html`): it connects, shows the presets, and a knob turned on the pedal moves on the page.
 
 ## 2. The MIDI page
 
-- [ ] Hold FX for about a second: the **MIDI** page opens. Rows: CHANNEL OMNI, SEND ON, CLOCK > DELAY OFF. "USB: NO HOST"
+- [ ] Hold FX for about a second: the **MIDI** page opens. Rows: CHANNEL OMNI, SEND ON, CLOCK > DELAY OFF, USB AUDIO OFF. "USB: NO HOST"
       or "HOST CONNECTED" is right.
 - [ ] A short press of FX (not held) still cycles the effects (DRV, SFX, SYN...). It acts when you let go.
 - [ ] Knob changes the row, PUSH goes to the next row, after the last row it leaves. HOME leaves too.
@@ -71,7 +71,7 @@ With the MIDI monitor listening to the pedal's port and SEND ON:
 ## 5. Audio with MIDI flowing
 
 - [ ] Play a high-gain preset continuously for 5 minutes while the DAW sends a CC sweep and clock: no crackle, no dropout, no
-      mute, no "BYP" at the bottom right. Note the load: ______ % (baseline above). A rise of more than a few percent is worth reporting.
+      mute, no red overload bar. Note the load: ______ % (baseline above). A rise of more than a few percent is worth reporting.
 - [ ] Same with a long note flood (a keyboard or a DAW sending 100 notes a second): the pedal ignores the notes and the sound
       stays clean.
 - [ ] While the flood runs, use the **web editor** (change a preset, rename, save): it keeps working. (Before this release a

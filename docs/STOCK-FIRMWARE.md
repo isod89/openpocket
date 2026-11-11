@@ -30,7 +30,7 @@ many cycles and a taken branch about 8, so this is where the stock firmware gets
 | ALNK0 (the I2S audio) | 11 | 4 | CPU0 | `0x202A230` |
 | BLE radio (two lines) | 45, 29 | 2 | CPU0 | the BT controller |
 | SOFT3 (software interrupt) | | 6 | both | scheduler wake-up |
-| TIMER4, SBC decode | | | CPU1 | |
+| TIMER4, SBC decode | | | CPU0 (19.1: asked for CPU1, forced to CPU0) | |
 
 Named tasks (table at `0x208CF00`): `wet_audio`, `tuner_task`, `USB-Audio`, `bt_sbc_dec`, `midi_route`, `sys_timer`.
 
@@ -315,11 +315,13 @@ single descriptor}`):
 | --- | --- | --- | --- | --- |
 | 11 | 4 | CPU0 | `0x202A230` | ALNK0, the audio (7.1) |
 | 9 | 6 | CPU0 | `0x20294EC` | USB device (works on `0x51000`) |
-| 62 | 5 | CPU1 | `0x2030AA8` | completion of a hardware job: clears `0x10800` bit 14, calls the job's callback |
-| 46 | 3 | CPU1 | `0x204303A` | a peripheral at `0x13D00` that posts a semaphore |
+| 62 | 5 | CPU0 (asked: CPU1; 19.1) | `0x2030AA8` | completion of a hardware job: clears `0x10800` bit 14, calls the job's callback |
+| 46 | 3 | CPU0 (asked: CPU1; 19.1) | `0x204303A` | a peripheral at `0x13D00` that posts a semaphore |
 | 123 | 6 | both | | software interrupt (scheduler) |
 | 124, 125 | 7 | CPU1, CPU0 | | software interrupts between the cores |
-| 44 | 2 | CPU0 | `0x2030DC2` | radio (section 2) |
+| 44 | 2 | CPU0 | `0x2030DC2` | the LRC timer, not the radio (19.1) |
+| 45, 29 | 2 | CPU0 | `0x2063BC2`, `0x20642DC` | the BLE baseband: end of event, reception (19.1) |
+| 40, 41 | 2 | CPU0 | `0x2072600`, `0x2074112` | the classic baseband and its clock (A2DP) |
 | 3, 5 | 1 | CPU0 | `0x205DF6E`, `0x2030C02` | timers |
 | 2, 6, 16, 24, 28, 49, 50 | 0..7 | CPU0 | | not traced |
 
@@ -1612,3 +1614,153 @@ instruction is the inside of JieLi's generic state machines (the Bluetooth contr
 layer, L2CAP/AVDTP/ATT details, FAT's cluster allocation, FreeRTOS's lists, dlmalloc's bins): they are standard
 designs (FreeRTOS, dlmalloc, the Bluetooth specification) or chip-specific radio code, the same in every JieLi
 product, and OpenPocket neither uses nor replaces them line by line.
+
+## 19. Fourteenth pass: Bluetooth, read to the end
+
+Why: Bluetooth in the v37 release sent nearly every preset to `BYP` at 150 % and more, and was taken out again. This pass
+reads everything that decides how the stock firmware lives with its radio: where the radio's interrupts and tasks run,
+what the library does per packet, and the BlackBox's own Bluetooth layer. The library's inside was read in JieLi's LLVM
+bitcode from the AC79 SDK (`third_party/jieli-ble/`), which keeps its function names, its structures' field names and its
+section names, and was matched against the stock image.
+
+### 19.1 Interrupts, cores and the critical sections
+
+**Read.**
+- **`request_irq` (`f_02010694`) does not obey its core argument.** It looks the interrupt up in a table at `0x204FE18`
+  (`{irq, priority, core}`, three bytes each). The table holds `{125, 7, CPU0}`, `{124, 7, CPU1}`, then the marker
+  `{254, 254, 254}`. The SDK's own copy of the table explains the marker: "if this row is present, only the interrupts
+  before it go to their core; every other interrupt is forced onto CPU0". So **every interrupt but SOFT4 is served by
+  CPU0**: the audio (11, priority 4), the BLE baseband (45 and 29, priority 2), the classic baseband (40, 41), the hardware
+  jobs (62) and the SBC decoder (46). This corrects sections 2 and 7.6, which took the core arguments at their word.
+  Interrupt 44, called "radio" there, is the LRC timer (`0x2030DC2`).
+- The priorities are 0 to 7, **7 the highest**: the audio (4) is above the radio (2), so the audio interrupt can preempt
+  the radio's interrupt's caller, but not the radio's interrupt itself (next point).
+- **`local_irq_disable`** (`f_01C01196`, in RAM) is `cli` plus a per-core counter at `0x1C0BDF4`. `local_irq_enable`
+  (`f_01C011AE`) is `sti` when the counter returns to 0. `f_01C011CA` adds a spin lock (`testset` on `0x1C0BBB8`): the
+  critical section shared by the two cores. The SDK's other variant, which keeps priority-7 interrupts alive through a
+  critical section with the core's `IPMASK` register (`CONFIG_IPMASK_ENABLE`), is **not** built in: a critical section
+  masks everything, the audio too.
+- **The BLE event interrupt** (`0x2063BC2`) is the library's `ble_event_irq_handler`. It opens with `local_irq_disable`
+  and a spin lock on the baseband (`testset` on `bb_hdl + 33`) and keeps them for its whole body. **The radio's
+  interrupt is never interrupted, not even by the audio**; in exchange it is short.
+- `cpu_in_irq` (the SDK's `apps/common/system/init.c`) is `icfg & 0xFF`: not 0 while an interrupt is served.
+
+### 19.2 The library is JieLi's, built with LTO
+
+**Read.**
+- The 64 bitcode objects of `third_party/jieli-ble/` were compiled with JieLi's clang and compared with all 3,005
+  functions of the stock image (instruction sequences with their operands blanked):
+  - 121 are identical;
+  - 223 more match closely (60 % or more).
+
+  Examples: `__set_le_prio` at `0x2062134`, `ble_hw_tx_update_header` at `0x206223E`, `ble_pll_comp_reset` at `0x2063ACE`.
+  The two baseband interrupt handlers are those `le_hw_init` registers (`request_irq(45, 2, ble_event_irq_handler)`,
+  `request_irq(29, 2, ble_rx_irq_handler)`).
+- The stock copy was **linked with LTO** (the SDK's `lto-wrapper`): the configuration constants are folded in (the loop
+  over the baseband's hardware entities is gone, and so is every log string). So most functions differ in detail and match
+  in structure. The whole of Bluetooth, classic and LE, takes 130 KB in the stock image (`0x2060000..0x2080738`). Without
+  LTO, the LE part alone takes OpenPocket 154 KB of code and 60 KB of constants.
+- The SDK's linker script puts all of the controller's and host's code (`.ble_rf_code`, `.ble_ll_code`,
+  `.bt_stack_code`, ...) **in flash**. Only the DSP library runs from RAM (8.2).
+
+### 19.3 How a packet travels
+
+**Read** (the library's IR):
+1. **IRQ 29** (reception) or **IRQ 45** (end of a radio event), on CPU0, everything masked.
+   - For each baseband entity with a pending flag (`0x28028 & 0x28030`), the received buffers are queued (`hw_dma_push`),
+     the next packet to send is set up (`ble_hw_tx`), and the next event is planned (`mult_slave_or_master_event_enter`:
+     anchor, window widening, slave latency).
+   - The planner adds and removes timeouts from inside the interrupt (`sys_timeout_add`, `usr_timeout_add`).
+   - It stops the baseband with `le_hw_suspend`, which asks `cpu_in_irq`: inside an interrupt it uses the version that
+     does not wait on the busy flag (`ble_hw_disable_isr`).
+2. **The interrupt wakes the controller's task**: `thread_resume` → `bt_task_resume` → `os_taskq_post_type("btctrler", 255)`,
+   an empty message.
+3. **Task `btctrler`** (stock: priority 19, 2 KB of stack, a 384-word queue) waits in `os_taskq_pend`. It dispatches its
+   messages and then runs its "threads" (`hci_controller_run_loop` → `thread_run`): the link layer's procedures,
+   control PDUs and encryption.
+   - Message types: `0x400005` link-layer event, `0x400006` HCI command from the host, `0x40000C` a semaphore to post.
+4. **To the host**: `hci_packet_handler` copies each HCI event into a message for task `btstack` (type `0x400001`, the
+   event's words) and passes ACL data by pointer (`0x400002`). If the queue is full, it sleeps 20 ms and tries again
+   (not from an interrupt or from `btstack` itself).
+5. **Task `btstack`** (priority 18, 2 KB, 384 words): `hci_event_handler` / `hci_acl_handler` → L2CAP → ATT server → the
+   application's write callback.
+6. **From the application**: `ble_user_cmd_prepare(cmd, argc, ...)` copies the command into a ring that the host's own
+   thread reads (`__ble_thread_loop_handler`), so it may be called from any task. The commands used here:
+
+   | Command | Meaning |
+   | --- | --- |
+   | 1 | advertising on/off |
+   | 2 | advertising parameters |
+   | 3, 4 | advertising and scan-response data |
+   | 7 | ATT send buffer |
+   | 8 | MTU |
+   | 9 | free room |
+   | 10 | send (notify) |
+   | 11 | connection parameter request: `gap_request_connection_parameter_update(handle, min, max, latency, timeout)`, read through a pointer **later**, so the parameters must not live on the caller's stack |
+
+The radio itself (timing, retransmission, empty packets, acknowledgements) is done by the baseband in hardware. The
+interrupt only moves buffers and plans the next event, so its time is tens of microseconds, not milliseconds.
+
+### 19.4 The BlackBox's own Bluetooth layer
+
+**Read.**
+- **GATT table** at `0x204FE2A`, given to the ATT server at `0x2080662` with the read callback `f_02028684`, the write
+  callback `f_02028716` and the event callback `f_020288FC`:
+
+  | Handle | What |
+  | --- | --- |
+  | `0x0001`.. | GAP `0x1800`, device name `0x2A00` (read and write) |
+  | `0x0060` | service `0xAE40`, JieLi's data service |
+  | `0x0062` | `0xAE41`, write without response: what is written goes into **the same SysEx receiver as USB** (`f_02025B12`, port 1) |
+  | `0x0064`, `0x0065` | `0xAE42`, notify, and its CCC: the receiver's replies (port 2), sent by `f_020268A4` |
+  | `0x0070` | service BLE-MIDI `03B80E5A-EDE8-4B33-A751-6CE34EC4C700` |
+  | `0x0072`, `0x0073` | the MIDI characteristic (read, write without response, notify), and its CCC |
+
+  The `AE40` service is the M-VAVE app's channel: the app talks the SysEx protocol of 11.8 and 13.1 over Bluetooth.
+- **A BLE-MIDI write** (`0x0072`): the header and the timestamps (bytes with bit 7 set that come before a status byte)
+  are dropped and running status is kept (`b[0x1C0B4A0 + 168]`). The MIDI bytes go into a ring (`[0x1C0B4A0 + 160]`, mask
+  `+164`, write index `+156`) that the MIDI routing drains, the same way as USB MIDI.
+- **MIDI out**: `f_020268A4` sends the pedal's own MIDI as BLE-MIDI notifications on `0x0072`, with a header and a timestamp
+  from the tick count, and the SysEx replies on `0xAE42`.
+- **The link's parameters.** When the central switches notifications on (a CCC write), the BlackBox asks for new
+  parameters from the table at `0x204FF08`:
+  1. first `{6, 9, 0, 100}`: 7.5 to 11.25 ms, no slave latency, 1 s supervision timeout;
+  2. if the central refuses (L2CAP event `0x77` with a non-zero result), `{12, 12, 0, 100}`: 15 ms.
+- **The event callback**:
+  - a connection (`0x3E/01` or `0x3E/0A`) keeps the handle, sets up a 900-byte send buffer (`0x1C17724`) and a payload of 20
+    bytes;
+  - the MTU exchange (`0xB5`) raises the payload to MTU - 3, at most 197;
+  - a disconnection (`0x05`) clears all this and advertises again (`f_020155F6`) if Bluetooth is on.
+- **Advertising** (`f_020155F6`): `ADV_IND` every **800 × 0.625 ms = 500 ms** on channels 37 to 39.
+  - Data: the flags (`06`), the BLE-MIDI UUID, and manufacturer data `"sinco"` (AD type `0xFF`).
+  - Scan response: the name, up to 29 bytes.
+- **Radio upkeep**: a 3 s timer (`f_020219F4(..., f_0203FC42, 3000)`) reads the chip's temperature sensor (ADC channel
+  `0x3000F`, through `f_0200B7D4`). When the reading has moved by more than about 2,200 since the last calibration, it
+  runs the radio calibration again (`f_0203F702` … `f_0203FC16`, the Wi-Fi/RF common library).
+
+### 19.5 What it means for OpenPocket
+
+**Read** (the stock firmware) and **likely** (the v37 diagnosis; v41 is its test).
+- The stock firmware runs some 130 KB of Bluetooth code **from flash**, through the instruction cache the two cores share,
+  and its sound does not suffer, because **its whole per-sample library runs from RAM** (8.2). In v37, OpenPocket's audio
+  code still ran from flash. The radio's code and the DSP code pushed each other out of the cache, and the second core,
+  which does no Bluetooth at all, slowed down by half. That fits the reading: about 70 % before the radio started, 150 %
+  after. v37 made it worse by putting the controller's task stacks in the data cache used as RAM, which the same cache
+  controller serves.
+- v40 moved the audio path to RAM. v41 brings Bluetooth back on top of it:
+  - the radio's data, heap and task stacks in plain RAM;
+  - the controller run only when something waits for it;
+  - the stock firmware's advertising interval and link-parameter requests.
+
+  [BLUETOOTH.md](BLUETOOTH.md) lists the choices.
+- **The supplies.** The stock firmware always runs at VDC14 1.60 V and SYSVDD 1.38 V (AUDIO-SDK.md, v30), and its radio
+  with them. OpenPocket runs at the boot loader's 1.40 V and 1.26 V (v33). On the pedal, v41's first builds with the radio
+  on lost the second core to misreads (`BYP` everywhere) and crashed once on a bad pointer: the radio now starts only
+  after raising the supplies to the stock levels (**likely**; the next test decides).
+
+### 19.6 What is left
+
+- The `AE40` service's own framing, beyond "the bytes go to the SysEx receiver".
+- The radio re-calibration routine's inside (`f_0203F702` …): it belongs to the Wi-Fi/RF library OpenPocket does not
+  link.
+- The classic A2DP path (`JL_A2DP`, `bt_sbc_dec`), which OpenPocket does not use.

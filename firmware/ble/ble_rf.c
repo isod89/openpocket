@@ -14,13 +14,23 @@
 
 /* VM items 106, 107, 108 (the fourth, 187, is measured by fm1_rf_cal.h): read from the pedal's VM area, zeros where an item is
  * missing. ble_vm_load runs once, from the main loop, before the controller starts (flash read through XIP, nothing written). */
-#define VM_BASE 0xA3000u                                 /* the VM region of the stock layout: 0xA3000 (016) or 0xA5000 (020) to 0xBE000 */
+/* The VM region of the stock layouts: 0xA3000 (BlackBox/Pocket X 016), 0xA5000 (020), 0xBD000 (the test BlackBox), and
+ * 0xA1000: a Pocket X backup (fm1-1.bin, its official firmware) has its active area there, inside OpenPocket's app area
+ * [0x4000, 0xA3000), so installing OpenPocket overwrote it on that pedal. The scan starts there. */
+#define VM_BASE 0xA1000u
 #define VM_END  0xBE000u
 static const uint8_t no_record[68];
 static uint8_t vm_rec[4][68];
 static const uint16_t vm_id[4] = { 106, 107, 108, 187 };
-uint32_t ble_vm_have;                                    /* bit k: item vm_id[k] was found */
+uint32_t ble_vm_have;                                    /* bit k: item vm_id[k] was found; bit 4 + k: missing, a default given */
 uint32_t ble_vm_area;                                    /* flash offset of the active area, 0 if none */
+
+/* When the pedal has no record (its VM was overwritten, see VM_BASE): the values of that Pocket X backup's VM, whose
+ * crystal trim 106 (0B 0B) is also the test BlackBox's. Before v41 the records were zeros then: a crystal trim of 0 (the
+ * oscillator off its frequency) and zero radio trims (107), on a pedal no phone ever saw. 187, the unit's own calibration,
+ * is measured instead (fm1_rf_cal.h). */
+static const uint8_t dflt_106[2] = { 0x0B, 0x0B };
+static const uint8_t dflt_107[7] = { 0x01, 0x07, 0x04, 0x07, 0x0B, 0x01, 0x07 };
 
 uint32_t ble_vm_trim(void) { return (uint32_t)vm_rec[0][0] << 8 | vm_rec[0][1]; }
 
@@ -36,6 +46,15 @@ void ble_vm_load(void)
             if (ble_vm_item(ota_fread, a, VM_END - a, vm_id[k], vm_rec[k], sizeof vm_rec[k])) ble_vm_have |= 1u << k;
         break;
     }
+    if (!(ble_vm_have & 1u)) { for (k = 0; k < sizeof dflt_106; k++) vm_rec[0][k] = dflt_106[k]; ble_vm_have |= 0x10u; }
+    if (!(ble_vm_have & 2u)) { for (k = 0; k < sizeof dflt_107; k++) vm_rec[1][k] = dflt_107[k]; ble_vm_have |= 0x20u; }
+}
+
+/* For the status line: the records (ble_vm_have), then the measured calibration's outcome when it ran (bit 8: the VCO
+ * scan failed, bit 9: the trim failed, bit 10: it was measured at all). */
+uint32_t ble_vm_flags(void)
+{
+    return ble_vm_have | (fm1_rf_cal_on ? 0x400u : 0u) | (fm1_rfc_scan_rc ? 0x100u : 0u) | (fm1_rfc_trim_rc ? 0x200u : 0u);
 }
 
 extern int keep_BT_CMPUK1, keep_BT_CMPUK2, keep_BT_CMPUK3, keep_BT_OFSI, keep_BT_OFSQ;   /* ble_stubs.c: the library's transmit I/Q trims */

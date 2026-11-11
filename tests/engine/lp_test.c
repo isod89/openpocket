@@ -1,6 +1,7 @@
 /* v40.2: the NAM network split between the cores by layers (engine/px_nam.c pxn_lp_*) against one core: every factory
  * model, the split moved at random from block to block (up, down, to either end), the second core's blocks run at random
- * moments (and while the first waits for them: PXN_EMUVEC). The output must be the one-core output bit for bit. Then
+ * moments (and while the first waits for them: PXN_EMUVEC); v40.4: a rise of the split follows the second core's progress
+ * without a wait, or waits for it when forced. The output must be the one-core output bit for bit. Then
  * the firmware's two-core pipeline with it (firmware/px_audio.h dsp_lp_run) on every factory preset with a NAM amp: per
  * 128-frame block the other core finishes the blocks left from the block before, runs the blocks after the amp on it,
  * and finishes some of this block's; this core runs the blocks before the amp and queues the network. The output must
@@ -49,7 +50,9 @@ int main(void)
             if (k == 201) s = PXN_NL - 1;
             pxn_lp_split(s);
             s = pxn_lp_split_now();
+            if (r & 0x1000u) pxn_lp_force();             /* (a rise that waits for the other core; else it follows as it can) */
             pxn_lp_a(m, sig + PXN_N * b, got + PXN_N * b);
+            if (pxn_lp_split_used() > s) { printf("lp_test: block %d took more layers than asked\n", b); return 1; }
             for (unsigned n = (r >> 4) & 3u; n; n--) pxn_lp_b(m);
         }
         while (pxn_lp_b(m)) { }
@@ -91,6 +94,7 @@ int main(void)
         for (int b = 0; b < AB; b++) {
             r = r * 1103515245u + 12345u;
             if ((r >> 24) < 60) px_nam_lp_split((int)((r >> 8) % PXN_NL));
+            if (r & 0x2000u) px_nam_lp_force();
             for (uint32_t k = px_nam_lp_queued(); k; k--) px_nam_lp_b(&e);   /* the other core: the block before's */
             if (b) for (int o = 0; o < FR; o += 64) px_engine_part(&e, nb[cur ^ 1] + o, gt + FR * (b - 1) + o, 64, PX_PART_POST);
             for (int o = 0; o < FR; o += 64) px_engine_part(&e, sg + FR * b + o, nb[cur] + o, 64, PX_PART_PRE);
