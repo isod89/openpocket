@@ -367,9 +367,9 @@ Build 12 played the phone's music. But on some power-ons with Bluetooth on it cr
 started: the red crash screen showed `VEC 1`, `DBG 00002000` (the first core wrote into a guard band) and a `PC` in `rv_block`,
 the reverb. The photos and the compiled code tell how, not yet why:
 
-- The reverb's loop runs over a chunk of 16 frames (the wet lane) or a block of 64 (the chain). The compiler made its end test
-  "stop when k equals n", so a k that once got past n never stopped: the loop's store marched 13 KB through the RAM, until
-  the guard band at `0x01C74000` stopped it.
+- The reverb's loop runs over a chunk of 16 frames (the wet lane) or a block of 64 (the chain). In build 12's code the compiler
+  made its end test "stop when k equals n", so a k that once got past n never stopped: the loop's store marched 13 KB through
+  the RAM, until the guard band at `0x01C74000` stopped it.
 - Why k got past n is open: something wrote over n or k on the loop's stack (A), or one read of n, or one branch, went wrong
   on the first core during the radio's start-up (B).
 
@@ -379,7 +379,9 @@ What changed:
    read it and k. No caller passes more than 64, so in normal running `W` stays 0. A cut costs a click instead of a crash:
    up to 48 frames are still written past a 16-frame chunk, into the chunks after it, the lane's other buffer or the drive and
    amp's oversampling buffer, so the click can be in the reverb or, for one block, in the amp's sound. (The delay's loop has
-   the same form; its cut did not fit in the flash.)
+   the same form; its cut did not fit in the flash.) In the code CI built (run 43039170246, `listings/px_dsp.s`), the cut also
+   brought the end test back to "k below n": the loop now has two exits, and the compiler no longer rewrites it. A k that
+   gets past n now just ends the loop. So a cut means that n was read too large, and a k that jumps is no longer counted.
 2. **The `LAST BOOT FAILED` report shows the crash's registers**: `R1` and `R6`, then `R12` and `SP`, in place of `DSP CODE AT`;
    the lines below move down, and its `PLEASE TAKE A PHOTO` line is gone (the red screen before it asks already).
 3. **The room for them:** build 12's a2dp line (its probe of every packet and its 10 kHz watch) and the DLY key are gone. The
@@ -413,15 +415,15 @@ rest in hex. `node tools/op.mjs log` names them and says which line of this tabl
 
 | W shows | It means |
 | --- | --- |
-| `n` 10 (16) and `k` 40 (64) | the loop missed a correct end once (B); or k's word on the stack was written or misread with a value from 16 to 63 (A on k), which ends the same way |
-| `n` 40 and `k` 40 | the loop missed its end in the chain's call (a block of 64), not in a lane's chunk |
+| `n` 10 (16) and `k` 40 (64) | n was read too large once, and was 16 again when the cut read it: a one-off wrong read of n on the first core (B) |
+| `n` 40 and `k` 40 | the same in the chain's call (a block of 64), not in a lane's chunk |
 | `n` anything else, `k` 40 | n's word on the stack was written over (A): its value is the writer's fingerprint |
-| `k` above 40 | k jumped forward: its word was written or misread, or its register changed. `0020xxxx` is the second core's known misread |
+| `k` above 40 | not expected with this end test: k jumped while n was also read too large. `0020xxxx` is the second core's known misread |
 | `k` below 40 | a k below 64 cannot pass the cut's own check: that check misfired once (B), or k's register changed |
 | the time and `S` | when the main loop first saw the cut (ms since power-on, wrapping every 179 s like `UPTIME`) and where Bluetooth was then, the same word as the c1 line's `S`. The main loop does not run during the radio's start-up replay (stage 3): a cut there is seen only once the replay has returned, at stage 7 or a step after it (the numbers are not in time order: 4, ready, comes after 7), and later than the cut itself (build 12 crashed at 1,971 ms) |
 
-`W 0` does not rule out every overrun: an n written over with a value up to 64, or a k thrown back, still ends the loop late
-(up to 48 frames past the chunk) without a cut.
+`W 0` does not rule out everything: a k that got past n ends the loop without a cut (this build's end test), and an n written
+over with a value up to 64, or a k thrown back, still ends the loop late (up to 48 frames past the chunk) without a cut.
 
 Many cuts in one boot, or cuts long after the start-up, are worth saying: the crash was a one-off at the radio's start-up.
 
@@ -436,21 +438,24 @@ core happened to be, and R1, R6 and R12 say nothing about the loop.
 | The report shows | It means |
 | --- | --- |
 | `R1 -  R6 -` and `R12 -  SP -` | the saved registers are not this crash's (not expected: every crash of the first core saves them; a fault of the second core retires it, `G 4` in the log, and makes no report) |
-| `PC` in `rv_block` | `R12` the store's address + 4, `R1` n as the loop last read it, `R6` k + 1 (if the check below kept them there). `R12` neither in the lanes (`px_wl` in `build-bt/symbols.txt`, 2 KB) nor near `SP` (the chain's block is on the stack): the store's own pointer went wild, which the cut does not cover |
+| `PC` in `rv_block` | not expected: with its end test and the cut, build 13's loop cannot reach a guard band. Its registers moved too (CI listing): n is reloaded into r0, k is in r6 (r7 in the other three variants) and the store's pointer in r5, so `R1`, `R6` and `R12` are not the loop's n, k and pointer here. Send the photo: the developer reads them with the listing |
 | `SP` | the stack at the crash: about `01C7BE2C`..`01C7BE40` when the audio interrupt came from the main loop |
 | another `PC` | the registers are that code's: look the PC up in `build-bt/symbols.txt` of the same CI run |
 
-**Before flashing build 13** (and again for build 14: v42 puts `rv_front` inside `rv_block`, so its code and frame change), check
-`rv_block` in the CI run's `listings/px_dsp.s` (the compiler's assembly) or `listings/linked.txt` (the linked bytes):
+**Checked before flashing build 13** (CI run 43039170246, `rv_block` in `listings/px_dsp.s`, the compiler's assembly):
 
-- the four loop heads each compare k, unsigned, against 63 or 64, and branch to one shared cut path;
-- each loop's end test reloads n from one stack word on every sample, and the cut path records n from that same word;
-- k is still saved to the stack and reloaded around the call to `rv_front` (build 13; in build 14 there is no call);
-- the frame: build 12 had n at `[sp+128]`, k at `[sp+88]` and the store's pointer at `[sp+132]`. Write down the new places if
-  they moved: a writer at a fixed address would now hit another word;
-- the registers: the report prints r1, r6 and r12, build 12's n (reloaded), k + 1 and the store's address + 4. If build 13's
-  loop keeps them in others, change `rn` in `firmware/openpocket.c` (the `LAST START FAILED` report, this image only) to
-  those registers and build again.
+- the four loop heads each copy k through the empty asm and branch to one shared cut path with an unsigned
+  `if (r0 >= 64)`;
+- each loop's end test is `ifs (k < r0)` with n reloaded from `[sp+128]` on every sample (build 12's was an equality), and
+  the cut path records n from that same word and the k it compared;
+- the frame is build 12's: `sp += -192`, n at `[sp+128]`, k saved at `[sp+88]` around the call to `rv_front`;
+- the registers moved: n reloads into r0, k is in r6 (r7 in the other variants) and the store's pointer in r5. `rn` in
+  `firmware/openpocket.c` was left at r1, r6 and r12: with this end test the loop cannot reach a guard band, so a crash
+  report from build 13 is about some other code, and its registers are read with that code's listing.
+
+**Again for build 14**: v42 puts `rv_front` inside `rv_block`, so its code and frame change. Before flashing, check the same
+points in build 14's `listings/px_dsp.s`: the loop heads' unsigned compare and shared cut path, the end test `k < n` reloading
+n on every sample, the frame, and which registers hold n, k and the store's pointer.
 
 ## Test build 14
 

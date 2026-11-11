@@ -89,9 +89,9 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
   ok(ww?.cuts === 0 && ww.n === undefined, "W 0 before a fault's words: the fault's words are not taken for W's");
   // (the main loop's latch: a cut during the radio's start-up replay is seen only after it, at stage 7 RF_DONE or a step after it)
   ww = wWords(`${c1} W 1 00000010 00000040 000008A2 71400123`);
-  ok(ww?.n === 16 && ww.k === 64 && ww.t === 2210 && /\(B\)/.test(ww.text) && /16 to 63/.test(ww.text)
+  ok(ww?.n === 16 && ww.k === 64 && ww.t === 2210 && /\(B\)/.test(ww.text) && /one-off wrong read of n/.test(ww.text)
      && /first saw it at 2210 ms \(the pedal clock wraps every 179 s\): stage 7, state 1, DSP held 0, IRQ 40 291/.test(ww.text),
-     `W, n 16 and k 64: (B), or k's word with 16 to 63: ${ww?.text}`);
+     `W, n 16 and k 64: a one-off wrong read of n (B): ${ww?.text}`);
   ww = wWords(`C1 0 G 4@1960 K 2232 KEY 3 S 3C400123 F 1/0 W 2 0000BEEF 00000040 000007A8 30400123${fault}`);
   ok(ww?.cuts === 2 && ww.n === 0xBEEF && /overwritten \(A\)/.test(ww.text), "W, n overwritten: (A), with a fault's words after it");
   ww = wWords(`${c1} W 1 00000010 00200041 000007A8 30400123`);

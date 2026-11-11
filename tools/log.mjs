@@ -175,19 +175,21 @@ export function fifoWords(line) {
 // the c1 line's W (test build 13: engine/px_dsp.c PX_LOOP_CAP, firmware/bt/bt_a2dp.c bt_c1_line): the reverb loop's cuts at
 // its block's end, and after one, n (as the loop reloaded it) and k at the latest cut, the time the main loop first saw a cut
 // (ms since power-on, wrapping every 179 s) and its S word then (stage << 28 | state << 24 | DSP held << 23 | 1 << 22 | IRQ 40's
-// count). The cut is taken only when k >= 64, and it records that k. The reading follows docs/BT-AUDIO-TEST.md, "Test build 13"
-// (the lanes' chunks are 16 frames, the chain's calls 64)
+// count). The cut is taken only when k >= 64, and it records that k. In test build 13's compiled code (CI run 43039170246,
+// listings/px_dsp.s) the loop's end test is k < n, n reloaded from its stack word every sample (build 12's was k == n): a k that
+// gets past n ends the loop, uncounted, so a cut means n was read too large. The reading follows docs/BT-AUDIO-TEST.md, "Test
+// build 13" (the lanes' chunks are 16 frames, the chain's calls 64)
 export function wWords(c1) {
   const m = / W (\d+)((?: [0-9A-F]{8}){4})?(?= |$)/i.exec(c1 || "");
   if (!m) return null;
   const cuts = +m[1];
-  if (!cuts) return { cuts, text: "W 0: no cut of the reverb's loop counted in this boot (an n written over with a value up to 64, or a k thrown back, would still end it late, uncounted)" };
+  if (!cuts) return { cuts, text: "W 0: no cut of the reverb's loop counted in this boot (a k that got past n ends the loop uncounted in this build, and an n written over with a value up to 64 still ends it late, uncounted)" };
   if (!m[2]) return null;                              // a cut, but its words are missing: damaged
   const [n, k, t, s] = m[2].trim().split(" ").map((x) => parseInt(x, 16) >>> 0);
-  const reading = k > 64 ? `k jumped forward (its stack word written or misread, or its register clobbered)${(k >>> 16) === 0x20 ? "; 0x0020xxxx is the misread signature" : ""}`
+  const reading = k > 64 ? `k jumped forward while n was read too large (its stack word written or misread, or its register clobbered)${(k >>> 16) === 0x20 ? "; 0x0020xxxx is the misread signature" : ""}`
     : k < 64 ? "a k below 64 cannot pass the cut's check: the check itself misfired once on that core (B), or k's register was clobbered"
-      : n === 16 ? "n intact: the loop missed a correct end once (B), or k's stack word was written or misread with a value from 16 to 63 (A on k ends the same way)"
-        : n === 64 ? "the chain's call (n 64), not a lane's chunk: it missed its end"
+      : n === 16 ? "n was read too large once and was 16 again at the cut: a one-off wrong read of n on that core (B)"
+        : n === 64 ? "the chain's call (n 64), not a lane's chunk: it read its n too large once (B)"
           : "n's stack word was overwritten (A): n is the writer's fingerprint";
   const at = s >>> 22 & 1 ? `the main loop first saw it at ${t} ms (the pedal clock wraps every 179 s): stage ${s >>> 28}, state ${s >>> 24 & 15}, DSP held ${s >>> 23 & 1}, IRQ 40 ${s & 0x3fffff} (a cut during the radio's start-up replay, stage 3, is seen only once the replay has returned)`
     : "first cut not yet latched by the main loop";
