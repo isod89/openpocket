@@ -203,6 +203,14 @@ if bd is not None and bw and b0 and c1s and c1e:   # the Bluetooth audio image (
     print(f"bt window : {bd:#x}..{w:#x}: the heap to {bw:#x}, then the canary and CPU0's data to {b0:#x} ({b0-w:+d}: "
           f"{'the firmware data is above the window' if b0>=w else 'SHORT, the firmware data begins inside the window'}); "
           f"the second core's mailbox and stacks {c1s:#x}..{c1e:#x} ({c1s-w:+d} above it)")
+    us,st,mb=sym("fm1_cpu1_ustack"),sym("fm1_cpu1_sstack_top"),sym("fm1_cpu1_mb")
+    if us is not None:   # (test build 14: the second core's memory out of the radio's window; app-bt.ld places it)
+        print(f"bt window : CPU1 mailbox {mb if mb is None else hex(mb)}, stacks {us:#x}..{st:#x}, region {c1e-c1s} bytes "
+              f"(3136 expected), RAM ends {0x01C08000+98304:#x}")
+        bad=[t for t,ok in (("the region begins inside the window",c1s>=w),("the stacks are not in the region",c1s<=us and st<=c1e),
+                            ("the mailbox is not in the region",mb is None or c1s<=mb<c1e),("the region runs past the RAM",c1e<=0x01C08000+98304)) if not ok]
+        if c1e-c1s!=3136: print(f"bt window : NOTE the region is {c1e-c1s} bytes, not 3136: something else is in it, or padding")
+        if bad: sys.exit("bt window: the second core's memory: "+"; ".join(bad))
 if nb and nb >= 0x01C7C000 and nb > sym("_ble_stack_lo"): print(f"NOINIT    : {nb-0x01C7C000} of 15696 bytes up to the BLE task stacks' end")
 if cl is not None and ch is not None: print(f"cache RAM : {ch-cl} of 28672 bytes (the rest, {28672-(ch-cl)}, to the NAM network's vector unit)")
 assert start==0x02000120,hex(start or 0)

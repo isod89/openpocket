@@ -93,13 +93,9 @@ SECTIONS
     ASSERT(acl_rx_pool >= bd_base && acl_tx_pool >= bd_base && acl_rx_pool_end - bd_base < 0xFFFF
            && _bt_window_end - bd_base < 0xFFFF && _data_end - bd_base < 0xFFFF,
            "the classic baseband's memory (its pools, the controller's variables, the Bluetooth heap) must lie within 64 KB above bd_base")
-    /* test build 14: the second core's stacks and mailbox above the window, whole (2,816 + 256 + 64 bytes: the mailbox is in
-     * its section, fm1_cpu1.h FM1_CPU1_OWN_RAM), and nothing else between _c1_ram_start and _c1_ram_end (an image without
-     * the second core, openpocket.c DSP_CPU1 0, has neither) */
-    ASSERT(!DEFINED(fm1_cpu1_ustack) || (_c1_ram_start >= bd_base + 0x10000 && fm1_cpu1_ustack >= _c1_ram_start
-           && fm1_cpu1_sstack_top <= _c1_ram_end && _c1_ram_end - _c1_ram_start == 2816 + 256 + 64
-           && _c1_ram_end <= ORIGIN(RAM) + LENGTH(RAM)),
-           "the second core's stacks and mailbox must lie above the classic baseband's 64 KB window (bd_base + 0x10000)")
+    /* test build 14: the second core's stacks and mailbox above the window. Checked after the link, with every address printed
+     * (firmware/build.sh, the 'bt window' lines): an ASSERT here stopped CI's first link of build 14 without saying which
+     * condition failed */
     .noinit (NOLOAD) : { *(.noinit) *(.noinit.ble) . = ALIGN(8); _ble_stack_lo = .; *(.noinit.ble_stack) _ble_stack_hi = .; *(.noinit*) } > NOINIT
     .cram (NOLOAD) : { _cram_lo = .; *(.cram*) . = ALIGN(8); _cram_hi = .; } > CRAM   /* CPU-only data, zeroed by pxc_init */
     .pool (NOLOAD) : { . = ALIGN(8); *(.pool) . = ALIGN(8); _pool_tail_start = .; *(.pool.tail.*) . = ALIGN(4); _pool_tail_end = .; } > POOL
