@@ -8,9 +8,10 @@
  *
  *   start   an app task ("btapp") runs btstack_init (it waits for the controller), then sends the stack's commands
  *   events  bt_event_notify (the stack calls it): ready -> visible and connectable; connected; media start / stop
- *   audio   the main loop (ble_test_poll) takes the phone's packets (a2dp_media_try_get_packet: never waits), decodes their
- *           SBC frames (bt_sbc.c) into the ring (px_bt_ring.h) and steers its rate; px_audio.h dsp_out adds the ring to the
- *           output */
+ *   audio   the controller shows every media packet to the A2DP code before it chooses between the app and the host; there
+ *           (a2dp_media_packet_user_handler) each one is copied into a FIFO (test build 12: the library's own choice failed
+ *           from the second packet of each session). The main loop (ble_test_poll) decodes the FIFO's SBC frames (bt_sbc.c)
+ *           into the ring (px_bt_ring.h) and steers its rate; px_audio.h dsp_out adds the ring to the output */
 #include <stdint.h>
 #include "fm1_irq.h"
 #include "ble_os.h"
@@ -32,7 +33,6 @@ extern void lmp_set_sniff_disable(void);
 extern int user_send_cmd_prepare(int cmd, uint16_t len, uint8_t *param);
 extern int a2dp_media_try_get_packet(uint8_t **frame);
 extern void a2dp_media_free_packet(void *packet);
-extern int a2dp_media_get_remain_play_time(uint8_t include_tws);
 extern int os_sem_create(void *s, int cnt);
 extern int os_sem_pend(void *s, int timeout);
 extern int os_sem_post(void *s);
@@ -73,17 +73,16 @@ static uint32_t bt_t_start, bt_t_init;
 static uint32_t bt_q40_n, bt_q40_t, bt_kicks;                  /* the baseband interrupt's last count and when it changed */
 extern uint8_t acl_tx_pool[], acl_tx_pool_end[], acl_rx_pool[], acl_rx_pool_end[];   /* app-bt.ld */
 
-/* ---- the HCI conversation, recorded where it passes (the log's hci and hci0 lines). The integrated controller and host talk
- * through the tasks' queues: the controller's events reach the host task ("btstack", type 0x400001) with the event's bytes
- * inline (btstack_task.c hci_packet_handler; 0x400002 is an ACL packet, a pointer and a length), the host's commands reach the
+/* ---- the HCI conversation, recorded where it passes (the log's hci line). The integrated controller and host talk through
+ * the tasks' queues: the controller's events reach the host task ("btstack", type 0x400001) with the event's bytes inline
+ * (btstack_task.c hci_packet_handler; 0x400002 is an ACL packet, a pointer and a length), the host's commands reach the
  * controller's task ("btctrler", 0x400002 and 0x400003 to a link) the same way (btctrler_task.c btctrler_hci_cmd_to_task).
- * ble_os.c os_taskq_post_type calls bt_taskq_spy with every message: the first 12 and the newest 11 are kept, each as the
- * task's initial, the type's low digit and the message's first 5 bytes; ACL packets and Number of Completed Packets events
- * (0x13, with every packet sent) are only counted. */
-#define BT_MSG_FIRST 12u
+ * ble_os.c os_taskq_post_type calls bt_taskq_spy with every message: the newest 11 are kept, each as the task's initial, the
+ * type's low digit and the message's first 5 bytes; ACL packets and Number of Completed Packets events (0x13, with every
+ * packet sent) are only counted. (Test builds 9 to 11 also kept the first 12 since boot, the hci0 line: known since) */
 #define BT_MSG_LAST 11u
 typedef struct { char task, type; uint8_t b[5]; } bt_msg_t;
-static bt_msg_t bt_msg_first[BT_MSG_FIRST], bt_msg_last[BT_MSG_LAST];
+static bt_msg_t bt_msg_last[BT_MSG_LAST];
 static volatile uint32_t bt_msg_n, bt_msg_kept, bt_msg_acl, bt_msg_ncp;
 static void bt_taskq_spy(const char *task, int type, int argc, const int *argv)
 {
@@ -93,36 +92,156 @@ static void bt_taskq_spy(const char *task, int type, int argc, const int *argv)
     m.task = task[2] == 's' ? 'S' : task[2] == 'c' ? 'C' : task[2] == 'e' ? 'E' : task[2] == 'a' ? 'A' : '?';   /* btStack btCtrler btEncry btApp */
     m.type = (char)('0' + (type & 0xF));
     for (i = 0; i < 5u; i++) m.b[i] = (int)(i / 4u) < argc ? (uint8_t)((uint32_t)argv[i / 4u] >> (8u * (i % 4u))) : 0;
-    /* (in one piece, interrupts off: the tasks post, and so do the baseband's interrupts, through the same call. Up to test
-     * build 11's review the count was read twice, and a post between the reads could write one entry past bt_msg_first) */
+    /* (in one piece, interrupts off: the tasks post, and so do the baseband's interrupts, through the same call) */
     local_irq_disable();
     bt_msg_n++;
     if (host && type == 0x400002) bt_msg_acl++;                 /* btstack: an ACL packet */
     else if (host && type == 0x400001 && argc > 0 && (argv[0] & 0xFF) == 0x13) bt_msg_ncp++;
     else {
         k = bt_msg_kept;
-        if (k < BT_MSG_FIRST) bt_msg_first[k] = m;
         bt_msg_last[k % BT_MSG_LAST] = m;
         bt_msg_kept = k + 1u;
     }
     local_irq_enable();
 }
-static uint8_t *bt_pkt;                                         /* the packet being decoded */
-static const uint8_t *bt_pp;
+static const uint8_t *bt_pp;                                    /* the frames left of the packet being decoded: bt_pn bytes */
 static uint32_t bt_pn, bt_pkts, bt_frames_in, bt_t_steer;
-static uint32_t bt_pkt_dropped;                                 /* packets held at a link's end that could not be given back */
 static uint32_t bt_confirms, bt_hci_disc, bt_conn_fail;         /* the pairing confirmations sent, the links that ended (HCI) */
 static uint32_t bt_end;                                         /* the last link's end: HCI event << 8 | its reason or status */
 static int16_t bt_frame[BT_SBC_MAX_SAMPLES];
 
 static void bt_cmd(uint32_t bit) { bt_cmd_bits |= bit; os_sem_post(bt_cmd_sem); }
 
-/* the packet bt_decode holds, given back while its channel is still open (the stack frees only the packets the app has not
- * taken: lmp.c __lmp_private_clear_a2dp_packet; up to test build 10 every stop lost one, about 1 KB of the receive pool) */
-static void bt_pkt_release(void)
+/* ---- the phone's packets (test build 12), taken where the controller shows each one to the A2DP code before it chooses
+ * between the app and the host: lmp.c lmp_rx_handler (the controller's task) -> a2dp_media_codec.c acl_u_packet_analyse ->
+ * a2dp_media_packet_user_handler, the library's own weak and returning 0. data = the L2CAP header (lmp_rx_handler wrote the HCI
+ * header just before it, from its connection), size = 4 + the L2CAP payload. In test build 11 the controller's choice failed from
+ * the second packet of each session (PK 1: every later packet went to the host, which has nothing to play it with). Every media
+ * packet now goes into a FIFO that bt_decode reads, whatever the controller then does with it. Everything here runs in the main
+ * loop's context (the tasks and the timers run inside ble_poll, ble_os.c), so the FIFO needs no lock; bt_wp_tick (the 10 kHz
+ * interrupt) only reads the controller's state */
+#define BT_HOOK_TAKE 0      /* 1: -1 to the controller, which then frees the packet (neither the app's list nor the host). 0: the
+                             * library's own path goes on as in test build 11 (the host gets it), so the probe below measures it */
+#define BT_A2_HEAL 1        /* the receiving connection's two A2DP fields written back when the probe finds them wrong (H) */
+#define BT_FQ_N 16u         /* packets: 232 ms of the iPhone's 5-frame packets */
+#define BT_FQ_MAX 672u      /* the pedal's L2CAP MTU (l2cap.c l2cap_max_mtu, in this configuration): no packet is longer */
+typedef struct { uint16_t n; uint8_t frames, pad; uint8_t b[BT_FQ_MAX]; } bt_fq_t;
+static bt_fq_t *bt_fq;                                          /* (the Bluetooth heap, once: ble_test_start) */
+static uint32_t bt_fq_w, bt_fq_r, bt_fq_frames, bt_fq_held, bt_cur_left;
+static void bt_fq_reset(void)                                   /* (a session's end: what is queued is dropped) */
 {
-    if (bt_pkt) { a2dp_media_free_packet(bt_pkt); bt_pkt = 0; }
-    bt_pn = 0;
+    if (bt_fq_held) bt_pn = 0;                                  /* (bt_pp points into the slot held) */
+    bt_fq_r = bt_fq_w; bt_fq_frames = 0; bt_fq_held = 0; bt_cur_left = 0;
+}
+static uint32_t bt_fq_samples(void)                             /* the encoded backlog: the FIFO's frames and the rest of the one held */
+{
+    const uint32_t spf = (uint32_t)bt_sbc_info.blocks * bt_sbc_info.subbands;
+    return (bt_fq_frames + bt_cur_left) * (spf ? spf : 128u);
+}
+
+/* the probe. The controller's connection table (lmp.c lmp_acl_link, 2 x 296 bytes) and the host's `channel` (a2dp_media_codec.c)
+ * are static: they are reached from two globals beside them, whose distance is fixed (the vendor's objects never change) and
+ * checked in each build's symbols (firmware/build.sh). lmp_connection's bytes (32-bit, natural alignment, lmp.c's TBAA): 5 a
+ * detach asked, 11 the app's channel open, 30 its L2CAP CID, 34 a packet number to clear up to, 156 suspended, 192 bit 3
+ * detaching, 228 the handle, 236 the link */
+extern uint8_t local_private_key[], a2dp_mutual_toggle;
+extern void *lmp_conn_for_handle(int handle);
+#define BT_LMP(i) (local_private_key - 0x254 + 296u * (i))
+#define BT_CH() (*(uint8_t *const volatile *)(const void *)(&a2dp_mutual_toggle + 8))
+#define BT_U16(p, o) (*(volatile uint16_t *)(void *)((uint8_t *)(p) + (o)))
+#define BT_U32(p, o) (*(volatile uint32_t *)(void *)((uint8_t *)(p) + (o)))
+/* a connection's A2DP state in one word: bits 0-7 byte 11, 8-23 the CID (30), 24 byte 34 set, 25 byte 5 set, 26 suspended,
+ * 27 detaching, 28 a handle */
+static uint32_t bt_lmp_st(const uint8_t *c)
+{
+    return c[11] | (uint32_t)BT_U16(c, 30) << 8 | (uint32_t)(BT_U16(c, 34) != 0) << 24 | (uint32_t)(c[5] != 0) << 25
+         | (uint32_t)(c[156] != 0) << 26 | (uint32_t)((BT_U32(c, 192) & 8u) != 0) << 27 | (uint32_t)(BT_U16(c, 228) != 0) << 28;
+}
+static uint32_t bt_ch_st(void) { const uint8_t *const c = BT_CH(); return c ? bt_lmp_st(c) : 0xFFFFFFFFu; }
+/* the a2dp line's 23 words, in its order (bt_a2dp_line prints them from n on): the hook's calls; the packets the controller kept
+ * for the app; the last packet's handle << 16 | CID; B the packets found with the state wrong, the first one's number in its
+ * session, its state and its time; O0 slot 0's state at the first MEDIA_START and when; CHM the packets received on a connection
+ * that is not `channel`; G and F the open connection's state at the first get and just after its free, and when; N its state
+ * now; RC the last get's result (0 none, FFFFFFEA = -22: closed, no link, detaching or suspended); H the heals; W the watch's
+ * changes, the first one's time << 1 | slot, its state and the code under the interrupts; the FIFO's drops (full | too big
+ * << 16); the library's packets given back */
+static volatile struct {
+    uint32_t n, kept, hc, bad, bad_n, bad_st, bad_t, o0, o_t, chmis, g_st, g_t, f_st, f_t, now, rc, heal, wn, w0, w1, w2, drop, dup;
+    uint32_t on, wlast[2];
+} bt_a2;
+#define BT_A2_WORDS 23u
+/* lmp.c's own is weak and empty: it is called only when lmp_rx_handler keeps a packet for the app (interrupts off) */
+void a2dp_rx_notice_to_decode(void) { bt_a2.kept++; }
+
+int a2dp_media_packet_user_handler(uint8_t *data, uint16_t size)
+{
+    const uint32_t cid = data[2] | (uint32_t)data[3] << 8, n = data[0] | (uint32_t)data[1] << 8;
+    const uint32_t h = (data[-4] | (uint32_t)data[-3] << 8) & 0x0FFFu;
+    uint8_t *const c = lmp_conn_for_handle((int)h);
+    bt_a2.n++;
+    bt_a2.hc = h << 16 | cid;
+    if (c && bt_st == BT_PLAYING) {                             /* the probe: the state lmp_rx_handler tests next, this packet's */
+        const uint32_t st = bt_lmp_st(c);
+        const int ch = c == BT_CH();
+        if (!ch) bt_a2.chmis++;
+        if (!(st & 0xFFu) || (st >> 8 & 0xFFFFu) != cid) {
+            if (!bt_a2.bad++) { bt_a2.bad_n = bt_a2.n - bt_a2.on; bt_a2.bad_st = st; bt_a2.bad_t = fm1_uptime_ms(); }
+#if BT_A2_HEAL
+            /* (only the connection the host opened: packets kept on the other one would never be given back, its list is not
+             * the one the app reads) */
+            if (ch && BT_U32(c, 236) && !(BT_U32(c, 192) & 8u)) {   /* (a link, not detaching) */
+                local_irq_disable(); BT_U16(c, 30) = (uint16_t)cid; c[11] = 1u; local_irq_enable();
+                bt_a2.heal++;
+            }
+#endif
+        }
+    }
+    if (!bt_fq || (bt_st != BT_LINKED && bt_st != BT_PLAYING)) return 0;
+    /* (from the link on: a session's first packet too, which comes before MEDIA_START) */
+    if (n < 13u || n > BT_FQ_MAX || n + 4u > size) bt_a2.drop += 0x10000u;
+    else if (bt_fq_w - bt_fq_r >= BT_FQ_N) bt_a2.drop++;
+    else {
+        bt_fq_t *const s = &bt_fq[bt_fq_w % BT_FQ_N];
+        const uint32_t m = 12u + 4u * (data[4] & 0x0Fu);        /* the media header: after the RTP header and its contributors */
+        ble_memcpy(s->b, data + 4, n);
+        s->n = (uint16_t)n;
+        s->frames = m < n ? (uint8_t)(s->b[m] & 0x0Fu) : 0u;
+        bt_fq_frames += s->frames;
+        bt_fq_w++;
+    }
+    return BT_HOOK_TAKE && bt_st == BT_PLAYING ? -1 : 0;       /* (a session's first packet always goes on: the host's codec init,
+                                                                 * the channel's open and MEDIA_START come from it) */
+}
+
+/* the watch: 10 kHz (timer5, bt_stall_tick), both connections' state while a session plays; the first change is kept */
+static volatile uint8_t bt_wp_on;
+static void bt_wp_tick(void)
+{
+    uint32_t i;
+    if (!bt_wp_on) return;
+    for (i = 0; i < 2u; i++) {
+        const uint32_t v = bt_lmp_st(BT_LMP(i));
+        if (v == bt_a2.wlast[i]) continue;
+        bt_a2.wlast[i] = v;
+        if (!bt_a2.wn++) {
+            bt_a2.w0 = fm1_uptime_ms() << 1 | i;
+            bt_a2.w1 = v;
+            bt_a2.w2 = ((const uint32_t *)(uintptr_t)_sstack_top)[-3];   /* the code under the interrupts (as bt_stall_sample) */
+        }
+    }
+}
+static void bt_media_start(void)                                /* MEDIA_START, just after the channel's open (the FIFO is not
+                                                                 * reset: the session's first packet is already in it) */
+{
+    bt_a2.on = bt_a2.n;
+    if (!bt_a2.o_t) { bt_a2.o0 = bt_lmp_st(BT_LMP(0)); bt_a2.o_t = fm1_uptime_ms() | 1u; }
+    bt_a2.wlast[0] = bt_lmp_st(BT_LMP(0)); bt_a2.wlast[1] = bt_lmp_st(BT_LMP(1));
+    bt_wp_on = 1;
+}
+static __attribute__((noinline)) void bt_media_end(void)        /* MEDIA_STOP, FIRST/SECOND_DISCONNECT, the HCI disconnection */
+{
+    bt_wp_on = 0;
+    bt_fq_reset();
 }
 
 /* the stack's events (its tasks call this) */
@@ -159,9 +278,7 @@ int bt_event_notify(int from, void *e)
             bt_end = (uint32_t)code << 8 | (b->value & 0xFFu);  /* the reason (05) or the status (03): the log's END */
             ble_conn = 0;
             if (bt_st == BT_LINKED || bt_st == BT_PLAYING) bt_st = BT_VISIBLE;
-            if (bt_pkt) bt_pkt_dropped++;                       /* (the link is gone: its packet is not given back here, see
-                                                                 * bt_pkt_release; MEDIA_STOP came first if the music played) */
-            bt_pkt = 0; bt_pn = 0;
+            bt_media_end(); bt_pn = 0;                          /* (the link is gone: what its FIFO held too) */
             if (bt_st == BT_VISIBLE) bt_cmd(1u);                /* visible and connectable again */
             break;
         default: break;
@@ -180,13 +297,13 @@ int bt_event_notify(int from, void *e)
         break;
     case BT_STATUS_ENCRY_COMPLETE: bt_enc++; break;
     case BT_STATUS_CONN_A2DP_CH: bt_a2dp_ch++; break;
-    case BT_STATUS_A2DP_MEDIA_START: bt_st = BT_PLAYING; bt_media++; break;
+    case BT_STATUS_A2DP_MEDIA_START: bt_media_start(); bt_st = BT_PLAYING; bt_media++; break;
     case BT_STATUS_A2DP_MEDIA_STOP:
-        bt_pkt_release();                                       /* (sbc_codec_stop sends this before it closes the channel) */
+        bt_media_end();                                         /* (sbc_codec_stop sends this before it closes the channel) */
         if (bt_st == BT_PLAYING) bt_st = BT_LINKED;
         break;
     case BT_STATUS_FIRST_DISCONNECT: case BT_STATUS_SECOND_DISCONNECT:
-        bt_pkt_release();                                       /* (a stop that did not come first) */
+        bt_media_end();                                         /* (a stop that did not come first) */
         bt_disc++; ble_conn = 0; bt_st = BT_VISIBLE;
         bt_cmd(1u);                                             /* visible again for the next phone */
         break;
@@ -307,6 +424,7 @@ static void bt_stall_fire(void)
 
 static void bt_stall_tick(int firing)
 {
+    bt_wp_tick();                                               /* (test build 12: the a2dp line's watch, every tick) */
     if (ble_busy_ticks <= BLE_STALL_TICKS - BT_STALL_WINDOW) { bt_stall_on = 0; return; }
     if (!bt_stall_on) { bt_stall_begin(); bt_stall_on = 1; }
     if (!firing) bt_stall_sample();
@@ -315,14 +433,23 @@ static void bt_stall_tick(int firing)
 
 static int bt_stall_valid(void) { return bt_stall.magic == BT_STALL_MAGIC && bt_stall.crumb_i < 0x100000u; }
 
+/* the flash reads Bluetooth needs, before the audio starts (openpocket.c app_main): they switch the flash path off (ota_fread,
+ * fl_uid_ram) with only CPU0's interrupts off, and once the audio runs the second core may be in a job that reads the flash.
+ * Up to test build 11 they ran in ble_test_start, after audio_start (harmless there only because the DSP was still held) */
+static void bt_flash_reads(void)
+{
+    ble_vm_load();                                              /* the stored radio records, read once before the controller runs */
+    bt_mac_make();                                              /* this pedal's address, from the flash's unique ID */
+}
+
 void ble_test_start(void)
 {
     bt_stall.magic = 0;                                         /* (a stall record is shown until Bluetooth starts again) */
-    ble_vm_load();                                              /* the stored radio records, read once before the controller runs */
     __crc16_mutex_init();                                       /* else thread_create waits for ever in crc_get_32bit */
-    bt_mac_make();                                              /* this pedal's address, from the flash's unique ID */
     bt_sbc_reset();
     bt_ring_init(&bt_ring, bt_ring_mem);
+    bt_fq = malloc(BT_FQ_N * sizeof *bt_fq);                    /* the phone's packets: 10,816 bytes of the Bluetooth heap, for good */
+    if (!bt_fq) BT_CRUMB("fifo: no memory");                    /* (then nothing is decoded: the a2dp line's n still counts) */
     os_sem_create(bt_cmd_sem, 0);
     __set_simple_pair_flag(1);                                  /* Secure Simple Pairing ... */
     __set_simple_pair_param(3, 0, 2);                           /* ... no display or keys, no OOB, 2 = HCI "no MITM, dedicated bonding": Just Works */
@@ -338,40 +465,54 @@ void ble_test_start(void)
     if (task_create(bt_app_task, 0, "btapp")) { ble_fail(BLE_FAIL_TASK_CREATE, -1); bt_st = BT_FAILED; }
 }
 
-/* the phone's packets -> SBC frames -> the ring, as long as it has room for a frame (24 frames a pass at most: 70 ms) */
+/* the FIFO's packets -> SBC frames -> the ring, as long as it has room for a frame (24 frames a pass at most: 70 ms). What the
+ * library hands the app (the packet its channel's open marked, and any it keeps: after the probe's heal, or a library that
+ * works) is a copy of a packet the FIFO holds: it is given back undecoded, every pass, whatever the ring's room (it holds the
+ * radio's receive pool). G and F: the open connection's state at the first get and just after its free */
+static int bt_try_get(uint8_t **p) { const int r = a2dp_media_try_get_packet(p); if (r <= 0) bt_a2.rc = (uint32_t)r; return r; }
+static void bt_fq_done(void) { if (bt_fq_held) { bt_fq_r++; bt_fq_held = 0; bt_cur_left = 0; } }
 static void bt_decode(void)
 {
     uint32_t pass = 0;
+    uint8_t *p = 0;
+    while (bt_try_get(&p) > 0 && p) {
+        if (!bt_a2.g_t) { bt_a2.g_st = bt_ch_st(); bt_a2.g_t = fm1_uptime_ms() | 1u; }
+        a2dp_media_free_packet(p);
+        bt_a2.dup++;
+        if (!bt_a2.f_t) { bt_a2.f_st = bt_ch_st(); bt_a2.f_t = fm1_uptime_ms() | 1u; }
+        p = 0;
+    }
     while (bt_ring_room(&bt_ring) >= BT_SBC_MAX_SAMPLES && pass++ < 24u) {
         int k;
         if (!bt_pn) {
-            uint8_t *p = 0;
-            int len;
+            const bt_fq_t *s;
             uint32_t off;
-            if (bt_pkt) { a2dp_media_free_packet(bt_pkt); bt_pkt = 0; }
-            len = a2dp_media_try_get_packet(&p);
-            if (len <= 0 || !p) break;
-            bt_pkt = p;
+            bt_fq_done();
+            if (!bt_fq || bt_fq_r == bt_fq_w) break;
+            s = &bt_fq[bt_fq_r % BT_FQ_N];
+            bt_fq_held = 1;
+            bt_fq_frames -= s->frames; bt_cur_left = s->frames;
             bt_pkts++;
-            off = bt_sbc_payload(p, (uint32_t)len);
-            bt_pp = p + off;
-            bt_pn = off < (uint32_t)len ? (uint32_t)len - off : 0u;   /* (a header longer than the packet: nothing to decode) */
+            off = bt_sbc_payload(s->b, s->n);
+            bt_pp = s->b + off;
+            bt_pn = off < s->n ? s->n - off : 0u;               /* (a header longer than the packet: nothing to decode) */
         }
         k = bt_sbc_frame(&bt_pp, &bt_pn, bt_frame);
         if (k <= 0) { bt_pn = 0; continue; }                    /* the packet is done (or refused: the rest is dropped) */
+        if (bt_cur_left) bt_cur_left--;
         bt_ring_put(&bt_ring, bt_frame, (uint32_t)k);
         bt_frames_in++;
     }
-    if (bt_pkt && !bt_pn) { a2dp_media_free_packet(bt_pkt); bt_pkt = 0; }
+    if (!bt_pn) bt_fq_done();
 }
 
 /* ---- the isr line's figures (bt_isr_line): the interrupts keep the longest and the sum of the current second, the main loop
  * turns the second over here (the interrupts off for a few loads and stores) and keeps the last whole second's */
 static uint32_t bt_isr_t_s;
-static struct { uint32_t br_max, br_sum, slot_max, slot_sum, t5, gap, in; } bt_isr_last;
-static uint32_t bt_rng[2];                                      /* the random source (0x13B00), read once a second while visible */
+static struct { uint32_t br_max, br_sum, slot_max, slot_sum, t5, gap, in, en[5], dd, ee; } bt_isr_last;
 static void bt_isr_second(uint32_t now)
 {
+    uint32_t i;
     if (now - bt_isr_t_s < 1000u) return;
     bt_isr_t_s = now;
     local_irq_disable();
@@ -380,11 +521,14 @@ static void bt_isr_second(uint32_t now)
     bt_isr_last.t5 = px_t5_in_s; px_t5_in_s = 0;
     bt_isr_last.gap = a_irq_gap_s; a_irq_gap_s = 0;
     bt_isr_last.in = a_irq_in_s; a_irq_in_s = 0;
+    for (i = 0; i < 5u; i++) { bt_isr_last.en[i] = a_en_s[i]; a_en_s[i] = 0; }   /* (test build 12: px_audio.h fm1_alnk0_irq) */
+    bt_isr_last.dd = a_dd_s; bt_isr_last.ee = a_ee_s; a_dd_s = a_ee_s = 0;
     local_irq_enable();
-    /* the pairing's keys and numbers come from this register (lmp.c get_random_number, uECC's default): one that reads 0 or never
-     * changes would make the key exchange fail silently, and the pairing stop in an assertion's loop */
-    if (bt_st >= BT_VISIBLE && bt_st != BT_FAILED) { bt_rng[1] = bt_rng[0]; bt_rng[0] = *(volatile uint32_t *)0x13B00u; }
 }
+
+/* the second core's fault, as the main loop first saw it (the c1 line's S): the radio's start-up stage << 28 | bt_st << 24 |
+ * the DSP held << 23 | 1 << 22 | IRQ 40's count (fm1_cpu1_fault_c runs before this file's names are known) */
+static uint32_t bt_c1_snap;
 
 void ble_test_poll(void)
 {
@@ -394,6 +538,8 @@ void ble_test_poll(void)
     ble_busy(0);
     now = ble_ms();
     bt_isr_second(now);
+    if (fm1_cpu1_fault.count && !bt_c1_snap)
+        bt_c1_snap = (ble_stage & 15u) << 28 | (bt_st & 15u) << 24 | (uint32_t)(a_hold != 0) << 23 | 1u << 22 | (bt_cnt_irq_br & 0x3FFFFFu);
     if (bt_st == BT_STARTING && !bt_t_init && now - bt_t_start > 10000u) {   /* btstack_init not back in 10 s (the radio start-up
                                                                          * replay takes a few; a call that hangs is the stall watch's) */
         ble_wait = ble_task_waiting("btctrler");
@@ -414,11 +560,11 @@ void ble_test_poll(void)
     }
     if (bt_st >= BT_LINKED && bt_st != BT_FAILED) {
         bt_decode();
-        if (now - bt_t_steer >= 4u) {                           /* (the remaining time walks the packet list with interrupts off) */
-            int ms = a2dp_media_get_remain_play_time(0);
+        if (now - bt_t_steer >= 4u) {                           /* (the encoded backlog: the FIFO's, test build 12; up to test
+                                                                 * build 11 the library's remaining time) */
             bt_t_steer = now;
             bt_ring_rate(&bt_ring, bt_sbc_info.rate);
-            bt_ring_steer(&bt_ring, ms > 0 ? (uint32_t)ms * 441u / 10u : 0u, BT_TARGET, BT_PREBUF);
+            bt_ring_steer(&bt_ring, bt_fq_samples(), BT_TARGET, BT_PREBUF);
         }
     }
 }
@@ -553,13 +699,13 @@ void ble_test_line(char *out)
     o = ble__put(o, " KICK "); o = bt__dec(o, bt_kicks);
     o = bt_pool_text(o, " TX ", acl_tx_pool, acl_tx_pool_end);
     o = bt_pool_text(o, " RX ", acl_rx_pool, acl_rx_pool_end);
-    o = ble__put(o, " RNG "); o = bt__hex(o, bt_rng[0], 8); *o++ = '/'; o = bt__hex(o, bt_rng[1], 8);
     *o = 0;
     bt_line_out(out, t);
 }
 
-/* a link: "BT LINK n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 1234 ER 0 PK 200 BUF 148 MS UND 0 RATE -0.04% DISC 0 PD 0
- * F A3012/C2344/S1876" (F: each task's stack never used, in bytes, after its initial: btApp, btCtrler, btStack) */
+/* a link: "BT LINK n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 1234 ER 0 PK 200 BUF 98+52 MS UND 0 RATE -0.04% DISC 0 FQ 6
+ * F A3012/C2344/S1876" (BUF: the FIFO's encoded backlog + the decoded ring, FQ: the packets in the FIFO, test build 12; F: each
+ * task's stack never used, in bytes, after its initial: btApp, btCtrler, btStack) */
 /* no phone linked: the tasks instead, "TASKS btapp S 01C0A1B0=0 q0 F3012 P0, btctrler Q q0 F2344 P3, btstack R q2 F1876 P7"
  * (state: R ready, Q waiting for a message, S waiting on the semaphore or mutex at that address (= its count), D sleeping,
  * X ended; q the messages queued, F the bytes of its stack never used, P the most messages it had queued, OVF its stack's
@@ -601,10 +747,9 @@ static char *bt_stacks_text(char *o)                            /* " F A3012/C23
 void ble_midi_line(char *out)
 {
     char *o = bt_line_t;
-    int ms;
     if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_state(out); return; }
     if (bt_st < BT_LINKED) { bt_tasks_line(out); return; }     /* (the link's figures are all 0 until a phone is linked) */
-    ms = bt_st == BT_PLAYING ? a2dp_media_get_remain_play_time(0) : 0;
+    const uint32_t ms = bt_fq_samples() * 10u / 441u;
     const int32_t base = (int32_t)(bt_ring.base ? bt_ring.base : 1u);   /* (32-bit: the firmware has no 64-bit division) */
     int32_t pm = ((int32_t)bt_ring.step - base) * 10000 / base;   /* 0.01 %; |step - base| <= 0.5 % of base */
     o = ble__put(o, bt_st == BT_PLAYING ? "BT PLAY n" : "BT LINK n"); o = bt__dec(o, bt_links);
@@ -616,13 +761,13 @@ void ble_midi_line(char *out)
     o = ble__put(o, " FR "); o = bt__dec(o, bt_sbc_info.frames);
     o = ble__put(o, " ER "); o = bt__dec(o, bt_sbc_info.errors);
     o = ble__put(o, " PK "); o = bt__dec(o, bt_pkts);
-    o = ble__put(o, " BUF "); o = bt__dec(o, ms > 0 ? (uint32_t)ms : 0u);
+    o = ble__put(o, " BUF "); o = bt__dec(o, ms);
     o = ble__put(o, "+"); o = bt__dec(o, bt_ring_fill(&bt_ring) * 10u / 441u); o = ble__put(o, " MS");
     o = ble__put(o, " UND "); o = bt__dec(o, bt_ring.stops);
     o = ble__put(o, " RATE "); if (pm < 0) { *o++ = '-'; pm = -pm; } o = bt__dec(o, (uint32_t)pm / 100u); *o++ = '.';
     *o++ = (char)('0' + (pm / 10) % 10); *o++ = (char)('0' + pm % 10); *o++ = '%';
     o = ble__put(o, " DISC "); o = bt__dec(o, bt_disc);
-    o = ble__put(o, " PD "); o = bt__dec(o, bt_pkt_dropped);
+    o = ble__put(o, " FQ "); o = bt__dec(o, bt_fq_w - bt_fq_r);
     o = bt_stacks_text(o);
     *o = 0;
     bt_line_out(out, bt_line_t);
@@ -656,9 +801,8 @@ void ble_trace_line(char *out)
     *o = 0;
 }
 
-/* the HCI conversation (bt_taskq_spy): "HCI n 120 ACL 4 NCP 2 Q 3 LOST 0 S1:0E04010C03 C2:030C000000 ..." the newest 11 (bt_hci_line)
- * and "HCI0 S1:..." the first 12 since boot (bt_hci0_line); S1 = an event to the host (code, length, parameters), C2 / C3 = a
- * command to the controller (as the controller's task receives it) */
+/* the HCI conversation (bt_taskq_spy): "HCI n 120 ACL 4 NCP 2 Q 3 LOST 0 S1:0E04010C03 C2:030C000000 ..." the newest 11; S1 = an
+ * event to the host (code, length, parameters), C2 / C3 = a command to the controller (as the controller's task receives it) */
 static char *bt_msg_text(char *o, const bt_msg_t *m)
 {
     uint32_t j;
@@ -686,24 +830,56 @@ void bt_hci_line(char *out)
     for (i = k - m; i < k; i++) o = bt_msg_text(o, &bt_msg_last[i % BT_MSG_LAST]);
     *o = 0;
 }
-void bt_hci0_line(char *out)
+static char *bt_words(char *o, const volatile uint32_t *v, uint32_t n)   /* n words in hex, each after a space */
 {
-    char *o = ble__put(out, "HCI0");
-    uint32_t i;
-    for (i = 0; i < BT_MSG_FIRST && i < bt_msg_kept; i++) o = bt_msg_text(o, &bt_msg_first[i]);
+    while (n--) { *o++ = ' '; o = bt__hex(o, *v++, 8); }
+    return o;
+}
+
+/* the phone's packets at the controller (test build 12, in place of test builds 9-11's hci0 line): "A2" and bt_a2's 23 words in
+ * hex, in its order (n kept hc B Bn Bst Bt O0 Ot CHM G Gt F Ft N RC H W W0 W1 W2 DROP DUP; tools/log.mjs names them): 209
+ * characters */
+void bt_a2dp_line(char *out)
+{
+    char *o = ble__put(out, "A2");
+    bt_a2.now = bt_ch_st();
+    o = bt_words(o, &bt_a2.n, BT_A2_WORDS);
     *o = 0;
 }
 
-/* the interrupts against the audio (test build 11): "ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2905/3120 AI 1710/2620 C1 1 G 0
- * NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0". Times in microseconds: for the baseband's two interrupts
- * (40, 41) the longest in the last second, the longest since boot and the time they took in the last second; T5 the 10 kHz
- * timer's longest (last second / since boot); AG the longest gap between two audio interrupts (2,902 when on time: more means the
- * audio interrupt started late) and AI its longest stay (last second / since boot). Then the DSP: C1 the second core runs (0: one
+/* the second core (test build 12): "C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0", and after a fault 19 words in hex: DBG, the taking
+ * core's EMU_MSG, PC, RETS (CPU0's when CPU0 took it, F's second figure 0), CPU1's EMU_MSG, the time (ms, wraps at 179 s), the
+ * job handed and the job finished (different: one was running), its function, the debug unit's ten words from 0x1EEE358 (the
+ * write-limit error counts, the bus masters' ids). G: why it is off and when (ms); K: how deep its stack has gone (bytes of
+ * 2,816); KEY: the key held at power-on (1 CAB: nothing in this build, 2 DLY, 3 REV); S: bt_c1_snap (at most 219 characters) */
+void bt_c1_line(char *out)
+{
+    char *o = ble__put(bt_line_t, "C1 ");
+    o = bt__dec(o, a_c1); o = ble__put(o, " G "); o = bt__dec(o, fm1_cpu1_gave_up); *o++ = '@'; o = bt__dec(o, fm1_cpu1_gave_ms);
+    o = ble__put(o, " K "); o = bt__dec(o, fm1_cpu1_stack_used());
+    o = ble__put(o, " KEY "); o = bt__dec(o, (uint32_t)keys_held_at_boot);
+    o = ble__put(o, " S "); o = bt__hex(o, bt_c1_snap, 8);
+    o = ble__put(o, " F "); o = bt__dec(o, fm1_cpu1_fault.count); *o++ = '/'; o = bt__dec(o, fm1_cpu1_fault.cpu);
+    if (fm1_cpu1_fault.count) o = bt_words(o, &fm1_cpu1_fault.dbg, 19u);   /* (dbg .. dbgx[9]: the struct's end) */
+    *o = 0;
+    bt_line_out(out, bt_line_t);
+}
+
+/* the interrupts against the audio (test builds 11, 12): "ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2905/3120 AI 1710/2620 EN 0/344/
+ * 344/0/0 OC 0/0 3/3 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0". Times in microseconds: for the
+ * baseband's two interrupts (40, 41) the longest in the last second, the longest since boot and the time they took in the last
+ * second; T5 the 10 kHz timer's longest (last second / since boot); AG the longest gap between two audio interrupts (2,902 when
+ * one entry serves a period; less: two entries a period, the input's and the output's; more: an entry that came late) and AI its
+ * longest stay (last second / since boot). Test build 12: EN the audio interrupt's entries in the last second by the flags they
+ * found (none / the output's only / the input's only / both / another channel's), OC the callbacks' order changes, last second
+ * and since boot (two output callbacks in a row / two input ones: each one was a repeated or a skipped block up to test build
+ * 11, px_audio.h a_dec), NAN the engine's resets after a NaN since boot. Then the DSP: C1 the second core runs (0: one
  * core), G why it is off (fm1_cpu1.h FM1_CPU1_*: 0 it is not; 1 a misread, 2 a job not back within 8 ms, 4 a fault: these three
- * retired it in this boot and bar it at every start until a power-off; 3 barred at start; 5 no answer at start), NAM 1 the NAM
- * amp runs on both cores, LD the load and PK its peak (since the last full preset change / since boot) in %, XR the late blocks,
- * CL the clipped ones, WC the wet lane's cut blocks, BYP bypassed (over 85 % for 8 blocks), then the library's timers fired (TM),
- * the pairing store's reads and writes (VM) and the stacks' red zones written (OVF) */
+ * retired it in this boot and bar it at every start until a power-off; 3 barred at start; 5 no answer at start; the c1 line has
+ * the rest), NAM 1 the preset's NAM amp is one that runs on both cores (test build 12: whatever C1 is), LD the load and PK its
+ * peak (since the last full preset change / since boot) in %, XR the late blocks, CL the clipped ones, WC the wet lane's cut
+ * blocks (since boot: test build 12 keeps them across a retirement or a reset), BYP bypassed (over 85 % for 8 blocks), then the
+ * library's timers fired (TM), the pairing store's reads and writes (VM), the stacks' red zones written (OVF) */
 static uint32_t bt_us(uint32_t ticks) { return ticks / FM1_TICKS_PER_US; }
 void bt_isr_line(char *out)
 {
@@ -714,9 +890,16 @@ void bt_isr_line(char *out)
     o = ble__put(o, " T5 "); o = bt__dec(o, bt_us(bt_isr_last.t5)); *o++ = '/'; o = bt__dec(o, bt_us(px_t5_in));
     o = ble__put(o, " AG "); o = bt__dec(o, bt_us(bt_isr_last.gap)); *o++ = '/'; o = bt__dec(o, bt_us(a_irq_gap));
     o = ble__put(o, " AI "); o = bt__dec(o, bt_us(bt_isr_last.in)); *o++ = '/'; o = bt__dec(o, bt_us(a_irq_in));
+    {   /* test build 12: the entries by the flags seen, the callbacks' order changes (px_audio.h) */
+        uint32_t i;
+        o = ble__put(o, " EN");
+        for (i = 0; i < 5u; i++) { *o++ = i ? '/' : ' '; o = bt__dec(o, bt_isr_last.en[i]); }
+        o = ble__put(o, " OC "); o = bt__dec(o, bt_isr_last.dd); *o++ = '/'; o = bt__dec(o, bt_isr_last.ee);
+        *o++ = ' '; o = bt__dec(o, a_dd); *o++ = '/'; o = bt__dec(o, a_ee);
+    }
     o = ble__put(o, " C1 "); o = bt__dec(o, a_c1);
     o = ble__put(o, " G "); o = bt__dec(o, fm1_cpu1_gave_up);
-    o = ble__put(o, " NAM "); o = bt__dec(o, a_c1 ? (uint32_t)px_nam_dual(&g_eng) : 0u);
+    o = ble__put(o, " NAM "); o = bt__dec(o, (uint32_t)px_nam_dual(&g_eng));   /* (the preset's type, whatever C1 is) */
     o = ble__put(o, " LD "); o = bt__dec(o, a_load);
     o = ble__put(o, " PK "); o = bt__dec(o, a_peak); *o++ = '/'; o = bt__dec(o, a_peak_all);
     o = ble__put(o, " XR "); o = bt__dec(o, a_xrun);
@@ -726,6 +909,7 @@ void bt_isr_line(char *out)
     o = ble__put(o, " TM "); o = bt__dec(o, ble_cnt_timer);
     o = ble__put(o, " VM "); o = bt__dec(o, bt_vm_reads); *o++ = '/'; o = bt__dec(o, bt_vm_writes);
     o = ble__put(o, " OVF "); o = bt__dec(o, bt_stack_ovf);
+    o = ble__put(o, " NAN "); o = bt__dec(o, a_nan_count);
     *o = 0;
     bt_line_out(out, bt_line_t);
 }

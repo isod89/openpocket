@@ -145,6 +145,22 @@ export function judge(readings, scan) {
   return judged("fail", `${rate} and the controller reports advertising, but this Mac saw no advertisement in ${scan.seconds} s (${scan.others} other devices seen, so the scanner works).`);
 }
 
+// the a2dp line (the Bluetooth audio image, test build 12: firmware/bt/bt_a2dp.c bt_a2): "A2" and 23 words in hex, named here. Counts
+// in decimal; the states (a connection's A2DP fields in one word, bt_lmp_st), the handle:CID, the get's result and the code address
+// in hex; W0 is a time << 1 | the connection's slot, DROP the full | too-big counts
+const A2_NAMES = ["n", "kept", "hc", "B", "Bn", "Bst", "Bt", "O0", "Ot", "CHM", "G", "Gt", "F", "Ft", "N", "RC", "H", "W", "W0", "W1", "W2", "DROP", "DUP"];
+const A2_HEX = new Set(["Bst", "O0", "G", "F", "N", "RC", "W1", "W2"]);
+export function a2dpWords(line) {
+  const w = line.trim().split(/\s+/).slice(1);
+  if (w.length !== A2_NAMES.length || !w.every((x) => /^[0-9A-F]{8}$/i.test(x))) return null;
+  return A2_NAMES.map((k, i) => {
+    const v = parseInt(w[i], 16) >>> 0;
+    const t = A2_HEX.has(k) ? w[i] : k === "hc" ? `${(v >>> 16).toString(16).padStart(4, "0")}:${(v & 0xffff).toString(16).padStart(4, "0")}`
+      : k === "W0" ? `${v >>> 1}ms/${v & 1}` : k === "DROP" ? `${v & 0xffff}/${v >>> 16}` : String(v);
+    return `${k} ${t}`;
+  }).join(", ");
+}
+
 // one reading, at the deepest level the pedal answers
 async function read(access, timing) {
   const time = new Date().toISOString();
@@ -157,9 +173,12 @@ async function read(access, timing) {
     return dev ? { time, level: "identity", id: dev.id, port: dev.name } : { time, level: "silent", port: ports[0].name };
   }
   try {
-    // (hci, hci0: the Bluetooth audio image's HCI lines; isr, from its test build 11: the interrupts' times against the audio's, and the DSP)
-    const [boot, last, ble, link, trace, hci, hci0, isr] = await ed.diag();
-    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0, isr };
+    // (the Bluetooth audio image: hci, its HCI line; line 6 the first HCI messages (hci0, test builds 9-11) or the phone's packets at
+    // the controller (a2dp, from test build 12: "A2 ..."); isr, from test build 11: the interrupts' times against the audio's, and the
+    // DSP; c1, from test build 12: the second core and its fault record)
+    const [boot, last, ble, link, trace, hci, l6, isr, c1] = await ed.diag();
+    const a2dp = l6 && l6.startsWith("A2") ? l6 : undefined, hci0 = l6 && !a2dp ? l6 : undefined;
+    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0, a2dp, isr, c1 };
   } catch (e) {
     if (e.code !== "timeout") throw e;
     const r = await ed.request(C.PING).catch(() => null);
@@ -185,7 +204,13 @@ function show(r, prev, say) {
   if (r.trace) say(`trace      ${r.trace}`);
   if (r.hci) say(`hci        ${r.hci}`);
   if (r.hci0) say(`hci0       ${r.hci0}`);
+  if (r.a2dp) {
+    say(`a2dp       ${r.a2dp}`);
+    const named = a2dpWords(r.a2dp);
+    if (named) say(`           ${named}`);
+  }
   if (r.isr) say(`isr        ${r.isr}`);
+  if (r.c1) say(`c1         ${r.c1}`);
   if (ble.state !== "advertising") return;
   const before = prev?.level === "full" && prev.ble.state === "advertising" ? prev.ble : null;
   for (const k of ["i", "e", "r", "t", "s"]) say(`  ${k.padEnd(5)}${String(ble[k]).padEnd(10)}${(before ? `+${ble[k] - before[k]}` : "").padEnd(9)}${MEANING[k]}`);

@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BOOT_STAGES, RESET_CAUSES, judge, main, parseBle, parseBoot, parseLast } from "../tools/log.mjs";
+import { BOOT_STAGES, RESET_CAUSES, a2dpWords, judge, main, parseBle, parseBoot, parseLast } from "../tools/log.mjs";
 import { simAccess } from "./simpedal.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -66,6 +66,14 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
   ok(v.result === "running" && /REV held/.test(v.reason) && !/visible/.test(v.reason), `REV held at power-on: Bluetooth off, said so: ${v.reason}`);
   v = judge(at("STALL btctrler S8 BB 00000107 0000FE02 00000000 0000FFFF 00000001"));
   ok(v.result === "running" && /earlier stall/.test(v.reason), "an earlier stall's record while Bluetooth is off is named, not unknown");
+  // test build 12's a2dp line (firmware/bt/bt_a2dp.c bt_a2dp_line: "A2" and 23 words in hex), named by the tool
+  const w = ["00000123", "00000000", "00300041", "00000122", "00000001", "10004100", "0001ABCD", "10004101", "0000ABCD", "00000000",
+    "10004101", "0000ABCE", "10004100", "0000ABCF", "10004100", "FFFFFFEA", "00000122", "00000003", "0003579B", "10004100",
+    "01C5F0FA", "00010002", "00000001"];
+  const named = a2dpWords(`A2 ${w.join(" ")}`);
+  ok(named && /^n 291, kept 0, hc 0030:0041, B 290, Bn 1, Bst 10004100/.test(named) && /RC FFFFFFEA, H 290, W 3, W0 109517ms\/1/.test(named)
+     && /DROP 2\/1, DUP 1$/.test(named), "the a2dp line's 23 words, named");
+  ok(a2dpWords("A2 0000 0001") === null && a2dpWords(`A2 ${w.slice(1).join(" ")} XYZ12345`) === null, "an a2dp line cut short or damaged is not named");
 }
 b = parseBoot("UP 12345 SAFE 1 STAGE 7 RST 44 GUARD 1");
 ok(b.clockMs === 12345 && b.safe && b.stageName === "FIRST 6 S" && b.resetBy.join() === "WATCHDOG,SOFT" && b.failedBoots === 1, "boot line");

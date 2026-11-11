@@ -91,8 +91,25 @@ static uint8_t fm1_cpu1_on;                     /* started and answering: CPU0 m
 static inline void fm1_cpu1_sync(void) { FM1_CPU1_SYNC(); }   /* a barrier between the cores (a job's own sharing) */
 static uint8_t fm1_cpu1_gave_up;                /* why it is off (FM1_CPU1_*), 0 = it is not */
 
-/* its faults (fm1_cpu1_fault_c): CPU0 reads count */
-static struct { volatile uint32_t count; uint32_t echoes, cpu, dbg, emu, pc, rets; } fm1_cpu1_fault;
+/* its faults (fm1_cpu1_fault_c): CPU0 reads count. From dbg on in the order the Bluetooth audio image's c1 line prints them
+ * (bt/bt_a2dp.c): the debug unit's message, the taking core's EMU_MSG, the PC and RETS saved (CPU0's when CPU0 took it, cpu
+ * 0); with FM1_CPU1_RECORD 1 (that image) also CPU1's own EMU_MSG, when (fm1_uptime_ms), the mailbox's job handed and job
+ * finished (different: one was running) and its function, and the debug unit's ten words from 0x1EEE358 (the SDK's register
+ * map: the write-limit error counts, PRP_WR_LIMIT_ID, AXI_RD_INV_ID, AXI_WR_INV_ID, PRP_MMU_ERR_WID / RID: which bus master an
+ * invalid access came from) */
+#ifndef FM1_CPU1_RECORD
+#define FM1_CPU1_RECORD 0
+#endif
+static struct {
+    volatile uint32_t count;
+    uint32_t echoes, cpu, dbg, emu, pc, rets;
+#if FM1_CPU1_RECORD
+    uint32_t emu1, ms, req, cmp, fn, dbgx[10];
+#endif
+} fm1_cpu1_fault;
+#if FM1_CPU1_RECORD
+static uint32_t fm1_cpu1_gave_ms;               /* when it was retired (fm1_uptime_ms | 1), 0 = it was not */
+#endif
 
 /* one core until power-off. Not static, as fm1_crash: the compiler must not assume a zero start */
 #define FM1_CPU1_BAR_MAGIC 0x52414231u          /* "1BAR" */
@@ -192,6 +209,9 @@ static void fm1_cpu1_retire(uint32_t why)
     fm1_cpu1_bar_set();
     fm1_cpu1_on = 0;
     fm1_cpu1_gave_up = (uint8_t)why;
+#if FM1_CPU1_RECORD
+    fm1_cpu1_gave_ms = fm1_uptime_ms() | 1u;
+#endif
     fm1_cpu1_mb.complete = fm1_cpu1_mb.request;
     FM1_CPU1_SYNC();
 }
@@ -351,6 +371,18 @@ static int fm1_cpu1_fault_c(const uint32_t *f)
     fm1_cpu1_fault.emu = cpu ? FM1_C1_EMU_MSG : FM1_EMU_MSG;     /* the faulting core's EMU_MSG */
     fm1_cpu1_fault.pc = f[16];
     fm1_cpu1_fault.rets = f[25];
+#if FM1_CPU1_RECORD
+    {
+        uint32_t i;
+        fm1_cpu1_fault.emu1 = FM1_C1_EMU_MSG;   /* CPU1's own (bit 3: its stack limit), whichever core took it */
+        fm1_cpu1_fault.ms = fm1_uptime_ms();
+        fm1_cpu1_fault.req = fm1_cpu1_mb.request;
+        fm1_cpu1_fault.cmp = fm1_cpu1_mb.complete;
+        fm1_cpu1_fault.fn = (uint32_t)(uintptr_t)fm1_cpu1_mb.fn;
+        for (i = 0; i < 10u; i++)               /* (read only: the bus masters' ids of an invalid access, the error counts) */
+            fm1_cpu1_fault.dbgx[i] = *(volatile uint32_t *)(0x1EEE358u + 4u * i);
+    }
+#endif
     fm1_cpu1_fault.count++;                     /* (before DBG_MSG clears: see the echo above) */
     was = FM1_DBG_WR_EN & 1u;                   /* (writing 0xE7 toggles the unlock) */
     if (!was)

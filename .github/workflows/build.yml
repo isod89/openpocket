@@ -40,4 +40,5 @@ jobs:
             firmware/openpocket-bt.bin
             firmware/build-bt/symbols.txt
             firmware/build-bt/openpocket.map
+            firmware/build-bt/listings/
             build/bt/

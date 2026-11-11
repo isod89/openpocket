@@ -79,7 +79,30 @@ int gpio_set_pull_down(uint32_t g, int on)   { jl_rmw(g, 0x14, on); return 0; }
 
 static px_engine g_eng __attribute__((section(".pool"), aligned(8)));   /* ~250 KB: "POOL" RAM region */
 static float a_in[A_FR], a_out[A_FR];
+#if OP_BT_AUDIO
+/* output, 24-bit right-aligned. Test build 12 (the Bluetooth audio image only, until the ear confirms it): two slots. The SDK's
+ * handler (iis.bc iis_irq_handler) calls a_dec (the output) and a_enc (the input and the DSP) each when it finds its own
+ * half-done flag up, so their order follows the interrupt's entry latency, and with one buffer every change of order repeated a
+ * block and skipped the next: a click on any note sounding, with no late block. a_enc's block goes to slot a_wslot; a_dec sends
+ * the block before the newest whatever the order (one block, 2.9 ms, more latency than the input-first order test build 11
+ * mostly ran). a_slots_off (DLY held at power-on): the output as test build 11 sent it, for an A/B by ear */
+static int32_t a_res[2][A_FR] __attribute__((section(".bss.hi.a_res"), aligned(8)));   /* (the RAM code window's free end) */
+static uint32_t a_nenc, a_ndec;                        /* blocks made (a_enc), blocks sent (a_dec) */
+static volatile uint8_t a_wslot, a_jslot, a_slots_off; /* the slot a_enc's block goes to; the one CPU1's job writes */
+#define A_RES (a_res[a_wslot & 1u])                   /* (masked: a CPU1 misread of a_wslot stays inside the array) */
+#define A_JSLOT() (a_jslot = a_wslot)
+/* the callbacks' order (the log's isr line, OC): two a_dec (1) or two a_enc (2) in a row are a change of order; and the
+ * entries by the flags they find (EN, fm1_alnk0_irq) */
+static volatile uint32_t a_en_s[5], a_dd, a_ee, a_dd_s, a_ee_s;
+static volatile uint8_t a_last_cb;
+#define A_ORDER(me) do { if (a_last_cb == (me)) { if ((me) == 1u) { a_dd++; a_dd_s++; } else { a_ee++; a_ee_s++; } } \
+                         a_last_cb = (me); } while (0)
+#else
 static int32_t a_res[A_FR];                            /* output, 24-bit right-aligned */
+#define A_RES a_res
+#define A_JSLOT() ((void)0)
+#define A_ORDER(me) ((void)0)
+#endif
 static volatile float a_lvl[2];                        /* input L / R: mean square, in 24-bit steps */
 /* input level in dB below full scale (dBFS), rounded; -199 = digital silence */
 static int a_level_db(int ch)
@@ -112,6 +135,14 @@ static void a_commit(void) { if (a_kpend) { px_engine_knobs(&g_eng, &a_kp); a_kp
  * with a NAM amp the blocks after it run on the second core, beside the ones before it) */
 static uint8_t a_pf[PX_NBLK + 1];
 static uint32_t a_wcut;                                /* v39: wet blocks cut short so far (the footer, when not 0) */
+#if OP_BT_AUDIO
+static uint32_t a_wcut_base;                           /* (test build 12) the cut blocks counted before a retirement or a reset
+                                                        * cleared the engine's count (px_wet_mode, px_engine_init) */
+#define A_WCUT_KEEP() (a_wcut_base += g_eng.wl_late)
+#else
+#define a_wcut_base 0u
+#define A_WCUT_KEEP() ((void)0)
+#endif
 static volatile uint8_t a_nan;                         /* engine output a NaN/Inf: needs a reset */
 static volatile uint32_t a_nan_count;
 static int a_running;
@@ -192,6 +223,7 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
     const float g = a_gain;                            /* v38: the volume glides there (~3 ms), no zipper */
     float gv = a_gv;
     int clip = 0;
+    int32_t *const res = A_RES;
     for (uint32_t i = 0; i < A_FR; i++) {
         gv += (g - gv) * 0.008f;
 #if OP_BT_AUDIO
@@ -205,7 +237,7 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
             v = v < 0.0f ? -m : m;
             clip = 1;
         }
-        a_res[i] = (int32_t)(v * 8388607.0f);
+        res[i] = (int32_t)(v * 8388607.0f);
     }
     a_gv = gv;
     if (clip) a_clip++;
@@ -249,6 +281,7 @@ static uint8_t a_job;                                  /* a block is in progress
 static void a_c1_off(void)                             /* one core from now on: no lanes, no layer split */
 {
     a_c1 = 0;
+    A_WCUT_KEEP();
     px_wet_mode(&g_eng, 0, 0);
     if (g_eng.nam_lp) { px_nam_lp(&g_eng, 0); a_nan = 1; }   /* (a block CPU1 left half done: the engine is reset) */
 }
@@ -369,7 +402,7 @@ static void dsp_lp_run(int run)
     fm1_cpu1_sync();
     a_lpstop = 1;
     fm1_cpu1_sync();
-    if (job) a_job = 1;                                /* (collected by the next a_dec or a_enc, or before a recompute) */
+    if (job) { a_job = 1; A_JSLOT(); }                 /* (collected by the next a_dec or a_enc, or before a recompute) */
     a_nbv = (uint8_t)run;
     a_nbi = (uint8_t)prev;
 }
@@ -485,10 +518,14 @@ static void a_enc(void *priv, uint8_t *data, int len, uint8_t ch)     /* guitar 
 {
     (void)priv;
     if (ch != 1u) return;
+    A_ORDER(2u);
 #if DSP_CPU1
     const uint32_t t_irq = fm1_ticks();
 #endif
     a_collect();                                       /* a_in must no longer be read by CPU1 */
+#if OP_BT_AUDIO
+    a_wslot = (uint8_t)(a_nenc++ & 1u);                /* (after the collect: the job before has written its slot) */
+#endif
 #if DSP_CPU1
     if (g_eng.wl_on) px_wet_swap(&g_eng);              /* v39: nothing runs: the lanes' buffers change roles */
 #endif
@@ -518,7 +555,7 @@ static void a_enc(void *priv, uint8_t *data, int len, uint8_t ch)     /* guitar 
         a_nbv = 0;
         a_commit();                                    /* v39: here, before the lanes run beside the chain */
         if (fm1_cpu1_run(dsp_job, 0)) {
-            a_job = 1;
+            a_job = 1; A_JSLOT();
             if (g_eng.wl_on) px_wet_run(&g_eng, t_irq + A_BUDGET * 85u / 100u, 0);   /* v39: the lanes, on CPU0 */
             return;
         }
@@ -532,6 +569,28 @@ static void a_enc(void *priv, uint8_t *data, int len, uint8_t ch)     /* guitar 
 static void a_dec(void *priv, uint8_t *data, int len, uint8_t ch)     /* output block to fill */
 {
     (void)priv; (void)ch;
+#if OP_BT_AUDIO
+    /* test build 12: the block before the newest (lag 1), whichever callback came first. Lag 0: a_dec runs first this period,
+     * so the newest is the one to send (its job, if CPU1 made it, started a period ago); more: the newest but one again; less
+     * (an input callback missed): the newest again */
+    A_ORDER(1u);
+    if ((int32_t)(a_nenc - a_ndec) > 1) a_ndec = a_nenc - 1u;
+    else if ((int32_t)(a_nenc - a_ndec) < 0) a_ndec = a_nenc;
+    const uint32_t s = a_slots_off ? (uint32_t)(a_wslot & 1u) : ((a_ndec - 1u) & 1u);
+    a_ndec++;
+#if DSP_CPU1
+    a_decw = 0;
+    if (a_job && a_jslot == s) {                       /* (the job still making the block to send) */
+        if (g_eng.nam_lp) {                            /* v40.2: the layer split: only its output (the job goes on) */
+            const uint32_t t = fm1_ticks();
+            while (!a_lppost && fm1_cpu1_busy()) fm1_cpu1_sync();
+            if (!a_lppost) a_collect();                /* (its job ended without it: dropped) */
+            a_decw = fm1_ticks() - t;
+        } else a_collect();
+    }
+#endif
+    const int32_t *const r = a_res[s];
+#else
 #if DSP_CPU1
     a_decw = 0;
     if (a_job && g_eng.nam_lp) {                       /* v40.2: the layer split: only its output (the job goes on) */
@@ -542,10 +601,12 @@ static void a_dec(void *priv, uint8_t *data, int len, uint8_t ch)     /* output 
     } else
 #endif
     a_collect();                                       /* the previous block must be finished */
+    const int32_t *const r = a_res;
+#endif
     int32_t *d = (int32_t *)data;
     uint32_t n = (uint32_t)len / 8u;
     if (n > A_FR) n = A_FR;
-    for (uint32_t i = 0; i < n; i++) d[2u * i] = d[2u * i + 1u] = a_res[i];
+    for (uint32_t i = 0; i < n; i++) d[2u * i] = d[2u * i + 1u] = r[i];
 }
 #if OP_BLE_TEST
 /* the Bluetooth test images time the audio interrupt (the log's isr line, bt/bt_a2dp.c): the longest gap between two entries
@@ -558,6 +619,14 @@ void fm1_alnk0_irq(void)
 {
     const uint32_t t0 = fm1_ticks();
     uint32_t d;
+#if OP_BT_AUDIO
+    {   /* test build 12: the half-done flags this entry finds (ALNK0 CON2 bits 4-7, 0x12E00 + 8: iis.bc struct iis_reg's field 4;
+         * a read, the handler clears them): none, the output's only, the input's only, both, another channel's */
+        const uint32_t f = (uint32_t)*(volatile uint8_t *)0x12E08u >> 4;
+        a_en_s[f & 3u]++;
+        if (f & 0xCu) a_en_s[4]++;
+    }
+#endif
     if (a_irq_t0) {
         d = t0 - a_irq_t0;
         if (d > a_irq_gap_s) a_irq_gap_s = d;
@@ -651,6 +720,7 @@ static void audio_reset(void)                          /* after a NaN: engine re
     if (a_running) a_quiet_dma();                      /* (a_nan: the blocks since are silent, the music too) */
     if (a_running) fm1_irq_mask(FM1_IRQ_ALNK0);
     a_collect();
+    A_WCUT_KEEP();
     px_engine_init(&g_eng, 44100.0f);
 #if DSP_CPU1
     px_wet_mode(&g_eng, a_c1 && OP_WET_LANES, A_WLAG);   /* (the init cleared it) */
@@ -864,7 +934,7 @@ static void audio_prof(uint32_t now)                    /* (main loop) once a se
         const uint32_t pc = den ? t / den : 0u;
         a_pf[i] = (uint8_t)(pc > 255u ? 255u : pc);
     }
-    a_wcut = g_eng.wl_late;
+    a_wcut = a_wcut_base + g_eng.wl_late;
 }
 /* call from the main loop: applies preset changes (40 ms debounce) */
 static void audio_poll(uint32_t now)

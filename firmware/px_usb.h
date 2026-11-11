@@ -106,6 +106,11 @@ static int ota_fread(uint32_t off, void *p, uint32_t n)
     uint8_t *d = p;
     while (n) {                                 /* 256-byte windows, interrupts off (the SFC is switched off) */
         uint32_t k = n > 256u ? 256u : n, f = irq_save();
+#if DSP_CPU1 && OP_BT_AUDIO
+        (void)fm1_cpu1_wait();                  /* (the Bluetooth audio image reads here with the audio running: the second
+                                                 * core's job in flight may read the flash, and no new one starts; a core that
+                                                 * faulted is held: its handler parks in the flash) */
+#endif
         int rc = FL_FAR(fl_read_ram)(off, d, k);
         irq_restore(f);
         if (rc)

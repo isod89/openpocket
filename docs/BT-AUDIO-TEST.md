@@ -5,9 +5,11 @@ phone as **`OpenPocket`**, pairs with no PIN, and the phone's music plays **mixe
 
 It is a test image, its own build target (`make bt`). The normal firmware and the installer's packages are unchanged.
 
-> **Status: test build 11.** Builds 1 to 10 ran on a pedal: the radio starts, a phone sees the pedal and links, but no phone
-> could pair, and the guitar crackled. Build 11 fixes the four reasons found for the pairing (below, "Test build 11") and
-> measures the crackles. Every part that can be checked on a computer is checked (see "Checked on a computer").
+> **Status: test build 12.** Builds 1 to 10 ran on a pedal: the radio starts, a phone sees the pedal and links, but no phone
+> could pair, and the guitar crackled. Build 11 paired an iPhone (below, "Test build 11"), but no music came out, and the guitar
+> still crackled with Bluetooth on. Build 12 takes the phone's packets where the controller first shows them, sends the output
+> in two slots against the crackles, and records the second core's fault (below, "Test build 12"). Every part that can be
+> checked on a computer is checked (see "Checked on a computer").
 
 ## What is in it, and what is not
 
@@ -32,7 +34,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 11` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 12` (the number is the test build's).
    Before pairing with a phone that saw an earlier build, forget the pedal there first (iPhone: **Settings > Bluetooth**, the
    **i** next to `OpenPocket` or `Accessorio`, **Forget This Device**).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
@@ -48,9 +50,16 @@ Your pedal must already run OpenPocket.
 | 4. play music | `BT PLAY` | the music plays **from the pedal's output**, with the guitar |
 | 5. pause / disconnect | `BT LINK` / `BT VISIBLE` again | |
 
-**Bluetooth off for one boot:** hold **REV** while switching the pedal on, until the start-up screen has gone. That boot runs
-the same image with the radio off (`BT OFF`), so the sound with and without Bluetooth can be compared by ear without
-re-flashing. The next boot has Bluetooth again.
+**A/B keys, held while switching the pedal on, until the start-up screen has gone** (each for that boot only; the log's `c1`
+line shows `KEY`, test build 12). Switch off for real (USB out too, 10 s) before each boot you compare:
+
+| Key | That boot |
+| --- | --- |
+| **REV** | Bluetooth off (`BT OFF`): the same image with the radio off, to compare the sound with and without Bluetooth by ear |
+| **DLY** | the output as test build 11 sent it, one slot (test build 12): with it the crackles of the callbacks' order changes come back, if they were the crackles |
+
+(CAB held at power-on does nothing in test build 12: the c1 line only shows `KEY 1`. A CAB key for the stock firmware's supply
+levels did not fit in the flash.)
 
 `FAILED s c` means the start failed: the line that scrolls says which step and stage (the BLE image's codes,
 [BLE-TEST.md](BLE-TEST.md#reading-the-status-text)). The stall watch, the crash screen and the `LAST BOOT FAILED` report work as in
@@ -98,7 +107,8 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 | `Q40` | seconds since IRQ 40 last rose. While a phone is searching it stays near 0; a large number means the scans have stopped |
 | `KICK` | times the pedal asked for its scans again because IRQ 40 had been silent for 5 s while visible (test build 4) |
 | `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations. While a phone is linked, `RX` must rise: the phone's packets wait there (test builds 1 to 5 never used it, see below) |
-| `RNG a/b` | the random source the pairing's keys come from (0x13B00), read a second apart (test build 11): it must not be 0, and `a` and `b` must differ |
+
+(Test build 11 also had `RNG a/b`, the random source the pairing's keys come from: it worked, and build 12 drops it.)
 
 While no phone is linked, the link line shows the Bluetooth tasks instead (test build 8): `TASKS btapp S 01C0A1B0=0 q0 F3012
 P0, btctrler Q q0 F2344 P3, btstack R q2 F1876 P7`, each task's state (`R` ready, `Q` waiting for a message, `S` waiting
@@ -107,9 +117,9 @@ stays `S` while its `q` grows is the stuck one: look its address up in `build-bt
 the bytes of its stack (4 KB) never used, `P`, the most messages it ever had queued, and `OVF` if it came within 64 bytes of
 its stack's end.
 
-The `hci` and `hci0` lines (test build 9) are the HCI conversation between the controller and the host, which in this
-integrated stack travels through the tasks' queues: `hci` the newest 11 messages, `hci0` the first 12 since boot (the host's
-start-up). `n` all messages posted to a task, `ACL` data packets to the host and `NCP` Number of Completed Packets events
+The `hci` line (test build 9) is the HCI conversation between the controller and the host, which in this integrated stack
+travels through the tasks' queues: the newest 11 messages (test builds 9 to 11 also had `hci0`, the first 12 since boot; the
+a2dp line took its place in build 12). `n` all messages posted to a task, `ACL` data packets to the host and `NCP` Number of Completed Packets events
 (only counted), `Q` the deepest a task's queue has been and `LOST` the posts refused because a queue was full (the library
 tries some of them again after a short sleep, so not each one is a message lost). Each entry: the task
 (`S` the host, btstack; `C` the controller, btctrler; `E` btencry; `A` btapp), the message's type digit, then its first 5
@@ -129,23 +139,23 @@ The trace line ends with `CR`, the last calls the library made into the firmware
 
 ### The link line
 
-`BT PLAY n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 51234 ER 0 PK 7345 BUF 148+52 MS UND 0 RATE -0.04% DISC 0 PD 0 F A3012/C2344/S1876`
+`BT PLAY n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 51234 ER 0 PK 7345 BUF 98+52 MS UND 0 RATE -0.04% DISC 0 FQ 6 F A3012/C2344/S1876`
 
 | Field | Meaning |
 | --- | --- |
 | `n` `ENC` `A2DP` `PLAY` | links so far, encrypted links, A2DP channels, times the music started |
 | `SBC 44100 2CH BP53` | the stream: its rate, channels, bitpool (53: the usual "high quality") |
-| `FR` `ER` `PK` | SBC frames decoded, frames refused, packets received |
-| `BUF a+b MS` | the music waiting: still encoded (a) and decoded (b); it keeps about 150 ms in all |
+| `FR` `ER` `PK` | SBC frames decoded, frames refused, packets decoded (test build 11 stayed at one a session: no music) |
+| `BUF a+b MS` | the music waiting: still encoded in the FIFO (a) and decoded (b); it keeps about 150 ms in all |
 | `UND` | times the decoded music ran out (an underrun: a short gap) |
 | `RATE` | how much the pedal is speeding up or slowing the music to follow the phone's clock (about -0.04 % is normal) |
 | `DISC` | disconnections |
-| `PD` | music packets held when a link ended without a stop first, which could not be given back (each costs about 1 KB of `RX` until power-off) |
+| `FQ` | the phone's packets waiting in the FIFO (test build 12; 16 at most, about 6 to 10 while it plays). Test build 11 had `PD` here |
 | `F` | each Bluetooth task's stack never used, in bytes, after its initial: `A` btapp, `C` btctrler, `S` btstack (`!`: it nearly overflowed) |
 
-### The isr line (test build 11)
+### The isr line (test builds 11, 12)
 
-`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2905/3120 AI 1710/2620 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0`
+`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/0 3/3 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0`
 
 What the interrupts cost the audio, and the DSP's state, for the crackles. Times are in microseconds.
 
@@ -153,14 +163,56 @@ What the interrupts cost the audio, and the DSP's state, for the crackles. Times
 | --- | --- |
 | `40:a/b/c` `41:a/b/c` | the classic baseband's two interrupts: the longest in the last second, the longest since boot, and the time they took in all in the last second. They run above the audio |
 | `T5 a/b` | the 10 kHz timer (USB, the stall watch), also above the audio: the longest in the last second / since boot |
-| `AG a/b` | the longest gap between two audio interrupts (last second / since boot). 2,902 is on time: more means the audio interrupt started late, which `XR` does not see. A preset change or a flash write is not counted |
+| `AG a/b` | the longest gap between two audio interrupt entries (last second / since boot). 2,902 when one entry serves a period; less (2,144 in build 11's log): two entries a period, the input's and then the output's, so AG is the period less the input's stay; more: an entry came late. A preset change or a flash write is not counted |
 | `AI a/b` | the audio interrupt's longest stay (last second / since boot) |
+| `EN a/b/c/d/e` | (test build 12) the audio interrupt's entries in the last second, by the flags they found: none / the output's only / the input's only / both / another channel's. About 344 a second each is two entries a period; `d` counts the periods whose output callback ran first; `e` must be 0 |
+| `OC a/b c/d` | (test build 12) the callbacks' order changes in the last second and since boot: two output callbacks in a row / two input ones. Up to test build 11 each one repeated a 2.9 ms block or skipped one: a click on any sounding note. With the two slots they cost nothing (and with DLY at power-on they click again). Each full preset change and each flash write (the audio interrupt held) adds one of each by itself |
 | `C1` | 1: the second core runs; 0: the whole DSP is on one core (heavy presets then go to `BYP`) |
-| `G` | why the second core is off: 0 it is not; 1 it misread shared memory, 2 a job was not back within 8 ms, 4 it faulted (1, 2 and 4: retired in this boot, and barred at every start until a power-off); 3 barred at start (by such a retirement, or by a crash of the first core while it ran, in an earlier boot of the same build); 5 it did not answer at start |
-| `NAM` | 1: the NAM amp runs on both cores; 0: not |
+| `G` | why the second core is off: 0 it is not; 1 it misread shared memory, 2 a job was not back within 8 ms, 4 it faulted (1, 2 and 4: retired in this boot, and barred at every start until a power-off); 3 barred at start (by such a retirement, or by a crash of the first core while it ran, in an earlier boot of the same build); 5 it did not answer at start. The c1 line has the rest |
+| `NAM` | 1: the preset's NAM amp is one that runs on both cores; 0: not (test build 12: whatever `C1` is) |
 | `LD` `PK a/b` | the DSP load, and its peak since the last full preset change / since boot, % of a block's time |
-| `XR` `CL` `WC` `BYP` | late blocks (each one a likely crackle), clipped blocks, the delay and reverb lane's cut blocks (clicks in the tails), bypassed |
+| `XR` `CL` `WC` `BYP` | late blocks (each one a likely crackle), clipped blocks, the delay and reverb lane's cut blocks (clicks in the tails; since build 12 kept across a retirement or a reset), bypassed |
 | `TM` `VM r/w` `OVF` | the library's software timers that fired, the pairing store's reads and writes, task stacks that nearly overflowed |
+| `NAN` | (test build 12) the engine's resets after a NaN, since boot: each one 15 to 50 ms of silence |
+
+### The a2dp line (test build 12)
+
+`A2` and 23 words in hex: the phone's packets as the controller shows them to the A2DP code (`a2dp_media_packet_user_handler`),
+and the controller's own A2DP state for each one. `node tools/op.mjs log` prints them a second time with their names. In test
+build 11 the controller kept only the first packet of each session for the pedal and sent every later one to the host, which
+plays nothing: these words say why.
+
+| Word | Meaning |
+| --- | --- |
+| `n` | packets the hook saw (about 70 a second while the music plays; 0 with music playing: the hook did not link) |
+| `kept` | packets the controller itself kept for the pedal (0: its keep test never passed) |
+| `hc` | the last packet's handle and L2CAP CID (`0030:0041` or so) |
+| `B` `Bn` `Bst` `Bt` | packets found with the receiving connection's state wrong for its keep test, the first one's number in its session (1: the first after MEDIA_START), its state word and its time (ms) |
+| `O0` `Ot` | the first connection's state at the first MEDIA_START, and when (expected `10cccc01`-like, e.g. `10004101` for CID 0041: a handle, the CID, open) |
+| `CHM` | packets received on a connection other than the one the host opened (expected 0) |
+| `G` `Gt` `F` `Ft` | the open connection's state just before the pedal's first give-back of a library packet and just after it, and when |
+| `N` | its state now |
+| `RC` | the last "get" from the library: 0 nothing waiting, `FFFFFFEA` closed, no link, detaching or suspended |
+| `H` | heals: the two fields written back when found wrong, on the connection the host opened only (then `kept` should rise, if the state was all that was wrong) |
+| `W` `W0` `W1` `W2` | the 10 kHz watch over both connections while playing: changes seen, then the first one's time << 1 \| connection, its new state, and the code the interrupts found running (look it up in `build-bt/symbols.txt`) |
+| `DROP` | packets the FIFO could not take: full / too big |
+| `DUP` | packets the library handed the pedal, given back undecoded (the FIFO already has them) |
+
+A state word: bits 0-7 the channel-open byte, 8-23 the CID the controller expects, 24 a clear-up pending, 25 a detach asked,
+26 suspended, 27 detaching, 28 the connection has a handle. The music plays from the FIFO whatever these say.
+
+### The c1 line (test build 12)
+
+`C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0`, and after a fault of the second core 19 more words in hex.
+
+| Field | Meaning |
+| --- | --- |
+| `C1` `G g@t` | the second core runs; why it is off (as in the isr line) and when it was retired (ms; wraps every 179 s) |
+| `K` | how deep the second core's stack has gone, in bytes (of 2,816) |
+| `KEY` | the key held at power-on: 0 none, 1 CAB (nothing in this build), 2 DLY, 3 REV |
+| `S` | where Bluetooth was when the main loop first saw a fault: stage << 28 \| state << 24 \| DSP held << 23 \| 1 << 22 \| IRQ 40's count |
+| `F n/c` | the second core's faults, and which core took the exception (0: the first, the usual case) |
+| then | DBG (the debug unit's message: bits 16-18 a bus error, 10 a PC limit), the taking core's EMU_MSG, PC, RETS (the first core's when it took the exception), the second core's own EMU_MSG, the time (ms), the job handed and the job finished (different: one was running), its function, and the debug unit's ten words from `0x1EEE358` (the bus masters' ids of an invalid access, the write-limit error counts) |
 
 ## Please report
 
@@ -171,10 +223,12 @@ What the interrupts cost the audio, and the DSP's state, for the crackles. Times
 - With the music playing: `node tools/op.mjs dsp --presets 1,14,18,19,20,21,24 --seconds 8`, and the same with the music
   paused. The question this image is for: does a streaming radio push heavy presets into `BYP` or late blocks?
 - By ear: clicks or gaps in the music (and whether `UND` rises), hum or buzz in the guitar sound while the music plays.
-- For crackles: the `isr` line while they happen, and the same preset with Bluetooth off (REV held at power-on). If they are
-  there with Bluetooth off too, the radio is not the cause. If they come only with Bluetooth on and nothing is playing (a
-  high-gain preset, the guitar's volume at zero), ticks at the scans' rhythm point to the radio's supply or RF reaching the
-  analog side, which no firmware change can fix.
+- For crackles: the `isr` line while they happen, and the same preset with Bluetooth off (REV held at power-on) and with DLY
+  held (test build 12: build 11's output). If they are there with Bluetooth off too, the radio is not the cause. If they come
+  only with Bluetooth on and nothing is playing (a high-gain preset, the guitar's volume at zero), ticks at the scans' rhythm
+  point to the radio's supply or RF reaching the analog side, which no firmware change can fix.
+- After any boot whose c1 line shows `G 4`: the c1 line as it is (its words, looked up in `build-bt/symbols.txt` of the same CI
+  run, say where the second core faulted). A red crash screen: a photo of it (PC, RETS, VEC, DBG), before switching off.
 
 ## Known limits and risks
 
@@ -220,13 +274,16 @@ firmware/ble/                shared with the BLE image: the scheduler and heap, 
   bitcode, the archives `third_party/jieli-ble` already pins). The SDP record the phone reads is the library's own, byte for byte
   the stock firmware's (`JL_A2DP`).
 - **The SBC decoder is Android's** (`third_party/sbc-android`, Apache-2.0), fixed point, about 2 % of one core.
-- **The music path:** the radio's receive pool (12 KB) holds the phone's packets, still encoded; the main loop decodes them into a
-  58 ms ring of mono samples; the audio path reads the ring at a rate the main loop steers, so the pedal follows the phone's clock
-  (the two differ by about 0.04 %) with a backlog of 150 ms, by linear interpolation. Nothing of the stack runs in the audio
-  interrupt: it only reads the ring.
+- **The music path:** the radio's receive pool (12 KB) holds the phone's packets as they arrive; where the controller shows each
+  media packet to the A2DP code, the pedal copies it into a 16-packet FIFO (test build 12: the controller's own hand-over to the
+  application failed from the second packet of each session); the main loop decodes the FIFO into a 58 ms ring of mono samples;
+  the audio path reads the ring at a rate the main loop steers, so the pedal follows the phone's clock (the two differ by about
+  0.04 %) with a backlog of 150 ms, by linear interpolation. Nothing of the stack runs in the audio interrupt: it only reads the
+  ring.
 - **Memory** (beyond the BLE image's): three task stacks of 4 KB in NOINIT (test builds 1 to 10: four of 2.75 KB, the fourth
   never used), the baseband's table (4.2 KB) and the receive pool in the SRAM below the RAM, the ring, the decoder's state and
-  the mix buffer above it, the pairing store (672 bytes of RAM).
+  the mix buffer above it, the pairing store (672 bytes of RAM), the FIFO (10.8 KB of the Bluetooth heap), the output's two slots
+  (1 KB in the RAM code window's free end).
 - **The baseband's 64 KB window.** The classic baseband reaches memory as 16-bit offsets from its table (`bd_base`, register
   0x2FC44): everything the library hands it must lie less than 64 KB above `bd_base`, and the library asserts it (a failed
   assertion stops in a loop). So the send pool (2 KB, also the page and inquiry scan buffers), the controller's own variables
@@ -267,6 +324,35 @@ is on, the status area scrolls the Bluetooth line instead). Then the
 `isr` line measures what the radio costs the audio, and REV at power-on gives the same image without the radio, to compare by
 ear. A preset change now also waits for silence to reach the output before it holds the audio interrupt (up to build 10 the
 output buzzed at 172 Hz for the length of the recompute, in every image), and the phone's music fades with the guitar.
+
+## Test build 12
+
+Build 11 paired an iPhone and the phone streamed (about 70 packets a second), but the pedal played nothing (`PK 1`), and the
+guitar still crackled with Bluetooth on, never with it off (REV). A review of the build-11 log against the library's code found:
+
+1. **No music.** The controller decides, for each media packet, whether it goes to the application or to the host: it keeps it
+   for the application only if the packet's channel is the one the application opened. In build 11 only the first packet of
+   each session was kept (the one the channel's open marked itself); every later one failed that test and went to the host,
+   which has nothing to play it with. No code in the library could have undone the open; why the test fails is not settled. So
+   the pedal now copies every media packet where the controller first shows it to the A2DP code, before that test, into a
+   FIFO, and plays from there, whatever the test then decides. The new a2dp line measures the test's inputs for each packet,
+   writes them back when wrong (`H`), and watches them 10,000 times a second, to settle the cause.
+2. **Crackles.** The audio interrupt's driver (the SDK's) calls the output callback and the input-and-DSP callback each when it
+   finds its own flag up. Build 11's isr line shows two entries a period, input first (`AG 2144` = the period less the DSP's
+   stay), and seconds where the order flipped (`AG` just under the period): a few microseconds of extra latency (the radio's
+   interrupts, a cold cache line) flip it. With one output buffer each flip played one 2.9 ms block twice and skipped the
+   next: a step on any sounding note, with no late block, more often with Bluetooth on. The output now has two slots: the
+   output callback always sends the block before the newest, whatever the order (2.9 ms more latency). `EN` and `OC` in the
+   isr line count the entries and the flips; DLY at power-on brings build 11's single buffer back, to confirm by ear.
+3. **The second core's fault.** It faulted (`G 4`) in every Bluetooth-on boot of build 11 and never with Bluetooth off. Its
+   record is now kept and printed (the c1 line): the debug unit's message and bus-master ids, CPU1's own exception word, the
+   time, the job, the stack's depth, and where Bluetooth was. (A CAB key for the stock firmware's supply levels, the cheap test
+   of the "misreads under load" the board's notes describe, did not fit in the flash: the record decides whether it is needed.)
+
+Also: Bluetooth's flash reads (the radio records, the address) run before the audio starts, and the radio's start-up burst and
+the flash reads wait for the second core's job in flight (the flash path is off meanwhile); `WC` survives a retirement; the
+log's ninth line; the build checks the library's static tables are where the a2dp line reads them, and keeps the compiled
+controller code (`listings/` in the artifact) to compare with the library's IR.
 
 ## Checked on a computer
 

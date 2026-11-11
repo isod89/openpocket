@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 11
+#define BT_TEST_BUILD 12
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -27,6 +27,9 @@
 #include "fm1_irq.h"
 #include "fm1_guard.h"
 #if DSP_CPU1
+#if OP_BT_AUDIO
+#define FM1_CPU1_RECORD 1  /* the second core's fault record in full (the Bluetooth audio image's c1 line, bt/bt_a2dp.c) */
+#endif
 #include "fm1_cpu1.h"
 #endif
 #include "font8x8.h"
@@ -608,9 +611,9 @@ static void ir_changed(uint32_t s)   /* v38: a user IR was written or erased: th
 #if OP_BLE_TEST             /* the log channel (firmware/ble/ble_diag.h): only this image answers DIAG, the normal firmware does not change */
 #define ED_STATS 8u         /* PING also gives the Bluetooth heap's and tasks' lowest free bytes */
 #if OP_BT_AUDIO
-#define ED_DIAG_LINES 8u    /* (the Bluetooth audio image: the HCI conversation, the newest and the first, and the interrupts'
-                             * times against the audio's, bt/bt_a2dp.c) */
-#define ED_OUT_BYTES 1824u  /* (its eight lines of up to 223 characters: 8 x 225 and the reply's head; px_editor.h's is 1,024) */
+#define ED_DIAG_LINES 9u    /* (the Bluetooth audio image: the HCI conversation, the phone's packets at the controller, the
+                             * interrupts' times against the audio's, the second core, bt/bt_a2dp.c) */
+#define ED_OUT_BYTES 2048u  /* (its nine lines of up to 223 characters: 9 x 225 and the reply's head; px_editor.h's is 1,024) */
 #else
 #define ED_DIAG_LINES 5u
 #endif
@@ -658,8 +661,9 @@ static void ed_diag_line(uint32_t i, char *out)
     else if (i == 3u) ble_midi_line(out);
 #if OP_BT_AUDIO
     else if (i == 5u) bt_hci_line(out);
-    else if (i == 6u) bt_hci0_line(out);
+    else if (i == 6u) bt_a2dp_line(out);  /* (test build 12, in place of the first HCI messages since boot) */
     else if (i == 7u) bt_isr_line(out);
+    else if (i == 8u) bt_c1_line(out);
 #endif
     else ble_trace_line(out);
 }
@@ -718,7 +722,9 @@ static void app_main(void)
                                                                                        * 9: the HCI conversation from the queues;
                                                                                        * 10: recursive mutexes, ble/ble_os.c;
                                                                                 * 11: the pairing's four walls, the second core's bar,
-                                                                                *     the clock, the waits in an interrupt, the isr line) */
+                                                                                *     the clock, the waits in an interrupt, the isr line;
+                                                                                * 12: the phone's packets from the controller's hook into
+                                                                                *     a FIFO, two output slots, the second core's record) */
 #elif OP_BLE_TEST
     ft_box(0, 126, 240, OP_VERSION " BLE TEST", &FT_SM, UI_DIM, UI_BG, 1);
 #else
@@ -790,6 +796,11 @@ static void app_main(void)
     adc_pins_analog();
     input_baseline();
     keys_capture_idle();
+#if OP_BT_AUDIO
+    /* test build 12's A/B key, held at power-on (REV: Bluetooth off, below; the log's c1 line shows KEY). (A CAB key that ran the
+     * boot at the stock firmware's supply levels did not fit in the flash: the second core's record decides whether it is needed) */
+    if (keys_held_at_boot == 2) a_slots_off = 1;   /* DLY: the output as test build 11 sent it, one slot (px_audio.h a_dec) */
+#endif
     op_stage(ST_PRESET, "PRESET...");
     load_preset(cur_preset);
 #if LED_PROBE
@@ -826,6 +837,9 @@ static void app_main(void)
     /* v37: the NAM routines by hand checked, its fastest way to run chosen. v40.2: not after a failed boot (safe mode,
      * the DSP off anyway): a hand routine that faults in its check then costs one boot, not every one, and the pedal
      * comes up with USB-MIDI for the installer's rescue (it ran C until the next boot) */
+#if OP_BT_AUDIO
+    if (!safe && keys_held_at_boot != 3) bt_flash_reads();   /* Bluetooth's flash reads, before the audio: no CPU1 job yet */
+#endif
     if (!safe) px_nam_check(b_ticks);
     audio_start();                       /* guitar -> DSP engine -> output, amp enabled */
     leds_init();                         /* the button lights: all off loaded, then on (PC7 low), as stock */

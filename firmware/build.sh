@@ -115,6 +115,36 @@ python3 "$HERE/../tools/check_calls.py" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1O
 "$TC/pi32v2/bin/ld" --defsym "op_guard_stack=$GUARD_STACK" -T "$LDS" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o" "$O/iis.o" $BLEOBJ $MAPOPT -o "$O/openpocket.elf"
 # symbol map: used to translate a crash address (PC) into a function name
 "$TC/common/bin/objdump" -t "$O/openpocket.elf" 2>/dev/null | sort > "$O/symbols.txt" || true
+if [ -n "$OP_BT" ]; then
+  # test build 12: bt/bt_a2dp.c reaches two of the library's static tables (lmp.c lmp_acl_link, a2dp_media_codec.c channel and
+  # current_conn) from the globals beside them. The vendor's objects never change, but this build must prove the distances hold
+  python3 - "$O/symbols.txt" <<'PY'
+import re,sys
+want=("lmp_acl_link","local_private_key","a2dp_mutual_toggle","channel","current_conn")
+s={}
+for ln in open(sys.argv[1]):
+    m=re.match(r"^([0-9a-f]{8}) .*\s([0-9a-f]{8}) (\S+)$",ln.rstrip("\n"))
+    if m and m.group(3) in want: s.setdefault(m.group(3),[]).append((int(m.group(1),16),int(m.group(2),16)))
+bad=[n for n in want if len(s.get(n,[]))!=1]
+if bad: sys.exit("bt layout: not exactly one symbol for "+", ".join(bad))
+(la,ls),(pk,_),(mt,_),(ch,_),(cc,_)=(s[n][0] for n in want)
+ok=ls==0x250 and pk==la+0x254 and ch==mt+8 and cc==mt+4
+print(f"bt layout: lmp_acl_link {la:#010x} ({ls:#x}), local_private_key {pk:#010x}, a2dp_mutual_toggle {mt:#010x}, current_conn {cc:#010x}, channel {ch:#010x}: {'ok' if ok else 'MOVED'}")
+if not ok: sys.exit("bt layout: the library's statics moved: firmware/bt/bt_a2dp.c BT_LMP / BT_CH must follow")
+PY
+  # the compiled controller and A2DP code, to compare with the IR (the artifact's listings/; neither step can fail the build)
+  mkdir -p "$O/listings"
+  for b in btctrler/lmp.c btstack/a2dp_media_codec.c btstack/a2dp_sink.c; do
+    $CC -Os -S -x ir "$HERE/../third_party/jieli-bt/$b.bc" -o "$O/listings/$(basename "$b").s" 2>/dev/null || true
+  done
+  for f in lmp_rx_handler lmp_private_open_sbc_channel lmp_send_acl_u_packet_to_host acl_u_packet_analyse \
+           a2dp_media_packet_user_handler a2dp_rx_notice_to_decode; do
+    r=$(awk -v n="$f" '$NF==n && $3=="F" {print $1" "$(NF-1); exit}' "$O/symbols.txt")
+    [ -n "$r" ] || continue
+    a=${r% *}; z=${r#* }
+    "$TC/common/bin/objdump" -d --start-address=$((0x$a)) --stop-address=$((0x$a + 0x$z)) "$O/openpocket.elf" >> "$O/listings/linked.txt" 2>&1 || true
+  done
+fi
 "$TC/common/bin/objcopy" -O binary -j .text     "$O/openpocket.elf" "$O/text.bin"
 "$TC/common/bin/objcopy" -O binary -j .data     "$O/openpocket.elf" "$O/data.bin"
 "$TC/common/bin/objcopy" -O binary -j .ram_text "$O/openpocket.elf" "$O/rt.bin" 2>/dev/null || : > "$O/rt.bin"
