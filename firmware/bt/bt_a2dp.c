@@ -393,6 +393,8 @@ static void bt_flash_reads(void)
 {
     ble_vm_load();                                              /* the stored radio records, read once before the controller runs */
     bt_mac_make();                                              /* this pedal's address, from the flash's unique ID */
+    if (px_flash_ok) bt_ps_boot();                              /* test build 14: the pairings kept in the flash (bt_ps.h; it may
+                                                                 * erase a sector: no audio and no radio yet) */
 }
 
 void ble_test_start(void)
@@ -565,6 +567,8 @@ void ble_test_poll(void)
             bt_ring_steer(&bt_ring, bt_fq_samples(), BT_TARGET, BT_PREBUF);
         }
     }
+    bt_ps_service(now);                                         /* test build 14: a changed pairing into the flash, 1 s after the
+                                                                 * library's last write (bt_ps.h; the audio held about 25 ms) */
 }
 
 /* ---- the screen and the log */
@@ -895,7 +899,7 @@ void bt_c1_line(char *out)
 }
 
 /* the interrupts against the audio (test builds 11, 12): "ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2905/3120 AI 1710/2620 EN 0/344/
- * 344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0". Times in microseconds: for the
+ * 344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2/1/0/3 OVF 0 NAN 0". Times in microseconds: for the
  * baseband's two interrupts (40, 41) the longest in the last second, the longest since boot and the time they took in the last
  * second; T5 the 10 kHz timer's longest (last second / since boot); AG the longest gap between two audio interrupts (2,902 when
  * one entry serves a period; less: two entries a period, the input's and the output's; more: an entry that came late) and AI its
@@ -911,7 +915,9 @@ void bt_c1_line(char *out)
  * the rest), NAM 1 the preset's NAM amp is one that runs on both cores (test build 12: whatever C1 is), LD the load and PK its
  * peak (since the last full preset change / since boot) in %, XR the late blocks, CL the clipped ones, WC the wet lane's cut
  * blocks (since boot: test build 12 keeps them across a retirement or a reset), BYP bypassed (over 85 % for 8 blocks), then the
- * library's timers fired (TM), the pairing store's reads and writes (VM), the stacks' red zones written (OVF) */
+ * library's timers fired (TM), the pairing store's reads and writes by the library, then (test build 14, bt_ps.h) the copies
+ * saved to the flash since power-on, the save rounds that failed and the flash copy's sequence number (VM r/w/s/f/q: q is the
+ * copy loaded at power-on, 0 none, and one more for each slot a save tries), the stacks' red zones written (OVF) */
 static uint32_t bt_us(uint32_t ticks) { return ticks / FM1_TICKS_PER_US; }
 void bt_isr_line(char *out)
 {
@@ -942,6 +948,7 @@ void bt_isr_line(char *out)
     o = ble__put(o, " BYP "); o = bt__dec(o, a_bypass);
     o = ble__put(o, " TM "); o = bt__dec(o, ble_cnt_timer);
     o = ble__put(o, " VM "); o = bt__dec(o, bt_vm_reads); *o++ = '/'; o = bt__dec(o, bt_vm_writes);
+    *o++ = '/'; o = bt__dec(o, bt_ps_saves); *o++ = '/'; o = bt__dec(o, bt_ps_bad); *o++ = '/'; o = bt__dec(o, bt_ps.seq);
     o = ble__put(o, " OVF "); o = bt__dec(o, bt_stack_ovf);
     o = ble__put(o, " NAN "); o = bt__dec(o, a_nan_count);
     *o = 0;

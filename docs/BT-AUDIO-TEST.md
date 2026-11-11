@@ -11,16 +11,18 @@ It is a test image, its own build target (`make bt`). The normal firmware and th
 > in two slots against the crackles, and records the second core's fault (below, "Test build 12"); on some power-ons it
 > crashed in the reverb, 2 s after power-on. Build 13 stops the reverb's loop at its block's end and counts it, and shows the
 > registers of a crash (below, "Test build 13"). Build 14 is the same image on OpenPocket v42, with v42's own fix of the
-> crackles' cause and the Bluetooth library folded at build time to make the room (below, "Test build 14"). Every part that
-> can be checked on a computer is checked (see "Checked on a computer").
+> crackles' cause and the Bluetooth library folded at build time to make the room, and it keeps the pairing across power-offs
+> (below, "Test build 14"). Every part that can be checked on a computer is checked (see "Checked on a computer").
 
 ## What is in it, and what is not
 
 - **In:** classic Bluetooth (BR/EDR) with Secure Simple Pairing ("Just Works", no PIN), the A2DP sink with SBC, as the stock
   firmware. The music is summed to **mono** (the pedal's output is mono), at **-6 dB**, added **after** the MASTER volume and
   **before** the output's soft knee. The phone's own volume sets its level. It keeps playing in bypass and in the tuner.
+- **In since test build 14:** the pairing remembered after a power-off (a phone paired once connects again without being
+  paired again), kept in two flash sectors of the pedal's own (below, "The pairing kept").
 - **Not in:** Bluetooth MIDI (the BLE image's: there is not the room for both), stereo, play/pause from the pedal (AVRCP),
-  remembering a pairing after a power cycle, a level setting on the pedal.
+  a level setting on the pedal.
 
 ## Build
 
@@ -39,9 +41,13 @@ Your pedal must already run OpenPocket.
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
 2. **Connect**, **Install**. The start-up screen reads `v42 BT AUDIO TEST 14` (the number is the test build's).
    Before pairing with a phone that saw an earlier build, forget the pedal there first (iPhone: **Settings > Bluetooth**, the
-   **i** next to `OpenPocket` or `Accessorio`, **Forget This Device**).
+   **i** next to `OpenPocket` or `Accessorio`, **Forget This Device**). Builds up to 13 kept no pairing, so the phone holds a
+   key the pedal does not have. From build 14 on the pedal keeps it, across power-offs and across installs of later test builds:
+   forget the pedal once, when you first pair with build 14.
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
-   as before. Nothing outside the application area is written.
+   as before. Installing writes only the application area, as any update does. This image itself also writes its pairing store
+   (two 4 KB sectors at `0xEE000`, just below the presets) when a phone pairs; the release firmware never reads or writes them,
+   and an update leaves them as they are.
 
 ## What you should see
 
@@ -162,7 +168,7 @@ The trace line ends with `CR`, the last calls the library made into the firmware
 
 ### The isr line (since test build 11)
 
-`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0`
+`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2/1/0/1 OVF 0 NAN 0`
 
 What the interrupts cost the audio, and the DSP's state, for the crackles. Times are in microseconds.
 
@@ -181,7 +187,8 @@ What the interrupts cost the audio, and the DSP's state, for the crackles. Times
 | `NAM` | 1: the preset's NAM amp is one that runs on both cores; 0: not (test build 12: whatever `C1` is) |
 | `LD` `PK a/b` | the DSP load, and its peak since the last full preset change / since boot, % of a block's time |
 | `XR` `CL` `WC` `BYP` | late blocks (each one a likely crackle), clipped blocks, the delay and reverb lane's cut blocks (clicks in the tails; since build 12 kept across a retirement or a reset), bypassed |
-| `TM` `VM r/w` `OVF` | the library's software timers that fired, the pairing store's reads and writes, task stacks that nearly overflowed |
+| `TM` `OVF` | the library's software timers that fired, task stacks that nearly overflowed |
+| `VM r/w/s/f/q` | the pairing store (test build 14; builds 11 to 13 had `VM r/w`): `r` and `w` the library's reads and writes of its records; `s` the copies saved to the flash since power-on; `f` the save rounds that failed (the first two tried again 1 s later; from the third on only a new change tries again); `q` the flash copy's sequence number: at power-on that of the copy loaded (0: none), then one more for each slot a save tries. `q` 0 with `f` 3: the flash read differently the second time at power-on and was left alone, the pairing in RAM only for that boot. `node tools/op.mjs log` says it in words |
 | `NAN` | (test build 12) the engine's resets after a NaN, since boot: each one 15 to 50 ms of silence |
 
 ### The FIFO line (test build 13)
@@ -244,9 +251,12 @@ words are cut off.
    C bodies that follow the library's two handlers (`firmware/bt/bt_irq.c`): the library's own handlers end without `csync`,
    and in test build 4, above the audio, the DSP they interrupted faulted (the reverb, `VEC 1`, 0.5 s after the DSP started).
 
-1. **The pairing is kept in RAM, until power-off** (test build 11; before it, not even that). After a power-off the phone says
-   it cannot connect: forget `OpenPocket` in its Bluetooth settings and pair again.
-2. **Saving a preset while the music plays** gives a short gap (interrupts are off while the flash is written).
+1. **A pairing is saved 1 s after the library's last change to it** (test build 14; builds 11 to 13 kept it in RAM until
+   power-off). A power-off within that second, or during the save, loses that pairing: the phone then says it cannot connect,
+   and must forget `OpenPocket` and pair again. A power-off at any other moment loses nothing (the previous copy stays until the
+   new one is complete).
+2. **Saving a preset while the music plays** gives a short gap (interrupts are off while the flash is written). Saving a pairing
+   does too, about 25 ms, once per pairing (the audio held as for a preset).
 3. **The decoded music, the SBC decoder's state and the mix buffer sit in 7.5 KB of SRAM** (`0x01C06000..0x01C07E00`) that
    OpenPocket never used before. If anything else writes there, you would hear clicks or noise in the music, nothing worse.
 4. **The flash window is larger in this image** (the package's whole app slot, `0x9D740` bytes, instead of `0x8DFBC`): the classic
@@ -266,6 +276,7 @@ firmware/bt/bt_sbc.c         Android's SBC decoder behind three calls: the packe
 firmware/px_bt_ring.h        the decoded music's ring and its rate, read by px_audio.h dsp_out (in RAM, on either core)
 firmware/bt/bt_glue.c        what the stack needs from the system: the radio pools' allocator (bt_lbuf.h), low power, the
                              address (the flash's unique ID), the name, the SDP record (the library's own A2DP sink record)
+firmware/bt/bt_ps.h          the pairing records: the library's VM file in RAM, and its copy in the flash (test build 14)
 firmware/bt/bt_cfg.c         the stack's configuration: classic only, one link, an A2DP sink (the SDK's values, Apache-2.0)
 firmware/bt/bt_stubs.c       empty stand-ins for what the image leaves out (LE, TWS, calls, other profiles), counted
 firmware/bt/app-bt.ld        the memory map: the classic stack's sections, its pools, the ring
@@ -286,9 +297,10 @@ firmware/ble/                shared with the BLE image: the scheduler and heap, 
   ring.
 - **Memory** (beyond the BLE image's): three task stacks of 4 KB in NOINIT (test builds 1 to 10: four of 2.75 KB, the fourth
   never used), the baseband's table (4.2 KB) and the receive pool in the SRAM below the RAM, the ring, the decoder's state and
-  the mix buffer above it, the pairing store (672 bytes of RAM), the FIFO (10.8 KB of the Bluetooth heap); in the RAM code
-  window's free end, the output block (512 bytes; builds 12 and 13: two, 1 KB) and, since test build 14, the engine's buffers
-  that v42 moved below the RAM (14.6 KB: there they would take the baseband's table and the receive pool's place).
+  the mix buffer above it, the pairing store (684 bytes of RAM; since test build 14 its copy in two flash sectors), the FIFO
+  (10.8 KB of the Bluetooth heap); in the RAM code window's free end, the output block (512 bytes; builds 12 and 13: two, 1 KB)
+  and, since test build 14, the engine's buffers that v42 moved below the RAM (14.6 KB: there they would take the baseband's
+  table and the receive pool's place).
 - **The baseband's 64 KB window.** The classic baseband reaches memory as 16-bit offsets from its table (`bd_base`, register
   0x2FC44): everything the library hands it must lie less than 64 KB above `bd_base`, and the library asserts it (a failed
   assertion stops in a loop). So the send pool (2 KB, also the page and inquiry scan buffers), the controller's own variables
@@ -502,6 +514,45 @@ which is not in this image). What changed for Bluetooth:
    bar, so a bar left by build 13 does not carry over.
 6. **The visible line's `V`** shows the BLE image's flags in full (`F` stays `F`): v41 gives a pedal whose VM 106 or 107 is
    missing the Pocket X backup's values instead of zeros (`10`, `20`), so the crystal trim beside it may be that default.
+7. **The pairing kept** (below, "The pairing kept").
+
+### The pairing kept
+
+Up to build 13 the pedal kept the phone's pairing in RAM: after a power-off the phone still had its key, the pedal did not, and
+the phone could connect only after **Forget This Device** and a new pairing. Build 14 keeps it in the flash
+(`firmware/bt/bt_ps.h`):
+
+- **What is kept:** the Bluetooth library's own pairing records (21 records of 32 bytes: the link keys of the phones that paired
+  and what it learnt about them), exactly as the library writes them.
+- **Where:** two 4 KB sectors at `0xEE000` and `0xEF000`, just below the presets, which OpenPocket never used (the stock
+  firmware kept cabinets there). Each holds 5 copies of the records; a copy carries a sequence number and a CRC, and its mark is
+  written last, so a copy cut short by a power-off is never taken for a good one. At power-on the newest good copy is loaded.
+- **When:** 1 s after the library's last change, from the main loop, with the audio held as for a preset save (about 25 ms of
+  silence). The library changes the records when a phone pairs, when a phone it knows connects after another one, when a
+  phone's key fails, and the first time it learns a phone's type; not when the same phone connects again. So a save comes with
+  a pairing, not with every connection.
+- **Wear:** a sector is erased once every 5 saves, at a power-on (before the audio and the radio start), or during a save in a
+  session of more than 5. At the 100,000 erases a NOR flash sector is commonly rated for, about a million pairings.
+- **Not kept:** a pairing made less than 1 s before a power-off, or one whose save is cut by it (the copy before it stays).
+  The BLE image keeps nothing of this, and the release firmware never touches the two sectors.
+
+How to test it:
+
+1. On the phone, forget `OpenPocket` if it paired with an earlier build. Pair it with the pedal (step 3 of "What you should
+   see") and play some music.
+2. `node tools/op.mjs log`: the isr line's `VM` shows a copy saved, e.g. `VM 4/2/1/0/1` (`s` 1); the tool says "1 saved to
+   the flash since power-on".
+3. Switch the pedal off for real (USB out too), wait 10 s, switch it on.
+4. Once the pedal shows `BT VISIBLE`, the phone connects by itself, or after a tap on `OpenPocket` in its Bluetooth list, **with
+   no Forget This Device and no new pairing**. Play music: it comes through the pedal.
+5. `node tools/op.mjs log` again: `VM` shows `q` 1 or more with `s` 0, e.g. `VM 4/0/0/0/1` ("a copy loaded from the flash at
+   power-on"). If the phone did not connect: this reading, and whether the phone listed `OpenPocket` as connected, failed, or
+   not at all.
+6. The same after pairing a second phone (or the same phone again, after forgetting the pedal on it): each pairing raises `s`
+   and `q`, `f` stays 0, and after a power-off the phone paired last connects.
+
+A power-on whose `VM` shows `q` 0 and `f` 3 found the copies reading differently on a second look: it left the flash alone and
+kept the pairing in RAM only for that boot (as builds 11 to 13); the next power-on reads it again. Report such a reading.
 
 ### What to check
 
@@ -519,7 +570,8 @@ which is not in this image). What changed for Bluetooth:
 5. The crash at the radio's start-up (about 1.96 s): the same 15 boots as build 13 ("What to do"), with `W` and `G` of each.
    Build 12's record showed the second core trapping at that moment in every Bluetooth boot; v41's worker keeps it busy through
    the whole start-up on a NAM preset. Before flashing, check `rv_block` in the listings as for build 13 ("Reading the
-   registers").
+   registers"). With the pairing kept, the third set's phone (its Bluetooth on and near) now connects during the start-up.
+6. The pairing kept: "How to test it" above.
 
 ## Checked on a computer
 
@@ -535,6 +587,15 @@ which is not in this image). What changed for Bluetooth:
   across it), and in the audio image's build the waits refused inside the baseband's interrupt, each task's queue peak, stack
   depth and red zone.
 - `tests/test_bt_lbuf.c`: the radio pools' allocator through 100,000 random operations (no overlap, no corruption, no leak).
+- `tests/test_bt_ps.c` (test build 14): the pairing store, `firmware/bt/bt_ps.h` itself, on a model of the NOR flash, with power
+  cuts at random bytes of every save and inside every erase (40,000 rounds: about 7,500 cuts during a save, 960 during a
+  power-on's erase, 18,000 power-ons): every power-on loads the records last saved, or those being saved when the power went,
+  never anything else; nothing is written outside the two sectors or in their last 256 bytes; every program goes to erased
+  bytes; no erase takes the newest good copy; no two copies share a sequence number. Sessions of 1 to 5 saves never erase
+  during a save. A sector whose programs stop taking, power cuts with it, and a bit misread at power-on or in a save's
+  read-back cost saves, never the copy kept. The Bluetooth image's merged `FL_RANGE_OK` gives every sector erase and page
+  program the answer of one range per area. The model catches each of a dozen deliberate faults in the store (no read-back,
+  no guard of the newest copy, no second reading before an erase, a save sooner than 1 s, one sequence number a round...).
 - `tests/test_bt_sources.mjs`: the vendor objects are as published and listed, the licences are there.
 - `tests/test_log.mjs`: the FIFO line and `W` named, and the nine lines classified and reported, as the log tool prints them.
 - Test build 13's cut, by hand (it is not in `tests/run_tests.sh`): the engine tests built with `-DPX_LOOP_GUARD=1` print the

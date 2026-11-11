@@ -167,6 +167,7 @@ PCM ring at `0x1F29EE0`, inside the cache-way range above (**likely**: the stock
 | `0xBF000..0xFF000` | stock file `EXT_RESERVED/pd40j` (256 KB): 20 amp models x 8 KB, 20 cabinets x 4 KB at `+0x28000`, the preset bank at `+0x3C000` (80 x 92 B + `PATCHEND`), the `GLB1` settings log at `+0x3E000` (`STOCK-FIRMWARE.md` 10.4). OpenPocket's own areas below reuse this range: installing OpenPocket overwrites the stock user data |
 | `0xC0000..0xE0000` | OpenPocket: NAM user models (16 x 8 KB) |
 | `0xE0000..` | update loader staging (5 x 4 KB) |
+| `0xEE000..0xF0000` | the Bluetooth audio test image's pairing store (test build 14, `firmware/bt/bt_ps.h`): two sectors of 5 copies of the library's pairing records each, sequence + CRC-32, the mark written last, read back after writing; bytes `0xF00..0xFFF` of each sector never written. Only that image writes it (its `FL_RANGE_OK`, `firmware/px_usb.h`); the release firmware and the update loader leave it as it is |
 | `0xF0000..0xF4000` | OpenPocket presets, A/B copies, header written last (sequence + CRC16), read back after writing; bytes `0xF00..0xF7F` of each sector left erased (the loader reads that area) |
 | `0xF4000..0xFC000` | OpenPocket: cabinet IRs (8 x 4 KB) |
 | near `0xFF000` | key/MAC area |

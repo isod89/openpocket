@@ -29,7 +29,8 @@
 #  - sound: the WebAssembly engine on known signals, against the native build; the bundled loops against their manifest
 #  - Chocolate Plus files: tools/chocolate/fcp.py against a made-up export
 #  - Bluetooth audio (docs/BT-AUDIO-TEST.md): the ring and its rate (tests/test_bt_ring.c), the radio pools' allocator
-#    (test_bt_lbuf.c), the compiler runtime it adds (test_bt_rt.c), SBC through Android's encoder and decoder (test_bt_sbc.c), the third-party sources (test_bt_sources.mjs)
+#    (test_bt_lbuf.c), the compiler runtime it adds (test_bt_rt.c), SBC through Android's encoder and decoder (test_bt_sbc.c), the third-party sources (test_bt_sources.mjs),
+#    the pairing store in the flash with power cuts at every step (test_bt_ps.c, test build 14)
 #    and the Bluetooth images' task message queues (test_ble_taskq.c: messages of the library's sizes, whole, in order)
 #  - editor: docs/pxedit.js against the simulated pedal (tests/edsim.c), PING's figures, and the editor's own logic
 #    (docs/pxmidi.js: the Control Change map against docs/MIDI.md, learned controls; docs/pxlib.js: the model library)
@@ -105,10 +106,11 @@ echo "== hosted simulator (tools/sim.mjs)"
 node tests/test_sim.mjs
 echo "== Bluetooth test image sources (third_party/jieli-ble)"
 node tests/test_ble_sources.mjs
-echo "== Bluetooth audio image: its sources (third_party/jieli-bt, third_party/sbc-android), the ring, the radio pools, SBC"
+echo "== Bluetooth audio image: its sources (third_party/jieli-bt, third_party/sbc-android), the ring, the radio pools, SBC, the pairings"
 node tests/test_bt_sources.mjs
 $CC -O1 -Wall -Wno-unused-function -o build/test_bt_ring tests/test_bt_ring.c -lm && build/test_bt_ring
 $CC -O1 -Wall -Wno-unused-function -o build/test_bt_lbuf tests/test_bt_lbuf.c && build/test_bt_lbuf
+$CC -O1 -Wall -Wno-unused-function -o build/test_bt_ps tests/test_bt_ps.c && build/test_bt_ps
 $CC -O2 -Wall -Wno-unused-function -o build/test_bt_rt tests/test_bt_rt.c -lm && build/test_bt_rt
 SBC=third_party/sbc-android
 $CC -O1 -w -I$SBC/decoder/include -I$SBC/encoder/include -Ifirmware/bt -o build/test_bt_sbc tests/test_bt_sbc.c firmware/bt/bt_sbc.c \

@@ -35,8 +35,16 @@ static uint32_t uad_lo = 52u, uad_hi = 108u, uad_prime = 80u, uad_tgt = 208u;
 #define RING_PUBLISH() __asm__ volatile("" ::: "memory")
 /* the app may only write the OTA staging area (its loader + update record), the preset store (px_store.h) and,
  * v37, the NAM user models (px_models.h) */
+#if OP_BT_AUDIO
+/* the Bluetooth audio image (test build 14) also the pairings' two sectors [0xEE000, 0xF0000) (bt/bt_ps.h). Adjacent areas as
+ * one range: the NAM models and the staging [0xC0000, 0xE5000), the pairings, the presets and v38's cabinet IRs
+ * [0xEE000, 0xFC000). An erase is one aligned sector and a program one page, so no call the RAM driver accepts can straddle two
+ * areas: every call gets the answer of one range per area (tests/test_bt_ps.c), in fewer instructions of RAM code */
+#define FL_RANGE_OK(off, n) (FL_IN(off, n, 0xC0000u, FL_OTA_HI) || FL_IN(off, n, 0xEE000u, 0xFC000u))
+#else
 #define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, 0xF0000u, 0xF4000u) || \
                              FL_IN(off, n, 0xC0000u, 0xE0000u) || FL_IN(off, n, 0xF4000u, 0xFC000u))
+#endif
 
 /* the package identity, patched by pxpkg.py ("OP-PRODUCT:" + identity, 32 bytes, exactly once in the app) */
 static const volatile char OP_PRODUCT[32] __attribute__((used, aligned(4))) = "OP-PRODUCT:PocketX_9" OP_VERSION_NUM;

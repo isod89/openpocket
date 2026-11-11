@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BOOT_STAGES, RESET_CAUSES, a2dpWords, c1Words, diagFields, fifoWords, judge, main, parseBle, parseBoot, parseLast, show, wWords } from "../tools/log.mjs";
+import { BOOT_STAGES, RESET_CAUSES, a2dpWords, c1Words, diagFields, fifoWords, judge, main, parseBle, parseBoot, parseLast, show, vmWords, wWords } from "../tools/log.mjs";
 import { simAccess } from "./simpedal.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -182,6 +182,32 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
      && /^ {11}KEY 0: none/m.test(rp.text), "the safe-mode report names the second core's record and the build-14 fields");
   rp = report("FIFO 00000000 00000000 00000000 00000000", `${c14} W 0`, "UP 21000 SAFE 1 STAGE 7 RST 44 GUARD 1", `${last14} C1F 0/0 0 0`, "BT OFF");
   ok(/the second core had not faulted/.test(rp.text), "a crash with the second core's record empty: said so");
+  // test build 14's VM r/w/s/f/q in the isr line (bt_isr_line, firmware/bt/bt_ps.h): the pairing store named
+  const isr14 = (vm) => `ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM ${vm} OVF 0 NAN 0`;
+  let vw = vmWords(isr14("21/2/1/0/1"));
+  ok(vw?.reads === 21 && vw.writes === 2 && vw.saves === 1 && vw.failed === 0 && vw.seq === 1
+     && /read 21 and wrote 2; 1 saved to the flash since power-on \(sequence now 1\)$/.test(vw.text), `VM after a pairing: ${vw?.text}`);
+  vw = vmWords(isr14("21/0/0/0/3"));
+  ok(vw?.seq === 3 && /a copy loaded from the flash at power-on \(sequence 3\), none saved since$/.test(vw.text), "VM after a power-on: the copy loaded");
+  vw = vmWords(isr14("21/0/0/0/0"));
+  ok(vw?.seq === 0 && /no copy in the flash yet/.test(vw.text), "VM with nothing kept yet");
+  vw = vmWords(isr14("21/0/0/3/0"));
+  ok(/the flash copy left alone this session/.test(vw?.text) && !/rounds failed/.test(vw.text), "VM sequence 0 with f 3: the flash left alone at power-on");
+  vw = vmWords(isr14("21/3/1/2/6"));
+  ok(vw?.failed === 2 && /2 save rounds failed \(each tried again 1 s later\)$/.test(vw.text), "VM with failed save rounds");
+  vw = vmWords(isr14("21/3/0/3/6"));
+  ok(/3 save rounds failed: tried again only at a new change$/.test(vw?.text), "VM with the retries used up");
+  vw = vmWords(isr14("4/2"));
+  ok(vw?.reads === 4 && vw.writes === 2 && vw.saves === undefined && /in RAM only/.test(vw.text), "builds 11 to 13's VM r/w: in RAM only");
+  ok(vmWords("ISR 40:1/2/3 TM 1234 VM 21/2/1/0/") === null && vmWords("ISR 40:1/2/3 TM 1234 VM 21/2/1") === null
+     && vmWords("ISR 40:1/2/3") === null && vmWords(undefined) === null, "a VM cut short or missing is not named");
+  {
+    const out = [], r = { time: "", level: "full", info, ...diagFields(["UP 30000 SAFE 0 STAGE 8 RST 1 GUARD 0", "LAST OK",
+      "BT VIS IRQ 40:1234 41:567 EV 4 RDY SCAN 1", "LINK", "EV", "HCI", "FIFO 00000000 00000000 00000000 00000000", isr14("21/2/1/0/1"), `${c14} W 0`]) };
+    show(r, null, (x) => out.push(x));
+    const t = out.join("\n");
+    ok(/^isr {8}ISR 40:12/m.test(t) && /^ {11}pairing records: the library read 21 and wrote 2; 1 saved to the flash/m.test(t), "the report names the isr line's VM");
+  }
 }
 b = parseBoot("UP 12345 SAFE 1 STAGE 7 RST 44 GUARD 1");
 ok(b.clockMs === 12345 && b.safe && b.stageName === "FIRST 6 S" && b.resetBy.join() === "WATCHDOG,SOFT" && b.failedBoots === 1, "boot line");

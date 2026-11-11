@@ -181,6 +181,25 @@ export function fifoWords(line) {
   return `taken ${taken}, dropped ${drop & 0xffff} full / ${drop >>> 16} too big, given back ${dup}, heals ${heal}`;
 }
 
+// the isr line's VM (firmware/bt/bt_a2dp.c bt_isr_line): the pairing records the library read and wrote; from test build 14
+// "VM r/w/s/f/q" (firmware/bt/bt_ps.h), also the copies saved to the flash since power-on, the save rounds that failed (the
+// first two tried again 1 s later, then only a new change tries) and the flash copy's sequence (at power-on the copy loaded, 0
+// none; one more for each slot a save tries). q 0 with f 3: the slots read otherwise at power-on, the flash left alone
+export function vmWords(isr) {
+  const m = / VM (\d+)\/(\d+)(?:\/(\d+)\/(\d+)\/(\d+))?(?= |$)/.exec(isr ?? "");
+  if (!m) return null;
+  const [reads, writes] = [+m[1], +m[2]], lib = `pairing records: the library read ${reads} and wrote ${writes}`;
+  if (m[3] === undefined) return { reads, writes, text: `${lib}, in RAM only (up to test build 13: gone at power-off)` };
+  const [saves, failed, seq] = [+m[3], +m[4], +m[5]];
+  const kept = seq === 0 && failed >= 3 ? "the flash copy left alone this session (its slots read otherwise at power-on): the records in RAM only"
+    : seq === 0 ? "no copy in the flash yet (none at power-on, none saved since): a pairing is kept once saved"
+    : saves === 0 ? `a copy loaded from the flash at power-on (sequence ${seq}), none saved since`
+    : `${saves} saved to the flash since power-on (sequence now ${seq})`;
+  const fails = seq === 0 || !failed ? "" : failed >= 3 ? `; ${failed} save rounds failed: tried again only at a new change`
+    : `; ${failed} save round${failed > 1 ? "s" : ""} failed (each tried again 1 s later)`;
+  return { reads, writes, saves, failed, seq, text: `${lib}; ${kept}${fails}` };
+}
+
 // the c1 line's W (test build 13: engine/px_dsp.c PX_LOOP_CAP, firmware/bt/bt_a2dp.c bt_c1_line): the reverb loop's cuts at
 // its block's end, and after one, n (as the loop reloaded it) and k at the latest cut, the time the main loop first saw a cut
 // (ms since power-on, wrapping every 179 s) and its S word then (stage << 28 | state << 24 | DSP held << 23 | 1 << 22 | IRQ 40's
@@ -307,7 +326,11 @@ export function show(r, prev, say) {
     const named = fifoWords(r.fifo);
     if (named) say(`           ${named}`);
   }
-  if (r.isr) say(`isr        ${r.isr}`);
+  if (r.isr) {
+    say(`isr        ${r.isr}`);
+    const vm = vmWords(r.isr);
+    if (vm) say(`           ${vm.text}`);
+  }
   if (r.c1) {
     say(`c1         ${r.c1}`);
     const f = c1Words(r.c1);

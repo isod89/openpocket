@@ -2,8 +2,9 @@
 /* What the classic Bluetooth controller and host need from the system around them, written for OpenPocket (the SDK's own versions
  * live in its system and Wi-Fi libraries, which are not linked): the list-buffer allocator of the radio's data pools, the
  * low-power hooks (the pedal never sleeps the radio), a few helpers of the Wi-Fi front end and the flash, the pedal's own
- * Bluetooth address and name, and the one SDP record (the A2DP sink, the library's own record). Signatures are the
- * library's (read from its declarations); the allocator follows the SDK's public header system/generic/lbuf.h (Apache-2.0). */
+ * Bluetooth address and name, the pairing records' store (bt_ps.h) and the one SDP record (the A2DP sink, the library's own
+ * record). Signatures are the library's (read from its declarations); the allocator follows the SDK's public header
+ * system/generic/lbuf.h (Apache-2.0). */
 #include <stdint.h>
 #include <stddef.h>
 #include "ble_os.h"
@@ -15,6 +16,8 @@ void local_irq_enable(void);
 #ifndef BT_CRUMB
 #define BT_CRUMB(s) ((void)0)                                    /* (the stall record's crumbs: bt_stall.h, through ble/ble_os.c) */
 #endif
+#include "bt_ps.h"                                            /* the pairing records, kept in the flash since test build 14
+                                                               * (tests/test_bt_ps.c); also bt_crc32, for the address below */
 
 /* ---- low power: the radio never sleeps here (the SDK's low-power service is not linked); a handle that is not NULL, as the
  * library asserts on one (the BLE image found it on hardware, docs/BLE-TEST.md) */
@@ -72,12 +75,6 @@ int norflash_ioctl(void *dev, int cmd, int arg)                 /* 100: the flas
  * pedals one device to a phone. From the flash's unique ID: 02:4F (locally administered, "O") and four bytes of a CRC-32 of the
  * ID. The inquiry access codes' LAPs (0x9E8B00..0x9E8B3F) are avoided. Without the ID: the BLE image's address. */
 static uint8_t bt_mac[6] = {0x54, 0x4C, 0x42, 0x50, 0x4F, 0x02};
-static uint32_t bt_crc32(const uint8_t *p, uint32_t n)
-{
-    uint32_t c = 0xFFFFFFFFu, k;
-    while (n--) { c ^= *p++; for (k = 0; k < 8u; k++) c = c & 1u ? (c >> 1) ^ 0xEDB88320u : c >> 1; }
-    return ~c;
-}
 static void bt_mac_make(void)
 {
     uint32_t c, lap;
@@ -101,61 +98,6 @@ void ble_profile_loop(void) { }
  * (lmp.c lmp_create_conn). Up to test build 10 it was a stand-in returning 0, so no handle was classic: the host dropped every
  * packet of the phone's and never told L2CAP, SDP or A2DP that a link was up. (Not counted as a stand-in: it runs all the time) */
 uint16_t get_ble_link_handle(void) { return 0x50u; }
-
-/* ---- the pairing records' store (database_file.c, through set_bt_vm_interface): in RAM, so a pairing lasts until the power goes
- * off (then the phone must forget the pedal: "Forget This Device", and pair again). The library reads and writes 32-byte records
- * with ids 62 to 82 (62 + its three tables' starts 0, 10 and 20 + the record), each access open(id, 32), seek(0, 0), read or write,
- * close (the SDK's struct syscfg_file, its member order). A record starts as erased flash, all 0xFF: free, and its check fails.
- * Up to test build 10 there was no store (NULL): the library then skipped every read but reported it done, and compared a stale
- * stack buffer as if it were a record. */
-#define BT_VM_FIRST 62
-#define BT_VM_N 21
-#define BT_VM_REC 32
-typedef struct {
-    int (*open)(int id, int len);
-    int (*read)(void *buf, int len);
-    int (*write)(void *buf, int len);
-    int (*seek)(int whence, int off);
-    int (*close)(void);
-} bt_vm_file_t;
-static uint8_t bt_vm_rec[BT_VM_N][BT_VM_REC];
-static int bt_vm_cur = -1, bt_vm_pos;
-static uint32_t bt_vm_reads, bt_vm_writes;                      /* (the log's VM r/w: bt_a2dp.c) */
-static int bt_vm_open(int id, int len)
-{
-    if (id < BT_VM_FIRST || id >= BT_VM_FIRST + BT_VM_N || len <= 0 || len > BT_VM_REC) { bt_vm_cur = -1; return 0; }
-    bt_vm_cur = id - BT_VM_FIRST; bt_vm_pos = 0;
-    return 1;
-}
-static int bt_vm_rw(void *buf, int len, int wr)
-{
-    uint8_t *b = buf, *r;
-    int i, n;
-    if (bt_vm_cur < 0 || !buf || len <= 0 || bt_vm_pos >= BT_VM_REC) return 0;
-    n = len < BT_VM_REC - bt_vm_pos ? len : BT_VM_REC - bt_vm_pos;
-    r = bt_vm_rec[bt_vm_cur] + bt_vm_pos;
-    for (i = 0; i < n; i++) { if (wr) r[i] = b[i]; else b[i] = r[i]; }
-    bt_vm_pos += n;
-    return n;
-}
-static int bt_vm_read(void *buf, int len) { bt_vm_reads++; return bt_vm_rw(buf, len, 0); }
-static int bt_vm_write(void *buf, int len) { bt_vm_writes++; return bt_vm_rw(buf, len, 1); }
-static int bt_vm_seek(int whence, int off)
-{
-    int p = whence == 0 ? off : whence == 1 ? bt_vm_pos + off : BT_VM_REC - off;
-    bt_vm_pos = p < 0 ? 0 : p > BT_VM_REC ? BT_VM_REC : p;
-    return 0;
-}
-static int bt_vm_close(void) { bt_vm_cur = -1; return 0; }
-static const bt_vm_file_t bt_vm_file = { bt_vm_open, bt_vm_read, bt_vm_write, bt_vm_seek, bt_vm_close };
-void *bt_vm_interface(void)                                     /* (btstack_main.c, once, before the database is read) */
-{
-    static int erased;
-    uint32_t i, k;
-    BT_CRUMB("bt_vm_interface");
-    if (!erased) { for (i = 0; i < BT_VM_N; i++) for (k = 0; k < BT_VM_REC; k++) bt_vm_rec[i][k] = 0xFFu; erased = 1; }
-    return (void *)(uintptr_t)&bt_vm_file;
-}
 
 /* ---- the SDP record: the library's own A2DP sink record (sdp_util.c, "JL_A2DP", the stock firmware's), registered in the table
  * the SDP server reads (firmware/bt/app-bt.ld brackets .sdp_record_item as sdp_record_item_begin..end; it links the items, so
