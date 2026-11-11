@@ -85,10 +85,10 @@ static float a_in[A_FR], a_out[A_FR];
  * half-done flag up, so their order follows the interrupt's entry latency, and with one buffer every change of order repeated a
  * block and skipped the next: a click on any note sounding, with no late block. a_enc's block goes to slot a_wslot; a_dec sends
  * the block before the newest whatever the order (one block, 2.9 ms, more latency than the input-first order test build 11
- * mostly ran). a_slots_off (DLY held at power-on): the output as test build 11 sent it, for an A/B by ear */
+ * mostly ran). (Test build 12's DLY key at power-on, the output in one slot as build 11 sent it, is gone in build 13) */
 static int32_t a_res[2][A_FR] __attribute__((section(".bss.hi.a_res"), aligned(8)));   /* (the RAM code window's free end) */
 static uint32_t a_nenc, a_ndec;                        /* blocks made (a_enc), blocks sent (a_dec) */
-static volatile uint8_t a_wslot, a_jslot, a_slots_off; /* the slot a_enc's block goes to; the one CPU1's job writes */
+static volatile uint8_t a_wslot, a_jslot;              /* the slot a_enc's block goes to; the one CPU1's job writes */
 #define A_RES (a_res[a_wslot & 1u])                   /* (masked: a CPU1 misread of a_wslot stays inside the array) */
 #define A_JSLOT() (a_jslot = a_wslot)
 /* the callbacks' order (the log's isr line, OC): two a_dec (1) or two a_enc (2) in a row are a change of order; and the
@@ -576,7 +576,7 @@ static void a_dec(void *priv, uint8_t *data, int len, uint8_t ch)     /* output 
     A_ORDER(1u);
     if ((int32_t)(a_nenc - a_ndec) > 1) a_ndec = a_nenc - 1u;
     else if ((int32_t)(a_nenc - a_ndec) < 0) a_ndec = a_nenc;
-    const uint32_t s = a_slots_off ? (uint32_t)(a_wslot & 1u) : ((a_ndec - 1u) & 1u);
+    const uint32_t s = (a_ndec - 1u) & 1u;
     a_ndec++;
 #if DSP_CPU1
     a_decw = 0;

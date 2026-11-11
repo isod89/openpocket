@@ -5,11 +5,13 @@ phone as **`OpenPocket`**, pairs with no PIN, and the phone's music plays **mixe
 
 It is a test image, its own build target (`make bt`). The normal firmware and the installer's packages are unchanged.
 
-> **Status: test build 12.** Builds 1 to 10 ran on a pedal: the radio starts, a phone sees the pedal and links, but no phone
+> **Status: test build 13.** Builds 1 to 10 ran on a pedal: the radio starts, a phone sees the pedal and links, but no phone
 > could pair, and the guitar crackled. Build 11 paired an iPhone (below, "Test build 11"), but no music came out, and the guitar
 > still crackled with Bluetooth on. Build 12 takes the phone's packets where the controller first shows them, sends the output
-> in two slots against the crackles, and records the second core's fault (below, "Test build 12"). Every part that can be
-> checked on a computer is checked (see "Checked on a computer").
+> in two slots against the crackles, and records the second core's fault (below, "Test build 12"); on some power-ons it
+> crashed in the reverb, 2 s after power-on. Build 13 stops the reverb's loop at its block's end and counts it, and shows the
+> registers of a crash (below, "Test build 13"). Every part that can be checked on a computer is checked (see "Checked on a
+> computer").
 
 ## What is in it, and what is not
 
@@ -34,7 +36,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 12` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 13` (the number is the test build's).
    Before pairing with a phone that saw an earlier build, forget the pedal there first (iPhone: **Settings > Bluetooth**, the
    **i** next to `OpenPocket` or `Accessorio`, **Forget This Device**).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
@@ -50,20 +52,23 @@ Your pedal must already run OpenPocket.
 | 4. play music | `BT PLAY` | the music plays **from the pedal's output**, with the guitar |
 | 5. pause / disconnect | `BT LINK` / `BT VISIBLE` again | |
 
-**A/B keys, held while switching the pedal on, until the start-up screen has gone** (each for that boot only; the log's `c1`
-line shows `KEY`, test build 12). Switch off for real (USB out too, 10 s) before each boot you compare:
+**A/B key, held while switching the pedal on, until the start-up screen has gone** (for that boot only; the log's `c1` line
+shows `KEY`). Switch off for real (USB out too, 10 s) before each boot you compare:
 
 | Key | That boot |
 | --- | --- |
 | **REV** | Bluetooth off (`BT OFF`): the same image with the radio off, to compare the sound with and without Bluetooth by ear |
-| **DLY** | the output as test build 11 sent it, one slot (test build 12): with it the crackles of the callbacks' order changes come back, if they were the crackles |
 
-(CAB held at power-on does nothing in test build 12: the c1 line only shows `KEY 1`. A CAB key for the stock firmware's supply
-levels did not fit in the flash.)
+(CAB and DLY held at power-on do nothing in test build 13: the c1 line only shows `KEY 1` or `KEY 2`. Test build 12's DLY key,
+the output in one slot as build 11 sent it, is gone: its A/B is settled, the two slots stay. A CAB key for the stock
+firmware's supply levels did not fit in the flash.)
 
 `FAILED s c` means the start failed: the line that scrolls says which step and stage (the BLE image's codes,
 [BLE-TEST.md](BLE-TEST.md#reading-the-status-text)). The stall watch, the crash screen and the `LAST BOOT FAILED` report work as in
-the BLE image, and after a failed boot Bluetooth stays off for that boot, so the pedal can always be re-flashed.
+the BLE image, and after a failed boot Bluetooth stays off for that boot, so the pedal can always be re-flashed. Since test
+build 13 this image's `LAST BOOT FAILED` report shows the registers of a crash (`R1` `R6`, then `R12` `SP`) where the BLE image
+shows `DSP CODE AT`, and has no `PLEASE TAKE A PHOTO` line: the red crash screen before it asks already. Photograph both
+screens (below, "Test build 13").
 
 ### If it stalls (`VEC 3F`, then a safe-mode boot)
 
@@ -118,8 +123,8 @@ the bytes of its stack (4 KB) never used, `P`, the most messages it ever had que
 its stack's end.
 
 The `hci` line (test build 9) is the HCI conversation between the controller and the host, which in this integrated stack
-travels through the tasks' queues: the newest 11 messages (test builds 9 to 11 also had `hci0`, the first 12 since boot; the
-a2dp line took its place in build 12). `n` all messages posted to a task, `ACL` data packets to the host and `NCP` Number of Completed Packets events
+travels through the tasks' queues: the newest 11 messages (test builds 9 to 11 also had `hci0`, the first 12 since boot; build
+12's a2dp line took its place, and build 13's FIFO line took the a2dp line's). `n` all messages posted to a task, `ACL` data packets to the host and `NCP` Number of Completed Packets events
 (only counted), `Q` the deepest a task's queue has been and `LOST` the posts refused because a queue was full (the library
 tries some of them again after a short sleep, so not each one is a message lost). Each entry: the task
 (`S` the host, btstack; `C` the controller, btctrler; `E` btencry; `A` btapp), the message's type digit, then its first 5
@@ -166,7 +171,7 @@ What the interrupts cost the audio, and the DSP's state, for the crackles. Times
 | `AG a/b` | the longest gap between two audio interrupt entries (last second / since boot). 2,902 when one entry serves a period; less (2,144 in build 11's log): two entries a period, the input's and then the output's, so AG is the period less the input's stay; more: an entry came late. A preset change or a flash write is not counted |
 | `AI a/b` | the audio interrupt's longest stay (last second / since boot) |
 | `EN a/b/c/d/e` | (test build 12) the audio interrupt's entries in the last second, by the flags they found: none / the output's only / the input's only / both / another channel's. About 344 a second each is two entries a period; `d` counts the periods whose output callback ran first; `e` must be 0 |
-| `OC a/b c/d` | (test build 12) the callbacks' order changes in the last second and since boot: two output callbacks in a row / two input ones. Up to test build 11 each one repeated a 2.9 ms block or skipped one: a click on any sounding note. With the two slots they cost nothing (and with DLY at power-on they click again). Each full preset change and each flash write (the audio interrupt held) adds one of each by itself |
+| `OC a/b c/d` | (test build 12) the callbacks' order changes in the last second and since boot: two output callbacks in a row / two input ones. Up to test build 11 each one repeated a 2.9 ms block or skipped one: a click on any sounding note. With the two slots they cost nothing. Each full preset change and each flash write (the audio interrupt held) adds one of each by itself |
 | `C1` | 1: the second core runs; 0: the whole DSP is on one core (heavy presets then go to `BYP`) |
 | `G` | why the second core is off: 0 it is not; 1 it misread shared memory, 2 a job was not back within 8 ms, 4 it faulted (1, 2 and 4: retired in this boot, and barred at every start until a power-off); 3 barred at start (by such a retirement, or by a crash of the first core while it ran, in an earlier boot of the same build); 5 it did not answer at start. The c1 line has the rest |
 | `NAM` | 1: the preset's NAM amp is one that runs on both cores; 0: not (test build 12: whatever `C1` is) |
@@ -175,44 +180,37 @@ What the interrupts cost the audio, and the DSP's state, for the crackles. Times
 | `TM` `VM r/w` `OVF` | the library's software timers that fired, the pairing store's reads and writes, task stacks that nearly overflowed |
 | `NAN` | (test build 12) the engine's resets after a NaN, since boot: each one 15 to 50 ms of silence |
 
-### The a2dp line (test build 12)
+### The FIFO line (test build 13)
 
-`A2` and 23 words in hex: the phone's packets as the controller shows them to the A2DP code (`a2dp_media_packet_user_handler`),
-and the controller's own A2DP state for each one. `node tools/op.mjs log` prints them a second time with their names. In test
-build 11 the controller kept only the first packet of each session for the pedal and sent every later one to the host, which
-plays nothing: these words say why.
+`FIFO 000004D2 00000000 00000005 00000002`: the music path's counts since boot, 4 words in hex (`node tools/op.mjs log` prints
+them a second time with their names). It is the log's seventh line, in place of test build 12's a2dp line (`A2` and 23 words:
+the controller's own A2DP state for each packet, and a 10 kHz watch over it). That probe is gone in build 13, to make room for
+the reverb's cut and the crash report; the music plays from the FIFO whatever the controller's state says, and the heal stays.
 
 | Word | Meaning |
 | --- | --- |
-| `n` | packets the hook saw (about 70 a second while the music plays; 0 with music playing: the hook did not link) |
-| `kept` | packets the controller itself kept for the pedal (0: its keep test never passed) |
-| `hc` | the last packet's handle and L2CAP CID (`0030:0041` or so) |
-| `B` `Bn` `Bst` `Bt` | packets found with the receiving connection's state wrong for its keep test, the first one's number in its session (1: the first after MEDIA_START), its state word and its time (ms) |
-| `O0` `Ot` | the first connection's state at the first MEDIA_START, and when (expected `10cccc01`-like, e.g. `10004101` for CID 0041: a handle, the CID, open) |
-| `CHM` | packets received on a connection other than the one the host opened (expected 0) |
-| `G` `Gt` `F` `Ft` | the open connection's state just before the pedal's first give-back of a library packet and just after it, and when |
-| `N` | its state now |
-| `RC` | the last "get" from the library: 0 nothing waiting, `FFFFFFEA` closed, no link, detaching or suspended |
-| `H` | heals: the two fields written back when found wrong, on the connection the host opened only (then `kept` should rise, if the state was all that was wrong) |
-| `W` `W0` `W1` `W2` | the 10 kHz watch over both connections while playing: changes seen, then the first one's time << 1 \| connection, its new state, and the code the interrupts found running (look it up in `build-bt/symbols.txt`) |
-| `DROP` | packets the FIFO could not take: full / too big |
-| `DUP` | packets the library handed the pedal, given back undecoded (the FIFO already has them) |
+| 1 | packets the FIFO took (about 70 a second while the music plays) |
+| 2 | packets it could not take: full in the low half, too big in the high half (`00010003`: 3 full, 1 too big) |
+| 3 | packets the library handed the pedal, given back undecoded (the FIFO already has them) |
+| 4 | heals: the receiving connection's two A2DP fields written back when found wrong, on the connection the host opened only |
 
-A state word: bits 0-7 the channel-open byte, 8-23 the CID the controller expects, 24 a clear-up pending, 25 a detach asked,
-26 suspended, 27 detaching, 28 the connection has a handle. The music plays from the FIFO whatever these say.
+### The c1 line (test builds 12, 13)
 
-### The c1 line (test build 12)
-
-`C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0`, and after a fault of the second core 19 more words in hex.
+`C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0 W 0`; after a cut of the reverb's loop, 4 words in hex after `W`'s count; after a
+fault of the second core, 19 more words in hex.
 
 | Field | Meaning |
 | --- | --- |
 | `C1` `G g@t` | the second core runs; why it is off (as in the isr line) and when it was retired (ms; wraps every 179 s) |
 | `K` | how deep the second core's stack has gone, in bytes (of 2,816) |
-| `KEY` | the key held at power-on: 0 none, 1 CAB (nothing in this build), 2 DLY, 3 REV |
+| `KEY` | the key held at power-on: 0 none, 1 CAB and 2 DLY (nothing in this build), 3 REV |
 | `S` | where Bluetooth was when the main loop first saw a fault: stage << 28 \| state << 24 \| DSP held << 23 \| 1 << 22 \| IRQ 40's count |
 | `F n/c` | the second core's faults, and which core took the exception (0: the first, the usual case) |
+| `W` | (test build 13) the reverb loop's cuts at its block's end in this boot; after one, `n` and `k` at the latest cut, the time the main loop first saw a cut (ms since power-on, wraps every 179 s) and the `S` word then (how to read them: "Test build 13") |
 | then | DBG (the debug unit's message: bits 16-18 a bus error, 10 a PC limit), the taking core's EMU_MSG, PC, RETS (the first core's when it took the exception), the second core's own EMU_MSG, the time (ms), the job handed and the job finished (different: one was running), its function, and the debug unit's ten words from `0x1EEE358` (the bus masters' ids of an invalid access, the write-limit error counts) |
+
+The line holds 223 characters: with a cut and a fault of the second core in the same boot, the debug unit's last four or so
+words are cut off.
 
 ## Please report
 
@@ -223,12 +221,13 @@ A state word: bits 0-7 the channel-open byte, 8-23 the CID the controller expect
 - With the music playing: `node tools/op.mjs dsp --presets 1,14,18,19,20,21,24 --seconds 8`, and the same with the music
   paused. The question this image is for: does a streaming radio push heavy presets into `BYP` or late blocks?
 - By ear: clicks or gaps in the music (and whether `UND` rises), hum or buzz in the guitar sound while the music plays.
-- For crackles: the `isr` line while they happen, and the same preset with Bluetooth off (REV held at power-on) and with DLY
-  held (test build 12: build 11's output). If they are there with Bluetooth off too, the radio is not the cause. If they come
-  only with Bluetooth on and nothing is playing (a high-gain preset, the guitar's volume at zero), ticks at the scans' rhythm
-  point to the radio's supply or RF reaching the analog side, which no firmware change can fix.
-- After any boot whose c1 line shows `G 4`: the c1 line as it is (its words, looked up in `build-bt/symbols.txt` of the same CI
-  run, say where the second core faulted). A red crash screen: a photo of it (PC, RETS, VEC, DBG), before switching off.
+- For crackles: the `isr` line while they happen, and the same preset with Bluetooth off (REV held at power-on). If they are
+  there with Bluetooth off too, the radio is not the cause. If they come only with Bluetooth on and nothing is playing (a
+  high-gain preset, the guitar's volume at zero), ticks at the scans' rhythm point to the radio's supply or RF reaching the
+  analog side, which no firmware change can fix.
+- After any boot whose c1 line shows `G 4` or a `W` other than `W 0`: the c1 line as it is (its words, looked up in
+  `build-bt/symbols.txt` of the same CI run, say where the second core faulted). A red crash screen: a photo of it (PC, RETS,
+  VEC, DBG), before switching off, and one of the `LAST BOOT FAILED` report that follows it (test build 13: the registers).
 
 ## Known limits and risks
 
@@ -336,14 +335,16 @@ guitar still crackled with Bluetooth on, never with it off (REV). A review of th
    which has nothing to play it with. No code in the library could have undone the open; why the test fails is not settled. So
    the pedal now copies every media packet where the controller first shows it to the A2DP code, before that test, into a
    FIFO, and plays from there, whatever the test then decides. The new a2dp line measures the test's inputs for each packet,
-   writes them back when wrong (`H`), and watches them 10,000 times a second, to settle the cause.
+   writes them back when wrong (`H`), and watches them 10,000 times a second, to settle the cause. (Build 13 keeps the
+   writing back and drops the rest: the FIFO line.)
 2. **Crackles.** The audio interrupt's driver (the SDK's) calls the output callback and the input-and-DSP callback each when it
    finds its own flag up. Build 11's isr line shows two entries a period, input first (`AG 2144` = the period less the DSP's
    stay), and seconds where the order flipped (`AG` just under the period): a few microseconds of extra latency (the radio's
    interrupts, a cold cache line) flip it. With one output buffer each flip played one 2.9 ms block twice and skipped the
    next: a step on any sounding note, with no late block, more often with Bluetooth on. The output now has two slots: the
    output callback always sends the block before the newest, whatever the order (2.9 ms more latency). `EN` and `OC` in the
-   isr line count the entries and the flips; DLY at power-on brings build 11's single buffer back, to confirm by ear.
+   isr line count the entries and the flips; DLY at power-on brought build 11's single buffer back, to confirm by ear (gone in
+   build 13: the two slots stay).
 3. **The second core's fault.** It faulted (`G 4`) in every Bluetooth-on boot of build 11 and never with Bluetooth off. Its
    record is now kept and printed (the c1 line): the debug unit's message and bus-master ids, CPU1's own exception word, the
    time, the job, the stack's depth, and where Bluetooth was. (A CAB key for the stock firmware's supply levels, the cheap test
@@ -351,8 +352,99 @@ guitar still crackled with Bluetooth on, never with it off (REV). A review of th
 
 Also: Bluetooth's flash reads (the radio records, the address) run before the audio starts, and the radio's start-up burst and
 the flash reads wait for the second core's job in flight (the flash path is off meanwhile); `WC` survives a retirement; the
-log's ninth line; the build checks the library's static tables are where the a2dp line reads them, and keeps the compiled
-controller code (`listings/` in the artifact) to compare with the library's IR.
+log's ninth line; the build checks the library's static tables are where the a2dp line reads them (in build 13, where the
+heal reads `channel`), and keeps the compiled controller code (`listings/` in the artifact) to compare with the library's IR.
+
+## Test build 13
+
+Build 12 played the phone's music. But on some power-ons with Bluetooth on it crashed about 2 s after power-on, while the radio
+started: the red crash screen showed `VEC 1`, `DBG 00002000` (the first core wrote into a guard band) and a `PC` in `rv_block`,
+the reverb. The photos and the compiled code tell how, not yet why:
+
+- The reverb's loop runs over a chunk of 16 frames (the wet lane) or a block of 64 (the chain). The compiler made its end test
+  "stop when k equals n", so a k that once got past n never stopped: the loop's store marched 13 KB through the RAM, until
+  the guard band at `0x01C74000` stopped it.
+- Why k got past n is open: something wrote over n or k on the loop's stack (A), or one read of n, or one branch, went wrong
+  on the first core during the radio's start-up (B).
+
+What changed:
+
+1. **The reverb's loop stops at 64 frames, whatever its end says, and counts it**: `W` in the log's c1 line, with n as the loop
+   read it and k. No caller passes more than 64, so in normal running `W` stays 0. A cut costs a click instead of a crash:
+   up to 48 frames are still written past a 16-frame chunk, into the chunks after it, the lane's other buffer or the drive and
+   amp's oversampling buffer, so the click can be in the reverb or, for one block, in the amp's sound. (The delay's loop has
+   the same form; its cut did not fit in the flash.)
+2. **The `LAST BOOT FAILED` report shows the crash's registers**: `R1` and `R6`, then `R12` and `SP`, in place of `DSP CODE AT`;
+   the lines below move down, and its `PLEASE TAKE A PHOTO` line is gone (the red screen before it asks already).
+3. **The room for them:** build 12's a2dp line (its probe of every packet and its 10 kHz watch) and the DLY key are gone. The
+   heal stays, and the log's seventh line is now the FIFO line.
+
+### What to do
+
+Switch off for real between boots (USB out too, 10 s). After each boot, once the pedal has started (about 10 s), read the
+log once: `node tools/op.mjs log --count 1`. `W` starts from 0 at every boot, so a single reading at the end would show the
+last boot only. Send all the readings.
+
+| Boots | Phone | Key at power-on |
+| --- | --- | --- |
+| 5 | any | REV held (Bluetooth off) |
+| 5 | its Bluetooth off until the pedal shows `BT VISIBLE` | none |
+| 5 | its Bluetooth on and near | none |
+
+If a boot crashes: a photo of the red crash screen, then one of the `LAST BOOT FAILED` report that follows (it stays 12 s),
+then the log reading. That reading is of the safe-mode boot, whose DSP is off: it cannot show the crashed boot's `W`.
+
+Before the third set, pair the phone with the pedal once in this build (step 3 of "What you should see"), and do not forget
+`OpenPocket` on the phone between these boots: it must still list the pedal. The pedal forgets the pairing at power-off, but a
+phone that remembers it may try to connect while the pedal starts. That is part of the test. Note with each reading which set
+it belongs to: the log tells the REV boots (`KEY 3`) from the others, but not the second set from the third.
+
+### Reading W
+
+`W 0`: no cut of the reverb's loop was counted in this boot. After a cut: `W count n k time S`, the count in decimal, the
+rest in hex. `node tools/op.mjs log` names them and says which line of this table applies. The cut is taken when k reaches 64
+(40 in hex), and it records that k.
+
+| W shows | It means |
+| --- | --- |
+| `n` 10 (16) and `k` 40 (64) | the loop missed a correct end once (B); or k's word on the stack was written or misread with a value from 16 to 63 (A on k), which ends the same way |
+| `n` 40 and `k` 40 | the loop missed its end in the chain's call (a block of 64), not in a lane's chunk |
+| `n` anything else, `k` 40 | n's word on the stack was written over (A): its value is the writer's fingerprint |
+| `k` above 40 | k jumped forward: its word was written or misread, or its register changed. `0020xxxx` is the second core's known misread |
+| `k` below 40 | a k below 64 cannot pass the cut's own check: that check misfired once (B), or k's register changed |
+| the time and `S` | when the main loop first saw the cut (ms since power-on, wrapping every 179 s like `UPTIME`) and where Bluetooth was then, the same word as the c1 line's `S`. The main loop does not run during the radio's start-up replay (stage 3): a cut there is seen only once the replay has returned, at stage 7 or a step after it (the numbers are not in time order: 4, ready, comes after 7), and later than the cut itself (build 12 crashed at 1,971 ms) |
+
+`W 0` does not rule out every overrun: an n written over with a value up to 64, or a k thrown back, still ends the loop late
+(up to 48 frames past the chunk) without a cut.
+
+Many cuts in one boot, or cuts long after the start-up, are worth saying: the crash was a one-off at the radio's start-up.
+
+### Reading the registers (if it still crashes)
+
+The cut covers what a wrong n or k did in build 12 (above). If the crash comes back, something else went wild, and the
+report's registers say what. Read `DBG` first (on the `UPTIME` line): `00002000` (bit 13) is the first core writing into a
+guard band, as in build 12, and the rows below apply. `00200000` (bit 21) is a bus error flagged on the first core, most
+likely the delayed flag of holding the second core (build 4's crash): the `PC` and the registers are then only where the first
+core happened to be, and R1, R6 and R12 say nothing about the loop.
+
+| The report shows | It means |
+| --- | --- |
+| `R1 -  R6 -` and `R12 -  SP -` | the saved registers are not this crash's (not expected: every crash of the first core saves them; a fault of the second core retires it, `G 4` in the log, and makes no report) |
+| `PC` in `rv_block` | `R12` the store's address + 4, `R1` n as the loop last read it, `R6` k + 1 (if the check below kept them there). `R12` neither in the lanes (`px_wl` in `build-bt/symbols.txt`, 2 KB) nor near `SP` (the chain's block is on the stack): the store's own pointer went wild, which the cut does not cover |
+| `SP` | the stack at the crash: about `01C7BE2C`..`01C7BE40` when the audio interrupt came from the main loop |
+| another `PC` | the registers are that code's: look the PC up in `build-bt/symbols.txt` of the same CI run |
+
+**Before flashing build 13**, check `rv_block` in the CI run's `listings/px_dsp.s` (the compiler's assembly) or
+`listings/linked.txt` (the linked bytes):
+
+- the four loop heads each compare k, unsigned, against 63 or 64, and branch to one shared cut path;
+- each loop's end test reloads n from one stack word on every sample, and the cut path records n from that same word;
+- k is still saved to the stack and reloaded around the call to `rv_front`;
+- the frame: build 12 had n at `[sp+128]`, k at `[sp+88]` and the store's pointer at `[sp+132]`. Write down the new places if
+  they moved: a writer at a fixed address would now hit another word;
+- the registers: the report prints r1, r6 and r12, build 12's n (reloaded), k + 1 and the store's address + 4. If build 13's
+  loop keeps them in others, change `rn` in `firmware/openpocket.c` (the `LAST BOOT FAILED` report, this image only) to
+  those registers and build again.
 
 ## Checked on a computer
 
@@ -369,5 +461,10 @@ controller code (`listings/` in the artifact) to compare with the library's IR.
   depth and red zone.
 - `tests/test_bt_lbuf.c`: the radio pools' allocator through 100,000 random operations (no overlap, no corruption, no leak).
 - `tests/test_bt_sources.mjs`: the vendor objects are as published and listed, the licences are there.
+- `tests/test_log.mjs`: the FIFO line and `W` named, and the nine lines classified and reported, as the log tool prints them.
+- Test build 13's cut, by hand (it is not in `tests/run_tests.sh`): the engine tests built with `-DPX_LOOP_GUARD=1` print the
+  same as without it and leave `W` at 0; `rv_block` called with an n above 64 stops at k 64 in each of its four loops, records n
+  and k, and writes nothing past frame 63. With the guard off (the release and BLE images) `engine/px_dsp.c` preprocesses to
+  the same text as before.
 - The member set was chosen from the archives' symbol tables: what it references and does not define is supplied
   (`bt_glue.c`, `bt_cfg.c`) or stood in for (`bt_stubs.c`), with the library's own types.

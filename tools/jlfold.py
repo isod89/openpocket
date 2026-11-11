@@ -12,7 +12,8 @@
 #
 #   jlfold.py probe TC CFG.c OUTDIR REPORT MEMBER.bc... -- LINK...
 #     builds the library three ways and links each beside the real image (built and linked before, and not touched):
-#       R  through text IR, nothing changed: the round trip should give the real image's bytes
+#       R  through text IR, nothing changed: the round trip should give the real image's bytes (the IR is emitted with no
+#          pass run on it, -disable-llvm-passes where the toolchain's clang takes it: the probe says which option it used)
 #       A  the constants folded
 #       B  A, and the print helpers the firmware defines empty (printf, log_print: px_audio.h; puts, put_buf,
 #          printf_buf: ble/ble_libc.c) made internal and empty, so their calls and strings go
@@ -176,10 +177,26 @@ def probe(argv):
         for v in "RAB":
             os.makedirs(os.path.join(out, v))
         sizes, nfold, nprint, skipped = {}, 0, 0, set()
+        # the text IR as the bitcode holds it, no pass run on it: CI run 43002902155's plain emission (clang's -O0 pipeline)
+        # gave an R image 12 B off the real one. The first of these options the toolchain's clang accepts
+        emit = None
         for b in members:
             name = os.path.basename(os.path.dirname(b)) + "_" + os.path.basename(b)[:-3]
             ll = os.path.join(out, name + ".ll")
-            run(clang + ["-S", "-emit-llvm", "-x", "ir", b, "-o", ll])
+            if emit is None:
+                for flags in (["-Xclang", "-disable-llvm-passes"], ["-Xclang", "-disable-llvm-optzns"], []):
+                    try:
+                        run(clang + ["-S", "-emit-llvm", "-x", "ir", b, "-o", ll] + flags)
+                    except RuntimeError as e:
+                        say(f"text IR with {' '.join(flags) or 'no option'}: refused ({str(e)[-160:]})")
+                        continue
+                    emit = flags
+                    break
+                if emit is None:
+                    raise RuntimeError("no way to emit the text IR")
+                say("text IR emitted with " + (" ".join(emit) if emit else "no option (clang's -O0 passes ran on it)"))
+            else:
+                run(clang + ["-S", "-emit-llvm", "-x", "ir", b, "-o", ll] + emit)
             text = open(ll).read()
             for v in "RAB":
                 src = ll

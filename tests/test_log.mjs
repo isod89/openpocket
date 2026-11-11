@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BOOT_STAGES, RESET_CAUSES, a2dpWords, judge, main, parseBle, parseBoot, parseLast } from "../tools/log.mjs";
+import { BOOT_STAGES, RESET_CAUSES, a2dpWords, diagFields, fifoWords, judge, main, parseBle, parseBoot, parseLast, show, wWords } from "../tools/log.mjs";
 import { simAccess } from "./simpedal.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -74,6 +74,53 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
   ok(named && /^n 291, kept 0, hc 0030:0041, B 290, Bn 1, Bst 10004100/.test(named) && /RC FFFFFFEA, H 290, W 3, W0 109517ms\/1/.test(named)
      && /DROP 2\/1, DUP 1$/.test(named), "the a2dp line's 23 words, named");
   ok(a2dpWords("A2 0000 0001") === null && a2dpWords(`A2 ${w.slice(1).join(" ")} XYZ12345`) === null, "an a2dp line cut short or damaged is not named");
+  // test build 13's line 6 (firmware/bt/bt_a2dp.c bt_fifo_line: "FIFO" and 4 words in hex), named by the tool
+  ok(fifoWords("FIFO 000004D2 00010003 00000005 00000002") === "taken 1234, dropped 3 full / 1 too big, given back 5, heals 2",
+     "the FIFO line's 4 words, named");
+  ok(fifoWords("FIFO 000004D2 0001") === null && fifoWords("FIFO 000004D2 00010003 00000005 0000000G") === null
+     && fifoWords("FIFO 000004D2 00010003 00000005") === null && fifoWords(`A2 ${w.slice(0, 4).join(" ")}`) === null,
+     "a FIFO line cut short or damaged is not named");
+  // test build 13's W in the c1 line (bt_c1_line): the reverb loop's cuts, then n, k, the first cut's time and S word
+  const c1 = "C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0";
+  const fault = " 00200000 00000000 01C6A5A0 01C6A5B4 00000000 000007A8 00000012 00000011 01C5F000 00000000 00000000 00000001";
+  let ww = wWords(`${c1} W 0`);
+  ok(ww?.cuts === 0 && /no cut .* counted in this boot/.test(ww.text) && /uncounted/.test(ww.text), "W 0: no cut counted, and what it cannot rule out");
+  ww = wWords(`C1 0 G 4@1960 K 2232 KEY 0 S 3C400123 F 1/0 W 0${fault}`);
+  ok(ww?.cuts === 0 && ww.n === undefined, "W 0 before a fault's words: the fault's words are not taken for W's");
+  // (the main loop's latch: a cut during the radio's start-up replay is seen only after it, at stage 7 RF_DONE or a step after it)
+  ww = wWords(`${c1} W 1 00000010 00000040 000008A2 71400123`);
+  ok(ww?.n === 16 && ww.k === 64 && ww.t === 2210 && /\(B\)/.test(ww.text) && /16 to 63/.test(ww.text)
+     && /first saw it at 2210 ms \(the pedal clock wraps every 179 s\): stage 7, state 1, DSP held 0, IRQ 40 291/.test(ww.text),
+     `W, n 16 and k 64: (B), or k's word with 16 to 63: ${ww?.text}`);
+  ww = wWords(`C1 0 G 4@1960 K 2232 KEY 3 S 3C400123 F 1/0 W 2 0000BEEF 00000040 000007A8 30400123${fault}`);
+  ok(ww?.cuts === 2 && ww.n === 0xBEEF && /overwritten \(A\)/.test(ww.text), "W, n overwritten: (A), with a fault's words after it");
+  ww = wWords(`${c1} W 1 00000010 00200041 000007A8 30400123`);
+  ok(ww?.k === 0x200041 && /k jumped forward/.test(ww.text) && /misread signature/.test(ww.text), "W, k jumped: the misread signature named");
+  ww = wWords(`${c1} W 1 00000010 00000005 000008A2 71400123`);
+  ok(ww?.k === 5 && /cannot pass the cut's check/.test(ww.text) && !/jumped/.test(ww.text), "W, k below 64: the cut's own check misfired, not a jump");
+  ww = wWords(`${c1} W 1 00000040 00000040 00000000 00000000`);
+  ok(/chain's call/.test(ww?.text) && /not yet latched/.test(ww.text), "W, n 64: the chain's call; the first cut not latched yet");
+  // the image's nine lines through the tool's own classification (diagFields) and report (show): build 13, 12, 9-11, and the
+  // safe-mode boot after a crash (the DSP off: W 0 there says nothing)
+  const info = { identity: "OpenPocket", version: "v40", port: "OpenPocket" };
+  const report = (l6, c1l, boot = "UP 30000 SAFE 0 STAGE 8 RST 1 GUARD 0", last = "LAST OK", ble = "BT VIS IRQ 40:1234 41:567 EV 4 RDY SCAN 1") => {
+    const out = [], r = { time: "", level: "full", info, ...diagFields([boot, last, ble, "LINK", "EV", "HCI", l6, "ISR", c1l]) };
+    show(r, null, (x) => out.push(x));
+    return { r, text: out.join("\n") };
+  };
+  let rp = report("FIFO 000004D2 00010003 00000005 00000002", `${c1} W 1 00000010 00000040 000008A2 71400123`);
+  ok(rp.r.fifo && !rp.r.a2dp && !rp.r.hci0 && /^fifo {7}FIFO 000004D2/m.test(rp.text) && /^ {11}taken 1234, dropped 3 full \/ 1 too big/m.test(rp.text)
+     && /^ {11}W 1 cut: n 16 \(0x10\), k 64 \(0x40\)/m.test(rp.text), "build 13's lines: the FIFO line and W named in the report");
+  rp = report(`A2 ${w.join(" ")}`, c1);
+  ok(rp.r.a2dp && !rp.r.fifo && /^ {11}n 291, kept 0/m.test(rp.text) && !/^ {11}W /m.test(rp.text), "build 12's lines: the a2dp line named, no W");
+  rp = report("00 S2 0101", undefined);
+  ok(rp.r.hci0 === "00 S2 0101" && !rp.r.fifo && /^hci0 {7}00 S2 0101/m.test(rp.text), "builds 9 to 11: line 6 is hci0");
+  rp = report("FIFO 00000000 00000000 00000000 00000000", `${c1} W 0`, "UP 21000 SAFE 1 STAGE 7 RST 44 GUARD 1",
+    "LAST FAILED STAGE 7 BLOCKS 227 LOAD 9 PEAK 16 NAN 0 CPU1 1 LOOPS 713 CRASH VEC 1 PC 1C67A04 RETS 1C67A6E DBG 2000 EMU 0 UP 1971", "BT OFF");
+  ok(/^ {11}W not measured: safe mode/m.test(rp.text) && !/no cut/.test(rp.text) && /firmware\/build-bt\/symbols\.txt/.test(rp.text),
+     "the safe-mode boot after a crash: W not measured; the Bluetooth audio image's symbols named");
+  ok(wWords(`${c1} W 1 00000010 00000040`) === null && wWords(`${c1} W 1`) === null && wWords(`${c1} W 1 0000001`) === null
+     && wWords(c1) === null && wWords(undefined) === null, "a W cut short, damaged or missing (build 12's c1 line) is not named");
 }
 b = parseBoot("UP 12345 SAFE 1 STAGE 7 RST 44 GUARD 1");
 ok(b.clockMs === 12345 && b.safe && b.stageName === "FIRST 6 S" && b.resetBy.join() === "WATCHDOG,SOFT" && b.failedBoots === 1, "boot line");

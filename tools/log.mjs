@@ -86,14 +86,16 @@ const hex = (v) => (v ?? 0).toString(16).toUpperCase().padStart(8, "0");
 
 function lastBootWords(reading) {
   const l = reading.lastBoot;
-  if (l.crash) return `it crashed at PC ${hex(l.crash.pc)} (RETS ${hex(l.crash.rets)}, vector ${l.crash.vec.toString(16).toUpperCase()}, pedal clock ${l.crash.clockMs} ms; look the addresses up in firmware/build-ble/symbols.txt)`;
+  // (the Bluetooth audio image's status lines, "BT ..." and its stall record, name its own folder; the BLE image's are "OFF" etc.)
+  const dir = ["bt-audio", "stall-record"].includes(reading.ble?.state) ? "build-bt" : "build-ble";
+  if (l.crash) return `it crashed at PC ${hex(l.crash.pc)} (RETS ${hex(l.crash.rets)}, vector ${l.crash.vec.toString(16).toUpperCase()}, pedal clock ${l.crash.clockMs} ms; look the addresses up in firmware/${dir}/symbols.txt)`;
   return `it stopped at ${l.stageName}, reset by ${reading.boot.resetBy.join(" + ") || "nothing recorded"}`;
 }
 
 // What cannot be read at each level, and what is left: the verdict's reason says it in words.
 const SCREEN = "Look at the pedal's screen or ask for a photo: nothing else can show";
 const NOT_READ = {
-  none: `No pedal-like MIDI port. The pedal is unplugged, off, on the red CRASH screen, showing the 12 s LAST BOOT FAILED report (USB starts after it), or in its boot loader. ${SCREEN} the crash registers; they can be read here only after the next boot, in safe mode.`,
+  none: `No pedal-like MIDI port. The pedal is unplugged, off, on the red CRASH screen, showing the 12 s LAST BOOT FAILED report (USB starts after it), or in its boot loader. ${SCREEN} the crash's PC, RETS, vector and DBG; they can be read here only after the next boot, in safe mode (the Bluetooth audio image's R1, R6, R12 and SP: only on its LAST BOOT FAILED report).`,
   silent: `A pedal-like MIDI port is there but nothing answers: the main loop is stuck or the firmware failed before USB service. ${SCREEN} what it is doing. If the pedal then resets by itself, read again; a pedal stuck like this needs a power cycle or the UBOOT rescue.`,
 };
 
@@ -145,8 +147,8 @@ export function judge(readings, scan) {
   return judged("fail", `${rate} and the controller reports advertising, but this Mac saw no advertisement in ${scan.seconds} s (${scan.others} other devices seen, so the scanner works).`);
 }
 
-// the a2dp line (the Bluetooth audio image, test build 12: firmware/bt/bt_a2dp.c bt_a2): "A2" and 23 words in hex, named here. Counts
-// in decimal; the states (a connection's A2DP fields in one word, bt_lmp_st), the handle:CID, the get's result and the code address
+// the a2dp line (the Bluetooth audio image, test build 12 only: its firmware/bt/bt_a2dp.c bt_a2): "A2" and 23 words in hex, named here. Counts
+// in decimal; the states (a connection's A2DP fields in one word, test build 12's bt_lmp_st), the handle:CID, the get's result and the code address
 // in hex; W0 is a time << 1 | the connection's slot, DROP the full | too-big counts
 const A2_NAMES = ["n", "kept", "hc", "B", "Bn", "Bst", "Bt", "O0", "Ot", "CHM", "G", "Gt", "F", "Ft", "N", "RC", "H", "W", "W0", "W1", "W2", "DROP", "DUP"];
 const A2_HEX = new Set(["Bst", "O0", "G", "F", "N", "RC", "W1", "W2"]);
@@ -161,6 +163,47 @@ export function a2dpWords(line) {
   }).join(", ");
 }
 
+// line 6 from test build 13 (firmware/bt/bt_a2dp.c bt_fifo_line): "FIFO" and 4 words in hex, the music path's counts since boot:
+// the packets the FIFO took, the ones it dropped (full | too big << 16), the library's packets given back undecoded, the heals
+export function fifoWords(line) {
+  const w = line.trim().split(/\s+/);
+  if (w[0] !== "FIFO" || w.length !== 5 || !w.slice(1).every((x) => /^[0-9A-F]{8}$/i.test(x))) return null;
+  const [taken, drop, dup, heal] = w.slice(1).map((x) => parseInt(x, 16) >>> 0);
+  return `taken ${taken}, dropped ${drop & 0xffff} full / ${drop >>> 16} too big, given back ${dup}, heals ${heal}`;
+}
+
+// the c1 line's W (test build 13: engine/px_dsp.c PX_LOOP_CAP, firmware/bt/bt_a2dp.c bt_c1_line): the reverb loop's cuts at
+// its block's end, and after one, n (as the loop reloaded it) and k at the latest cut, the time the main loop first saw a cut
+// (ms since power-on, wrapping every 179 s) and its S word then (stage << 28 | state << 24 | DSP held << 23 | 1 << 22 | IRQ 40's
+// count). The cut is taken only when k >= 64, and it records that k. The reading follows docs/BT-AUDIO-TEST.md, "Test build 13"
+// (the lanes' chunks are 16 frames, the chain's calls 64)
+export function wWords(c1) {
+  const m = / W (\d+)((?: [0-9A-F]{8}){4})?(?= |$)/i.exec(c1 || "");
+  if (!m) return null;
+  const cuts = +m[1];
+  if (!cuts) return { cuts, text: "W 0: no cut of the reverb's loop counted in this boot (an n written over with a value up to 64, or a k thrown back, would still end it late, uncounted)" };
+  if (!m[2]) return null;                              // a cut, but its words are missing: damaged
+  const [n, k, t, s] = m[2].trim().split(" ").map((x) => parseInt(x, 16) >>> 0);
+  const reading = k > 64 ? `k jumped forward (its stack word written or misread, or its register clobbered)${(k >>> 16) === 0x20 ? "; 0x0020xxxx is the misread signature" : ""}`
+    : k < 64 ? "a k below 64 cannot pass the cut's check: the check itself misfired once on that core (B), or k's register was clobbered"
+      : n === 16 ? "n intact: the loop missed a correct end once (B), or k's stack word was written or misread with a value from 16 to 63 (A on k ends the same way)"
+        : n === 64 ? "the chain's call (n 64), not a lane's chunk: it missed its end"
+          : "n's stack word was overwritten (A): n is the writer's fingerprint";
+  const at = s >>> 22 & 1 ? `the main loop first saw it at ${t} ms (the pedal clock wraps every 179 s): stage ${s >>> 28}, state ${s >>> 24 & 15}, DSP held ${s >>> 23 & 1}, IRQ 40 ${s & 0x3fffff} (a cut during the radio's start-up replay, stage 3, is seen only once the replay has returned)`
+    : "first cut not yet latched by the main loop";
+  return { cuts, n, k, t, s, reading, text: `W ${cuts} cut${cuts > 1 ? "s" : ""}: n ${n} (0x${n.toString(16).toUpperCase()}), k ${k} (0x${k.toString(16).toUpperCase()}); ${reading}; ${at}` };
+}
+
+// the DIAG lines, by position, as a reading's fields. The Bluetooth audio image: hci, its HCI line; line 6 the first HCI messages
+// (hci0, test builds 9-11), the phone's packets at the controller (a2dp, test build 12: "A2 ...") or the music's FIFO (fifo, from
+// test build 13: "FIFO ..."); isr, from test build 11: the interrupts' times against the audio's, and the DSP; c1, from test build
+// 12: the second core and its fault record, from test build 13 also W, the reverb loop's cuts
+export function diagFields([boot, last, ble, link, trace, hci, l6, isr, c1]) {
+  const a2dp = l6 && l6.startsWith("A2") ? l6 : undefined, fifo = l6 && l6.startsWith("FIFO") ? l6 : undefined;
+  const hci0 = l6 && !a2dp && !fifo ? l6 : undefined;
+  return { boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0, a2dp, fifo, isr, c1 };
+}
+
 // one reading, at the deepest level the pedal answers
 async function read(access, timing) {
   const time = new Date().toISOString();
@@ -173,12 +216,7 @@ async function read(access, timing) {
     return dev ? { time, level: "identity", id: dev.id, port: dev.name } : { time, level: "silent", port: ports[0].name };
   }
   try {
-    // (the Bluetooth audio image: hci, its HCI line; line 6 the first HCI messages (hci0, test builds 9-11) or the phone's packets at
-    // the controller (a2dp, from test build 12: "A2 ..."); isr, from test build 11: the interrupts' times against the audio's, and the
-    // DSP; c1, from test build 12: the second core and its fault record)
-    const [boot, last, ble, link, trace, hci, l6, isr, c1] = await ed.diag();
-    const a2dp = l6 && l6.startsWith("A2") ? l6 : undefined, hci0 = l6 && !a2dp ? l6 : undefined;
-    return { time, level: "full", info, boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0, a2dp, isr, c1 };
+    return { time, level: "full", info, ...diagFields(await ed.diag()) };
   } catch (e) {
     if (e.code !== "timeout") throw e;
     const r = await ed.request(C.PING).catch(() => null);
@@ -189,7 +227,7 @@ async function read(access, timing) {
 
 const started = (r) => r.level === "info" || r.level === "identity" || (r.level === "full" && (r.boot.safe || (r.boot.stage === STAGE_OK && r.ble.state !== "starting")));
 
-function show(r, prev, say) {
+export function show(r, prev, say) {
   if (r.level !== "full") {
     say(r.level === "info" ? `pedal      ${r.info.identity} ${r.info.version} on "${r.info.port}": answers MIDI, no log channel`
       : r.level === "identity" ? `pedal      ${r.id.text} on "${r.port}": identity only` : r.level === "silent" ? `pedal      "${r.port}" is there, nothing answers` : "pedal      no MIDI port");
@@ -209,8 +247,18 @@ function show(r, prev, say) {
     const named = a2dpWords(r.a2dp);
     if (named) say(`           ${named}`);
   }
+  if (r.fifo) {
+    say(`fifo       ${r.fifo}`);
+    const named = fifoWords(r.fifo);
+    if (named) say(`           ${named}`);
+  }
   if (r.isr) say(`isr        ${r.isr}`);
-  if (r.c1) say(`c1         ${r.c1}`);
+  if (r.c1) {
+    say(`c1         ${r.c1}`);
+    const w = wWords(r.c1);
+    // (in safe mode the DSP stays off, and the crashed boot's W went with its RAM: W 0 says nothing about that boot)
+    if (w) say(`           ${boot.safe && !w.cuts ? "W not measured: safe mode, the DSP is off this boot (the crashed boot's W was cleared by the restart)" : w.text}`);
+  }
   if (ble.state !== "advertising") return;
   const before = prev?.level === "full" && prev.ble.state === "advertising" ? prev.ble : null;
   for (const k of ["i", "e", "r", "t", "s"]) say(`  ${k.padEnd(5)}${String(ble[k]).padEnd(10)}${(before ? `+${ble[k] - before[k]}` : "").padEnd(9)}${MEANING[k]}`);

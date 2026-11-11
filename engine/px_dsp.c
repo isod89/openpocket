@@ -2905,10 +2905,27 @@ static void dly_block(px_engine *e, const float *xb, float *wo, int n, int t)
     }
     dly_loop(e, xb, wo, n, t, m, fl, q, s);                /* (anything else: decided per sample, as before) */
 }
+#if PX_LOOP_GUARD
+/* test build 13 (the Bluetooth audio image only: firmware/build.sh OP_BT). The compiler turns `k < n` into "leave when
+ * k == n" (LLVM's loop-exit rewrite), so a k that once got past n ran on: in test build 12 the reverb's in-place store wo[k]
+ * marched 13 KB, into the write guard (rv_block, 1.96 s after power-on). Here the loop ends at PX_MAX_BLOCK whatever its
+ * end says: no caller passes more (the chain's blocks are PX_MAX_BLOCK frames, the lanes' chunks 16), so a cut is always a
+ * fault, counted, with n as the loop reloads it (from its stack word) and k. The empty asm keeps the compare a real
+ * unsigned one (without it the compiler folds k >= 64 into k == 64, which a k that jumped would pass). px_loop_wild
+ * (px_dsp.h) is written from both cores (the chain may run on the second): a race can lose a count or pair one cut's n
+ * with another's k, never more (only the log reads it). (The delay's loop, dly_loop, has the same form: its cap did not fit
+ * in the flash) */
+uint32_t px_loop_wild[PX_LOOP_WILD_N];
+#define PX_LOOP_CAP(k, n) { uint32_t k_ = (uint32_t)(k); __asm__("" : "+r"(k_)); \
+    if (k_ >= (uint32_t)PX_MAX_BLOCK) { px_loop_wild[0]++; px_loop_wild[1] = (uint32_t)(n); px_loop_wild[2] = k_; break; } }
+#else
+#define PX_LOOP_CAP(k, n)
+#endif
 PX_AINL static inline void rv_loop(px_engine *e, const float *xb, float *wo, int n, const int ALG, const int SP, const int SH,
                                    const int GT)
 {
     for (int k = 0; k < n; k++) {
+        PX_LOOP_CAP(k, n)
         e->dn = (k & 1) ? 1e-15f : -1e-15f;
         float x = xb[k];
             float inr = x * e->rv_in + e->sh_out + e->dn;

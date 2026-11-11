@@ -118,11 +118,10 @@ static void bt_cmd(uint32_t bit) { bt_cmd_bits |= bit; os_sem_post(bt_cmd_sem); 
  * header just before it, from its connection), size = 4 + the L2CAP payload. In test build 11 the controller's choice failed from
  * the second packet of each session (PK 1: every later packet went to the host, which has nothing to play it with). Every media
  * packet now goes into a FIFO that bt_decode reads, whatever the controller then does with it. Everything here runs in the main
- * loop's context (the tasks and the timers run inside ble_poll, ble_os.c), so the FIFO needs no lock; bt_wp_tick (the 10 kHz
- * interrupt) only reads the controller's state */
+ * loop's context (the tasks and the timers run inside ble_poll, ble_os.c), so the FIFO needs no lock */
 #define BT_HOOK_TAKE 0      /* 1: -1 to the controller, which then frees the packet (neither the app's list nor the host). 0: the
-                             * library's own path goes on as in test build 11 (the host gets it), so the probe below measures it */
-#define BT_A2_HEAL 1        /* the receiving connection's two A2DP fields written back when the probe finds them wrong (H) */
+                             * library's own path goes on as in test build 11 (the host gets it, unless HEAL below mends it) */
+#define BT_A2_HEAL 1        /* the receiving connection's two A2DP fields written back when found wrong (the FIFO line's heals) */
 #define BT_FQ_N 16u         /* packets: 232 ms of the iPhone's 5-frame packets */
 #define BT_FQ_MAX 672u      /* the pedal's L2CAP MTU (l2cap.c l2cap_max_mtu, in this configuration): no packet is longer */
 typedef struct { uint16_t n; uint8_t frames, pad; uint8_t b[BT_FQ_MAX]; } bt_fq_t;
@@ -139,62 +138,35 @@ static uint32_t bt_fq_samples(void)                             /* the encoded b
     return (bt_fq_frames + bt_cur_left) * (spf ? spf : 128u);
 }
 
-/* the probe. The controller's connection table (lmp.c lmp_acl_link, 2 x 296 bytes) and the host's `channel` (a2dp_media_codec.c)
- * are static: they are reached from two globals beside them, whose distance is fixed (the vendor's objects never change) and
- * checked in each build's symbols (firmware/build.sh). lmp_connection's bytes (32-bit, natural alignment, lmp.c's TBAA): 5 a
- * detach asked, 11 the app's channel open, 30 its L2CAP CID, 34 a packet number to clear up to, 156 suspended, 192 bit 3
- * detaching, 228 the handle, 236 the link */
-extern uint8_t local_private_key[], a2dp_mutual_toggle;
+/* HEAL. The host's `channel` (a2dp_media_codec.c) is static: it is reached from a global beside it, whose distance is fixed
+ * (the vendor's objects never change) and checked in each build's symbols (firmware/build.sh). lmp_connection's bytes (32-bit,
+ * natural alignment, lmp.c's TBAA): 11 the app's channel open, 30 its L2CAP CID, 192 bit 3 detaching, 236 the link. (Test
+ * build 12's probe of these fields at every packet, its 10 kHz watch and the a2dp line are gone in build 13: the music plays
+ * from the FIFO, and their room went to the reverb's loop and the crash report) */
+extern uint8_t a2dp_mutual_toggle;
 extern void *lmp_conn_for_handle(int handle);
-#define BT_LMP(i) (local_private_key - 0x254 + 296u * (i))
 #define BT_CH() (*(uint8_t *const volatile *)(const void *)(&a2dp_mutual_toggle + 8))
 #define BT_U16(p, o) (*(volatile uint16_t *)(void *)((uint8_t *)(p) + (o)))
 #define BT_U32(p, o) (*(volatile uint32_t *)(void *)((uint8_t *)(p) + (o)))
-/* a connection's A2DP state in one word: bits 0-7 byte 11, 8-23 the CID (30), 24 byte 34 set, 25 byte 5 set, 26 suspended,
- * 27 detaching, 28 a handle */
-static uint32_t bt_lmp_st(const uint8_t *c)
-{
-    return c[11] | (uint32_t)BT_U16(c, 30) << 8 | (uint32_t)(BT_U16(c, 34) != 0) << 24 | (uint32_t)(c[5] != 0) << 25
-         | (uint32_t)(c[156] != 0) << 26 | (uint32_t)((BT_U32(c, 192) & 8u) != 0) << 27 | (uint32_t)(BT_U16(c, 228) != 0) << 28;
-}
-static uint32_t bt_ch_st(void) { const uint8_t *const c = BT_CH(); return c ? bt_lmp_st(c) : 0xFFFFFFFFu; }
-/* the a2dp line's 23 words, in its order (bt_a2dp_line prints them from n on): the hook's calls; the packets the controller kept
- * for the app; the last packet's handle << 16 | CID; B the packets found with the state wrong, the first one's number in its
- * session, its state and its time; O0 slot 0's state at the first MEDIA_START and when; CHM the packets received on a connection
- * that is not `channel`; G and F the open connection's state at the first get and just after its free, and when; N its state
- * now; RC the last get's result (0 none, FFFFFFEA = -22: closed, no link, detaching or suspended); H the heals; W the watch's
- * changes, the first one's time << 1 | slot, its state and the code under the interrupts; the FIFO's drops (full | too big
- * << 16); the library's packets given back */
-static volatile struct {
-    uint32_t n, kept, hc, bad, bad_n, bad_st, bad_t, o0, o_t, chmis, g_st, g_t, f_st, f_t, now, rc, heal, wn, w0, w1, w2, drop, dup;
-    uint32_t on, wlast[2];
-} bt_a2;
-#define BT_A2_WORDS 23u
-/* lmp.c's own is weak and empty: it is called only when lmp_rx_handler keeps a packet for the app (interrupts off) */
-void a2dp_rx_notice_to_decode(void) { bt_a2.kept++; }
+/* the music path's counts (the log's line 6, bt_fifo_line): the FIFO's drops (full | too big << 16), the library's packets
+ * given back undecoded, the heals */
+static volatile struct { uint32_t drop, dup, heal; } bt_a2;
 
 int a2dp_media_packet_user_handler(uint8_t *data, uint16_t size)
 {
     const uint32_t cid = data[2] | (uint32_t)data[3] << 8, n = data[0] | (uint32_t)data[1] << 8;
     const uint32_t h = (data[-4] | (uint32_t)data[-3] << 8) & 0x0FFFu;
     uint8_t *const c = lmp_conn_for_handle((int)h);
-    bt_a2.n++;
-    bt_a2.hc = h << 16 | cid;
-    if (c && bt_st == BT_PLAYING) {                             /* the probe: the state lmp_rx_handler tests next, this packet's */
-        const uint32_t st = bt_lmp_st(c);
-        const int ch = c == BT_CH();
-        if (!ch) bt_a2.chmis++;
-        if (!(st & 0xFFu) || (st >> 8 & 0xFFFFu) != cid) {
-            if (!bt_a2.bad++) { bt_a2.bad_n = bt_a2.n - bt_a2.on; bt_a2.bad_st = st; bt_a2.bad_t = fm1_uptime_ms(); }
+    /* the state lmp_rx_handler tests next, this packet's: the channel open (byte 11) and the CID it expects (30) */
+    if (c && bt_st == BT_PLAYING && (!c[11] || BT_U16(c, 30) != cid)) {
 #if BT_A2_HEAL
-            /* (only the connection the host opened: packets kept on the other one would never be given back, its list is not
-             * the one the app reads) */
-            if (ch && BT_U32(c, 236) && !(BT_U32(c, 192) & 8u)) {   /* (a link, not detaching) */
-                local_irq_disable(); BT_U16(c, 30) = (uint16_t)cid; c[11] = 1u; local_irq_enable();
-                bt_a2.heal++;
-            }
-#endif
+        /* (only the connection the host opened: packets kept on the other one would never be given back, its list is not
+         * the one the app reads) */
+        if (c == BT_CH() && BT_U32(c, 236) && !(BT_U32(c, 192) & 8u)) {   /* (a link, not detaching) */
+            local_irq_disable(); BT_U16(c, 30) = (uint16_t)cid; c[11] = 1u; local_irq_enable();
+            bt_a2.heal++;
         }
+#endif
     }
     if (!bt_fq || (bt_st != BT_LINKED && bt_st != BT_PLAYING)) return 0;
     /* (from the link on: a session's first packet too, which comes before MEDIA_START) */
@@ -213,34 +185,8 @@ int a2dp_media_packet_user_handler(uint8_t *data, uint16_t size)
                                                                  * the channel's open and MEDIA_START come from it) */
 }
 
-/* the watch: 10 kHz (timer5, bt_stall_tick), both connections' state while a session plays; the first change is kept */
-static volatile uint8_t bt_wp_on;
-static void bt_wp_tick(void)
-{
-    uint32_t i;
-    if (!bt_wp_on) return;
-    for (i = 0; i < 2u; i++) {
-        const uint32_t v = bt_lmp_st(BT_LMP(i));
-        if (v == bt_a2.wlast[i]) continue;
-        bt_a2.wlast[i] = v;
-        if (!bt_a2.wn++) {
-            bt_a2.w0 = fm1_uptime_ms() << 1 | i;
-            bt_a2.w1 = v;
-            bt_a2.w2 = ((const uint32_t *)(uintptr_t)_sstack_top)[-3];   /* the code under the interrupts (as bt_stall_sample) */
-        }
-    }
-}
-static void bt_media_start(void)                                /* MEDIA_START, just after the channel's open (the FIFO is not
-                                                                 * reset: the session's first packet is already in it) */
-{
-    bt_a2.on = bt_a2.n;
-    if (!bt_a2.o_t) { bt_a2.o0 = bt_lmp_st(BT_LMP(0)); bt_a2.o_t = fm1_uptime_ms() | 1u; }
-    bt_a2.wlast[0] = bt_lmp_st(BT_LMP(0)); bt_a2.wlast[1] = bt_lmp_st(BT_LMP(1));
-    bt_wp_on = 1;
-}
 static __attribute__((noinline)) void bt_media_end(void)        /* MEDIA_STOP, FIRST/SECOND_DISCONNECT, the HCI disconnection */
 {
-    bt_wp_on = 0;
     bt_fq_reset();
 }
 
@@ -297,7 +243,10 @@ int bt_event_notify(int from, void *e)
         break;
     case BT_STATUS_ENCRY_COMPLETE: bt_enc++; break;
     case BT_STATUS_CONN_A2DP_CH: bt_a2dp_ch++; break;
-    case BT_STATUS_A2DP_MEDIA_START: bt_media_start(); bt_st = BT_PLAYING; bt_media++; break;
+    case BT_STATUS_A2DP_MEDIA_START:                            /* just after the channel's open (the FIFO is not reset: the
+                                                                 * session's first packet is already in it) */
+        bt_st = BT_PLAYING; bt_media++;
+        break;
     case BT_STATUS_A2DP_MEDIA_STOP:
         bt_media_end();                                         /* (sbc_codec_stop sends this before it closes the channel) */
         if (bt_st == BT_PLAYING) bt_st = BT_LINKED;
@@ -424,7 +373,6 @@ static void bt_stall_fire(void)
 
 static void bt_stall_tick(int firing)
 {
-    bt_wp_tick();                                               /* (test build 12: the a2dp line's watch, every tick) */
     if (ble_busy_ticks <= BLE_STALL_TICKS - BT_STALL_WINDOW) { bt_stall_on = 0; return; }
     if (!bt_stall_on) { bt_stall_begin(); bt_stall_on = 1; }
     if (!firing) bt_stall_sample();
@@ -449,7 +397,7 @@ void ble_test_start(void)
     bt_sbc_reset();
     bt_ring_init(&bt_ring, bt_ring_mem);
     bt_fq = malloc(BT_FQ_N * sizeof *bt_fq);                    /* the phone's packets: 10,816 bytes of the Bluetooth heap, for good */
-    if (!bt_fq) BT_CRUMB("fifo: no memory");                    /* (then nothing is decoded: the a2dp line's n still counts) */
+    if (!bt_fq) BT_CRUMB("fifo: no memory");                    /* (then nothing is decoded) */
     os_sem_create(bt_cmd_sem, 0);
     __set_simple_pair_flag(1);                                  /* Secure Simple Pairing ... */
     __set_simple_pair_param(3, 0, 2);                           /* ... no display or keys, no OOB, 2 = HCI "no MITM, dedicated bonding": Just Works */
@@ -466,20 +414,17 @@ void ble_test_start(void)
 }
 
 /* the FIFO's packets -> SBC frames -> the ring, as long as it has room for a frame (24 frames a pass at most: 70 ms). What the
- * library hands the app (the packet its channel's open marked, and any it keeps: after the probe's heal, or a library that
- * works) is a copy of a packet the FIFO holds: it is given back undecoded, every pass, whatever the ring's room (it holds the
- * radio's receive pool). G and F: the open connection's state at the first get and just after its free */
-static int bt_try_get(uint8_t **p) { const int r = a2dp_media_try_get_packet(p); if (r <= 0) bt_a2.rc = (uint32_t)r; return r; }
+ * library hands the app (the packet its channel's open marked, and any it keeps: after a heal, or a library that works) is a
+ * copy of a packet the FIFO holds: it is given back undecoded, every pass, whatever the ring's room (it holds the radio's
+ * receive pool) */
 static void bt_fq_done(void) { if (bt_fq_held) { bt_fq_r++; bt_fq_held = 0; bt_cur_left = 0; } }
 static void bt_decode(void)
 {
     uint32_t pass = 0;
     uint8_t *p = 0;
-    while (bt_try_get(&p) > 0 && p) {
-        if (!bt_a2.g_t) { bt_a2.g_st = bt_ch_st(); bt_a2.g_t = fm1_uptime_ms() | 1u; }
+    while (a2dp_media_try_get_packet(&p) > 0 && p) {
         a2dp_media_free_packet(p);
         bt_a2.dup++;
-        if (!bt_a2.f_t) { bt_a2.f_st = bt_ch_st(); bt_a2.f_t = fm1_uptime_ms() | 1u; }
         p = 0;
     }
     while (bt_ring_room(&bt_ring) >= BT_SBC_MAX_SAMPLES && pass++ < 24u) {
@@ -529,6 +474,13 @@ static void bt_isr_second(uint32_t now)
 /* the second core's fault, as the main loop first saw it (the c1 line's S): the radio's start-up stage << 28 | bt_st << 24 |
  * the DSP held << 23 | 1 << 22 | IRQ 40's count (fm1_cpu1_fault_c runs before this file's names are known) */
 static uint32_t bt_c1_snap;
+/* test build 13: the reverb's loop's first cut (engine/px_dsp.h px_loop_wild), as the main loop first saw it: the time (ms
+ * since power-on, as the crash report's UPTIME) and the same word as S (the c1 line's W) */
+static uint32_t bt_w_at[2];
+static __attribute__((noinline)) uint32_t bt_snap(void)   /* (one copy for its two uses: the smaller code) */
+{
+    return (ble_stage & 15u) << 28 | (bt_st & 15u) << 24 | (uint32_t)(a_hold != 0) << 23 | 1u << 22 | (bt_cnt_irq_br & 0x3FFFFFu);
+}
 
 void ble_test_poll(void)
 {
@@ -538,8 +490,8 @@ void ble_test_poll(void)
     ble_busy(0);
     now = ble_ms();
     bt_isr_second(now);
-    if (fm1_cpu1_fault.count && !bt_c1_snap)
-        bt_c1_snap = (ble_stage & 15u) << 28 | (bt_st & 15u) << 24 | (uint32_t)(a_hold != 0) << 23 | 1u << 22 | (bt_cnt_irq_br & 0x3FFFFFu);
+    if (fm1_cpu1_fault.count && !bt_c1_snap) bt_c1_snap = bt_snap();
+    if (px_loop_wild[0] && !bt_w_at[1]) { bt_w_at[0] = fm1_uptime_ms(); bt_w_at[1] = bt_snap(); }
     if (bt_st == BT_STARTING && !bt_t_init && now - bt_t_start > 10000u) {   /* btstack_init not back in 10 s (the radio start-up
                                                                          * replay takes a few; a call that hangs is the stall watch's) */
         ble_wait = ble_task_waiting("btctrler");
@@ -836,22 +788,25 @@ static char *bt_words(char *o, const volatile uint32_t *v, uint32_t n)   /* n wo
     return o;
 }
 
-/* the phone's packets at the controller (test build 12, in place of test builds 9-11's hci0 line): "A2" and bt_a2's 23 words in
- * hex, in its order (n kept hc B Bn Bst Bt O0 Ot CHM G Gt F Ft N RC H W W0 W1 W2 DROP DUP; tools/log.mjs names them): 209
- * characters */
-void bt_a2dp_line(char *out)
+/* the music path's health (test build 13, in place of build 12's a2dp line): "FIFO" and 4 words in hex: the packets the FIFO
+ * took, the ones it dropped (full | too big << 16), the library's packets given back undecoded, the heals (tools/log.mjs
+ * names them) */
+void bt_fifo_line(char *out)
 {
-    char *o = ble__put(out, "A2");
-    bt_a2.now = bt_ch_st();
-    o = bt_words(o, &bt_a2.n, BT_A2_WORDS);
+    char *o = ble__put(out, "FIFO");
+    o = bt_words(o, &bt_fq_w, 1u);
+    o = bt_words(o, &bt_a2.drop, 3u);
     *o = 0;
 }
 
-/* the second core (test build 12): "C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0", and after a fault 19 words in hex: DBG, the taking
- * core's EMU_MSG, PC, RETS (CPU0's when CPU0 took it, F's second figure 0), CPU1's EMU_MSG, the time (ms, wraps at 179 s), the
- * job handed and the job finished (different: one was running), its function, the debug unit's ten words from 0x1EEE358 (the
- * write-limit error counts, the bus masters' ids). G: why it is off and when (ms); K: how deep its stack has gone (bytes of
- * 2,816); KEY: the key held at power-on (1 CAB: nothing in this build, 2 DLY, 3 REV); S: bt_c1_snap (at most 219 characters) */
+/* the second core (test build 12): "C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0 W 0", and after a fault 19 words in hex: DBG, the
+ * taking core's EMU_MSG, PC, RETS (CPU0's when CPU0 took it, F's second figure 0), CPU1's EMU_MSG, the time (ms, wraps at
+ * 179 s), the job handed and the job finished (different: one was running), its function, the debug unit's ten words from
+ * 0x1EEE358 (the write-limit error counts, the bus masters' ids). G: why it is off and when (ms); K: how deep its stack has
+ * gone (bytes of 2,816); KEY: the key held at power-on (1 CAB, 2 DLY: nothing in this build; 3 REV); S: bt_c1_snap. Test
+ * build 13: W, the reverb's loop's cuts at its block's end (engine/px_dsp.h px_loop_wild), and after one, 4 words in hex: n
+ * (as the loop reloaded it) and k at the latest, the first one's time (ms) and its S word (bt_w_at). Without a cut the line
+ * stays within its 223 characters with a fault's 19 words; with both, the debug unit's last words are cut */
 void bt_c1_line(char *out)
 {
     char *o = ble__put(bt_line_t, "C1 ");
@@ -860,6 +815,11 @@ void bt_c1_line(char *out)
     o = ble__put(o, " KEY "); o = bt__dec(o, (uint32_t)keys_held_at_boot);
     o = ble__put(o, " S "); o = bt__hex(o, bt_c1_snap, 8);
     o = ble__put(o, " F "); o = bt__dec(o, fm1_cpu1_fault.count); *o++ = '/'; o = bt__dec(o, fm1_cpu1_fault.cpu);
+    {   /* (the count read once: a cut meanwhile cannot leave "W 1" without its words) */
+        const uint32_t w = px_loop_wild[0];
+        o = ble__put(o, " W "); o = bt__dec(o, w);
+        if (w) { o = bt_words(o, px_loop_wild + 1, 2u); o = bt_words(o, bt_w_at, 2u); }
+    }
     if (fm1_cpu1_fault.count) o = bt_words(o, &fm1_cpu1_fault.dbg, 19u);   /* (dbg .. dbgx[9]: the struct's end) */
     *o = 0;
     bt_line_out(out, bt_line_t);

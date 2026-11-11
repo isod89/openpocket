@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 12
+#define BT_TEST_BUILD 13
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -611,8 +611,8 @@ static void ir_changed(uint32_t s)   /* v38: a user IR was written or erased: th
 #if OP_BLE_TEST             /* the log channel (firmware/ble/ble_diag.h): only this image answers DIAG, the normal firmware does not change */
 #define ED_STATS 8u         /* PING also gives the Bluetooth heap's and tasks' lowest free bytes */
 #if OP_BT_AUDIO
-#define ED_DIAG_LINES 9u    /* (the Bluetooth audio image: the HCI conversation, the phone's packets at the controller, the
-                             * interrupts' times against the audio's, the second core, bt/bt_a2dp.c) */
+#define ED_DIAG_LINES 9u    /* (the Bluetooth audio image: the HCI conversation, the music's FIFO, the interrupts' times
+                             * against the audio's, the second core, bt/bt_a2dp.c; tools/log.mjs reads them by position) */
 #define ED_OUT_BYTES 2048u  /* (its nine lines of up to 223 characters: 9 x 225 and the reply's head; px_editor.h's is 1,024) */
 #else
 #define ED_DIAG_LINES 5u
@@ -661,7 +661,8 @@ static void ed_diag_line(uint32_t i, char *out)
     else if (i == 3u) ble_midi_line(out);
 #if OP_BT_AUDIO
     else if (i == 5u) bt_hci_line(out);
-    else if (i == 6u) bt_a2dp_line(out);  /* (test build 12, in place of the first HCI messages since boot) */
+    else if (i == 6u) bt_fifo_line(out);  /* (test build 13; build 12: the phone's packets at the controller; 9 to 11: the first
+                                           * HCI messages since boot) */
     else if (i == 7u) bt_isr_line(out);
     else if (i == 8u) bt_c1_line(out);
 #endif
@@ -724,7 +725,9 @@ static void app_main(void)
                                                                                 * 11: the pairing's four walls, the second core's bar,
                                                                                 *     the clock, the waits in an interrupt, the isr line;
                                                                                 * 12: the phone's packets from the controller's hook into
-                                                                                *     a FIFO, two output slots, the second core's record) */
+                                                                                *     a FIFO, two output slots, the second core's record;
+                                                                                * 13: the reverb's loop cut at its block's end and counted,
+                                                                                *     the registers on the LAST BOOT FAILED report) */
 #elif OP_BLE_TEST
     ft_box(0, 126, 240, OP_VERSION " BLE TEST", &FT_SM, UI_DIM, UI_BG, 1);
 #else
@@ -766,18 +769,40 @@ static void app_main(void)
                 ft_box(0, 62, 240, l, &FT_SM, UI_ACC, UI_BG, 1);
                 l[0] = 0; b_str(l, "RETS "); hex8(h, fm1_crash.rets); b_str(l, h); b_str(l, "  VEC "); b_num(l, fm1_crash.vec);
                 ft_box(0, 80, 240, l, &FT_SM, UI_ACC, UI_BG, 1);
+#if OP_BT_AUDIO
+                {   /* test build 13: the registers at the crash, in place of the DSP code's address. fm1_crash_ctx's slot is this
+                     * crash's when its count is (fm1_irq.h fm1_fault_c, at every crash of CPU0's); else a dash (not expected: CPU1's
+                     * faults retire it, FM1_CPU1_FALLBACK). In build 12's reverb loop (rv_block) R1 held its end n as reloaded, R6
+                     * k + 1, R12 the address it wrote + 4 (build 13's code may use others: rn, after the CI listing listings/px_dsp.s) */
+                    const fm1_crash_ctx_t *x = &fm1_crash_ctx[fm1_crash.count % FM1_CRASH_CTX_N];
+                    const int ok = x->count == fm1_crash.count;
+                    static const char nm[4][6] = { "R1 ", "  R6 ", "R12 ", "  SP " };   /* (a loop: the smallest code) */
+                    static const uint8_t rn[3] = { 1, 6, 12 };
+                    char *o = l;
+                    for (int i = 0; i < 4; i++) {
+                        o = ble__put(o, nm[i]);
+                        if (ok) o = bt__hex(o, i < 3 ? x->r[rn[i]] : fm1_crash.sp, 8); else *o++ = '-';
+                        if (i & 1) { *o = 0; ft_box(0, i == 1 ? 98 : 116, 240, l, &FT_SM, UI_DIM, UI_BG, 1); o = l; }
+                    }
+                }
+#define LBF_Y(y) ((y) + 18)   /* (the lines below: one line further down) */
+#else
                 l[0] = 0; b_str(l, "DSP CODE AT "); hex8(h, (uint32_t)(uintptr_t)px_block_label); b_str(l, h);
                 ft_box(0, 98, 240, l, &FT_SM, UI_DIM, UI_BG, 1);
+#define LBF_Y(y) y          /* (the release and BLE images: the same text as before) */
+#endif
                 l[0] = 0; b_str(l, "UPTIME "); b_num(l, fm1_crash.uptime_ms); b_str(l, " MS  DBG "); hex8(h, fm1_crash.dbg); b_str(l, h);
-                ft_box(0, 116, 240, l, &FT_SM, UI_DIM, UI_BG, 1);
+                ft_box(0, LBF_Y(116), 240, l, &FT_SM, UI_DIM, UI_BG, 1);
             }
             l[0] = 0; b_str(l, "BLOCKS "); b_num(l, op_diag.blocks); b_str(l, "  LOAD "); b_num(l, op_diag.load);
             b_str(l, "%  PEAK "); b_num(l, op_diag.peak); b_str(l, "%");
-            ft_box(0, 140, 240, l, &FT_SM, UI_TXT, UI_BG, 1);
+            ft_box(0, LBF_Y(140), 240, l, &FT_SM, UI_TXT, UI_BG, 1);
             l[0] = 0; b_str(l, "NAN "); b_num(l, op_diag.nans); b_str(l, "  CPU1 "); b_num(l, op_diag.c1);
             b_str(l, "  LOOPS "); b_num(l, op_diag.loops);
-            ft_box(0, 158, 240, l, &FT_SM, UI_TXT, UI_BG, 1);
+            ft_box(0, LBF_Y(158), 240, l, &FT_SM, UI_TXT, UI_BG, 1);
+#if !OP_BT_AUDIO            /* (test build 13: its line would cover the one above; the red crash screen asks for the photo) */
             ft_box(0, 184, 240, "PLEASE TAKE A PHOTO", &FT_MD, UI_ACC, UI_BG, 1);
+#endif
             ft_box(0, 212, 240, "SAFE MODE: DSP OFF THIS BOOT", &FT_SM, UI_DIM, UI_BG, 1);
             for (int i = 0; i < 120; i++) { fm1_wdt_feed(); fm1_delay_ms(100); }   /* 12 s */
             lcd_rect(0, 0, 240, 240, UI_BG);
@@ -796,11 +821,6 @@ static void app_main(void)
     adc_pins_analog();
     input_baseline();
     keys_capture_idle();
-#if OP_BT_AUDIO
-    /* test build 12's A/B key, held at power-on (REV: Bluetooth off, below; the log's c1 line shows KEY). (A CAB key that ran the
-     * boot at the stock firmware's supply levels did not fit in the flash: the second core's record decides whether it is needed) */
-    if (keys_held_at_boot == 2) a_slots_off = 1;   /* DLY: the output as test build 11 sent it, one slot (px_audio.h a_dec) */
-#endif
     op_stage(ST_PRESET, "PRESET...");
     load_preset(cur_preset);
 #if LED_PROBE
@@ -852,6 +872,8 @@ static void app_main(void)
 #if OP_BLE_TEST
     ble_os_init();                       /* the task table, before the main loop polls it (ble_os.c: it lives in NOINIT) */
 #if OP_BT_AUDIO
+    /* the Bluetooth audio image's one power-on key (the log's c1 line shows KEY, whichever was held). Test build 12's DLY key
+     * (the output in one slot, as build 11 sent it) is gone in build 13: its A/B is settled, the two slots stay */
     if (keys_held_at_boot == 3) bt_off_by_key = 1;   /* REV held at power-on: this boot without Bluetooth (an A/B by ear) */
 #endif
     if (!safe && !BT_OFF_BY_KEY)         /* after a failed boot Bluetooth stays off: the pedal runs, and can be re-flashed */

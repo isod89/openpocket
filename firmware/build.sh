@@ -60,6 +60,7 @@ fi
 FP="-mcpu=r3 -mfprev1"
 DSPDEF="-DPX_SR=44100.0f -DPX_OVERSAMPLE=4"
 [ -n "$OP_BLE" ] && DSPDEF="$DSPDEF -DPXN_LEAN=1"   # v40.2: the test image's flash is full (engine/px_nam.c)
+[ -n "$OP_BT" ] && DSPDEF="$DSPDEF -DPX_LOOP_GUARD=1"   # test build 13: the reverb's loop ends at PX_MAX_BLOCK, counted (engine/px_dsp.c)
 INC="-I$HERE/inc -I$HERE/../engine"
 $CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $BLEDEF -DOP_GUARD_STACK=$GUARD_STACK $INC \
     -I"$BSP/chip" -I"$BSP/boards/fm1" -include "$O/channel.h" -c "$HERE/openpocket.c" -o "$O/openpocket.o"
@@ -116,8 +117,9 @@ python3 "$HERE/../tools/check_calls.py" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1O
 # symbol map: used to translate a crash address (PC) into a function name
 "$TC/common/bin/objdump" -t "$O/openpocket.elf" 2>/dev/null | sort > "$O/symbols.txt" || true
 if [ -n "$OP_BT" ]; then
-  # test build 12: bt/bt_a2dp.c reaches two of the library's static tables (lmp.c lmp_acl_link, a2dp_media_codec.c channel and
-  # current_conn) from the globals beside them. The vendor's objects never change, but this build must prove the distances hold
+  # bt/bt_a2dp.c reaches one of the library's static tables, a2dp_media_codec.c's channel (BT_CH, for the heal), from the global
+  # beside it. Test build 12 also read lmp.c's lmp_acl_link (gone in build 13: its distances stay checked, as a tripwire, with
+  # current_conn's). The vendor's objects never change, but this build must prove the distances hold
   python3 - "$O/symbols.txt" <<'PY'
 import re,sys
 want=("lmp_acl_link","local_private_key","a2dp_mutual_toggle","channel","current_conn")
@@ -130,15 +132,18 @@ if bad: sys.exit("bt layout: not exactly one symbol for "+", ".join(bad))
 (la,ls),(pk,_),(mt,_),(ch,_),(cc,_)=(s[n][0] for n in want)
 ok=ls==0x250 and pk==la+0x254 and ch==mt+8 and cc==mt+4
 print(f"bt layout: lmp_acl_link {la:#010x} ({ls:#x}), local_private_key {pk:#010x}, a2dp_mutual_toggle {mt:#010x}, current_conn {cc:#010x}, channel {ch:#010x}: {'ok' if ok else 'MOVED'}")
-if not ok: sys.exit("bt layout: the library's statics moved: firmware/bt/bt_a2dp.c BT_LMP / BT_CH must follow")
+if not ok: sys.exit("bt layout: the library's statics moved: firmware/bt/bt_a2dp.c BT_CH must follow if channel moved (lmp_acl_link and current_conn: nothing reads them in test build 13)")
 PY
   # the compiled controller and A2DP code, to compare with the IR (the artifact's listings/; neither step can fail the build)
   mkdir -p "$O/listings"
+  # test build 13: the compiler's own assembly of px_dsp.o (the same flags): rv_block's loop heads, their shared cut path and
+  # its frame (engine/px_dsp.c PX_LOOP_CAP; test build 12's crash had n at [sp+128], k at [sp+88], wo at [sp+132])
+  $CC $FP -O2 -ffunction-sections -fno-builtin $DSPDEF $INC -S "$HERE/../engine/px_dsp.c" -o "$O/listings/px_dsp.s" 2>/dev/null || true
   for b in btctrler/lmp.c btstack/a2dp_media_codec.c btstack/a2dp_sink.c; do
     $CC -Os -S -x ir "$HERE/../third_party/jieli-bt/$b.bc" -o "$O/listings/$(basename "$b").s" 2>/dev/null || true
   done
   for f in lmp_rx_handler lmp_private_open_sbc_channel lmp_send_acl_u_packet_to_host acl_u_packet_analyse \
-           a2dp_media_packet_user_handler a2dp_rx_notice_to_decode; do
+           a2dp_media_packet_user_handler a2dp_rx_notice_to_decode rv_block; do
     r=$(awk -v n="$f" '$NF==n && $3=="F" {print $1" "$(NF-1); exit}' "$O/symbols.txt")
     [ -n "$r" ] || continue
     a=${r% *}; z=${r#* }

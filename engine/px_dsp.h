@@ -304,6 +304,12 @@ extern uint32_t (*px_clock)(void);      /* v38: set by the firmware: px_engine.p
 void px_wet_mode(px_engine *e, int on, int lag);
 void px_wet_swap(px_engine *e);
 int  px_wet_run(px_engine *e, uint32_t deadline, volatile const uint8_t *stop);
+#if PX_LOOP_GUARD   /* test build 13, the Bluetooth audio image only (px_dsp.c PX_LOOP_CAP): the reverb's loop cut at
+                     * PX_MAX_BLOCK. [0] the cuts, [1] n as the loop reloaded it and [2] k, at the latest cut
+                     * (firmware/bt/bt_a2dp.c: the log's c1 line, W) */
+#define PX_LOOP_WILD_N 3
+extern uint32_t px_loop_wild[PX_LOOP_WILD_N];
+#endif
 
 #ifdef __cplusplus
 }
