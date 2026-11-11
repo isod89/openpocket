@@ -77,9 +77,19 @@ if [ -n "$OP_BLE" ]; then
   mkdir -p "$O/jl"
   if [ -n "$OP_BT" ]; then BCS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' -e "s|^|$HERE/../|" "$HERE/bt/members.txt")
   else BCS=$(ls "$HERE"/../third_party/jieli-ble/*/*.bc); fi
-  for b in $BCS; do
-    $CC -Os -c -x ir "$b" -o "$O/jl/$(basename "$(dirname "$b")")_$(basename "$b" .bc).o"
-  done
+  if [ -n "$OP_BT" ] && [ "${OP_BT_FOLD:-1}" != 0 ]; then
+    # test build 14 (OpenPocket v42): the Bluetooth audio image links the library folded (tools/jlfold.py fold, the probe's
+    # variant B: the constants bt/bt_cfg.c and px_audio.h define folded into the members, and the print helpers the
+    # firmware defines empty made internal and empty, so the code they guard and their strings go; 94,664 B less in test
+    # build 13). Unfolded, v41's and v42's firmware no longer fits the app slot. The same object names: the rest is as below.
+    # OP_BT_FOLD=0 (OP_BT=1 OP_BT_FOLD=0 sh firmware/build.sh) compiles the members as the BLE image does: the image then
+    # does not fit its flash window.
+    python3 "$HERE/../tools/jlfold.py" fold "$TC" "$HERE/bt/bt_cfg.c" "$O/jl" $BCS
+  else
+    for b in $BCS; do
+      $CC -Os -c -x ir "$b" -o "$O/jl/$(basename "$(dirname "$b")")_$(basename "$b" .bc).o"
+    done
+  fi
   # v40 made memcpy and memset RAM code, out of the call range of the library's code at the end of the flash: the
   # library calls flash copies instead (ble/ble_libc.c)
   for o in "$O"/jl/*.o; do python3 "$HERE/../tools/elfsym.py" "$o" memcpy=ble_memcpy memset=ble_memset; done
@@ -140,7 +150,8 @@ ok=ls==0x250 and pk==la+0x254 and ch==mt+8 and cc==mt+4
 print(f"bt layout: lmp_acl_link {la:#010x} ({ls:#x}), local_private_key {pk:#010x}, a2dp_mutual_toggle {mt:#010x}, current_conn {cc:#010x}, channel {ch:#010x}: {'ok' if ok else 'MOVED'}")
 if not ok: sys.exit("bt layout: the library's statics moved: firmware/bt/bt_a2dp.c BT_CH must follow if channel moved (lmp_acl_link and current_conn: nothing reads them in test build 13)")
 PY
-  # the compiled controller and A2DP code, to compare with the IR (the artifact's listings/; neither step can fail the build)
+  # the compiled controller and A2DP code, to compare with the IR (the artifact's listings/; neither step can fail the build).
+  # (Test build 14: the .s listings are the library as published, unfolded; linked.txt is the code the image links)
   mkdir -p "$O/listings"
   # test build 13: the compiler's own assembly of px_dsp.o (the same flags): rv_block's loop heads, their shared cut path and
   # its frame (engine/px_dsp.c PX_LOOP_CAP; test build 12's crash had n at [sp+128], k at [sp+88], wo at [sp+132])
@@ -155,9 +166,10 @@ PY
     a=${r% *}; z=${r#* }
     "$TC/common/bin/objdump" -d --start-address=$((0x$a)) --stop-address=$((0x$a + 0x$z)) "$O/openpocket.elf" >> "$O/listings/linked.txt" 2>&1 || true
   done
-  # the folding probe (the room Bluetooth MIDI needs): the library built through text IR, as is and with its constant
-  # configuration folded, each linked beside the image, which is not touched; the sizes go to the log and listings/fold.txt
-  # (tools/jlfold.py; it cannot fail the build)
+  # the folding probe (the room Bluetooth MIDI needs): the library built through text IR, as is (R), with its constant
+  # configuration folded (A) and with the print helpers emptied too (B: since test build 14 the real link's, so B must give
+  # "the real image's bytes"; R shows how far the unfolded library is over), each linked beside the image, which is not
+  # touched; the sizes go to the log and listings/fold.txt (tools/jlfold.py; it cannot fail the build)
   python3 "$HERE/../tools/jlfold.py" probe "$TC" "$HERE/bt/bt_cfg.c" "$O/fold" "$O/listings/fold.txt" $BCS -- \
     "$TC/pi32v2/bin/ld" --defsym "op_guard_stack=$GUARD_STACK" -T "$LDS" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ \
     "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o" "$O/iis.o" $BLEOBJ -o "$O/openpocket.elf" || echo "fold probe: failed"

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-# OpenPocket — JieLi's Bluetooth library specialised at build time: a probe in the Bluetooth audio image's build
-# (firmware/build.sh, OP_BT), for the flash room Bluetooth MIDI needs beside the A2DP sink.
+# OpenPocket — JieLi's Bluetooth library specialised at build time, for the Bluetooth audio image (firmware/build.sh, OP_BT):
+# since test build 14 (OpenPocket v42) its real library, which does not fit the app slot otherwise; and a probe of the room it
+# leaves (Bluetooth MIDI beside the A2DP sink).
 #
 # The library's members (JieLi's LLVM bitcode, third_party/jieli-bt and jieli-ble) read their configuration from other
 # files: the log switches (log_tag_const_*), config_asser, and the controller's and host's const settings
@@ -9,6 +10,11 @@
 # and every log string. Folding them: in a text copy of a member's IR, each such external constant becomes an internal
 # one with the value the image links anyway (only `const` objects, only when the IR reads them at the width bt_cfg.c
 # defines), so -Os drops what they guard. The vendor's files are never changed.
+#
+#   jlfold.py fold TC CFG.c OUTDIR MEMBER.bc...
+#     the image's library (test build 14; firmware/build.sh OP_BT, unless OP_BT_FOLD=0): each member through text IR, folded
+#     as the probe's B below, compiled with -Os into OUTDIR/<archive>_<member>.o, the names build.sh's plain compile gives
+#     (build.sh then renames their memcpy / memset and makes libjl.a of them, as before). A failure stops the build.
 #
 #   jlfold.py probe TC CFG.c OUTDIR REPORT MEMBER.bc... -- LINK...
 #     builds the library three ways and links each beside the real image (built and linked before, and not touched):
@@ -143,6 +149,62 @@ def image(path):
     return size, ram, lay, h.hexdigest()[:16]
 
 
+def run(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(" ".join(os.path.basename(c) for c in cmd[:3]) + ": " + (r.stderr or r.stdout).strip()[-600:])
+    return r
+
+
+def text_ir(clang, b, ll, emit, say):
+    """Member b's text IR into ll, as the bitcode holds it, no pass run on it: CI run 43002902155's plain emission (clang's
+    -O0 pipeline) gave an R image 12 B off the real one. emit: the options found on the first member (None: find them, the
+    first the toolchain's clang accepts). Returns the options used."""
+    if emit is not None:
+        run(clang + ["-S", "-emit-llvm", "-x", "ir", b, "-o", ll] + emit)
+        return emit
+    for flags in (["-Xclang", "-disable-llvm-passes"], ["-Xclang", "-disable-llvm-optzns"], []):
+        try:
+            run(clang + ["-S", "-emit-llvm", "-x", "ir", b, "-o", ll] + flags)
+        except RuntimeError as e:
+            say(f"text IR with {' '.join(flags) or 'no option'}: refused ({str(e)[-160:]})")
+            continue
+        say("text IR emitted with " + (" ".join(flags) if flags else "no option (clang's -O0 passes ran on it)"))
+        return flags
+    raise RuntimeError("no way to emit the text IR")
+
+
+def fold_lib(argv):
+    """jlfold.py fold: the image's library, folded (the probe's B). Exit 1 on any failure."""
+    tc, cfg, out = argv[:3]
+    members = argv[3:]
+    clang = [f"{tc}/pi32v2/bin/clang", "-target", "pi32v2"]
+    say = lambda s: print("jlfold: " + s, flush=True)
+    try:
+        if not members:
+            raise RuntimeError("no members")
+        vals = cfg_values(cfg)
+        os.makedirs(out, exist_ok=True)
+        emit, nfold, nprint, skipped = None, 0, 0, set()
+        for b in members:
+            name = os.path.basename(os.path.dirname(b)) + "_" + os.path.basename(b)[:-3]
+            ll = os.path.join(out, name + ".ll")
+            emit = text_ir(clang, b, ll, emit, say)
+            t, nf, sk, npr = fold(open(ll).read(), vals, True)
+            open(ll, "w").write(t)
+            run(clang + ["-Os", "-c", "-x", "ir", ll, "-o", os.path.join(out, name + ".o")])
+            os.remove(ll)
+            nfold += nf
+            nprint += npr
+            skipped.update(sk)
+        say(f"the library folded: {len(members)} members, {len(vals)} constants known (bt_cfg.c, px_audio.h), {nfold} folded, "
+            f"{nprint} print helpers emptied" + (f"; left to the linker: {', '.join(sorted(skipped))}" if skipped else ""))
+    except Exception as e:
+        print(f"jlfold: the folded library failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
 def probe(argv):
     tc, cfg, out, report = argv[:4]
     k = argv.index("--")
@@ -155,12 +217,6 @@ def probe(argv):
     def say(s):
         print("fold probe: " + s, flush=True)
         lines.append(s)
-
-    def run(cmd):
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode:
-            raise RuntimeError(" ".join(os.path.basename(c) for c in cmd[:3]) + ": " + (r.stderr or r.stdout).strip()[-600:])
-        return r
 
     try:
         for sub in ("pi32v2/bin", "common/bin", "pi32v2/lib"):
@@ -177,26 +233,11 @@ def probe(argv):
         for v in "RAB":
             os.makedirs(os.path.join(out, v))
         sizes, nfold, nprint, skipped = {}, 0, 0, set()
-        # the text IR as the bitcode holds it, no pass run on it: CI run 43002902155's plain emission (clang's -O0 pipeline)
-        # gave an R image 12 B off the real one. The first of these options the toolchain's clang accepts
         emit = None
         for b in members:
             name = os.path.basename(os.path.dirname(b)) + "_" + os.path.basename(b)[:-3]
             ll = os.path.join(out, name + ".ll")
-            if emit is None:
-                for flags in (["-Xclang", "-disable-llvm-passes"], ["-Xclang", "-disable-llvm-optzns"], []):
-                    try:
-                        run(clang + ["-S", "-emit-llvm", "-x", "ir", b, "-o", ll] + flags)
-                    except RuntimeError as e:
-                        say(f"text IR with {' '.join(flags) or 'no option'}: refused ({str(e)[-160:]})")
-                        continue
-                    emit = flags
-                    break
-                if emit is None:
-                    raise RuntimeError("no way to emit the text IR")
-                say("text IR emitted with " + (" ".join(emit) if emit else "no option (clang's -O0 passes ran on it)"))
-            else:
-                run(clang + ["-S", "-emit-llvm", "-x", "ir", b, "-o", ll] + emit)
+            emit = text_ir(clang, b, ll, emit, say)
             text = open(ll).read()
             for v in "RAB":
                 src = ll
@@ -253,4 +294,7 @@ def probe(argv):
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "probe" and "--" in sys.argv:
         sys.exit(probe(sys.argv[2:]))
-    raise SystemExit("usage: jlfold.py probe TC CFG.c OUTDIR REPORT MEMBER.bc... -- LINK...")
+    if len(sys.argv) > 5 and sys.argv[1] == "fold":
+        sys.exit(fold_lib(sys.argv[2:]))
+    raise SystemExit("usage: jlfold.py fold TC CFG.c OUTDIR MEMBER.bc...\n"
+                     "       jlfold.py probe TC CFG.c OUTDIR REPORT MEMBER.bc... -- LINK...")

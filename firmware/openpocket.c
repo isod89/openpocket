@@ -734,7 +734,8 @@ static void app_main(void)
                                                                                 * 13: the reverb's loop cut at its block's end and counted,
                                                                                 *     the registers on the LAST BOOT FAILED report;
                                                                                 * 14: on OpenPocket v42: the callbacks' order by its
-                                                                                *     px_aorder.h, the layer split's worker) */
+                                                                                *     px_aorder.h, the layer split's worker, the folded
+                                                                                *     controller library, firmware/build.sh) */
 #elif OP_BLE_TEST
     ft_box(0, 126, 240, OP_VERSION " BLE TEST", &FT_SM, UI_DIM, UI_BG, 1);
 #else

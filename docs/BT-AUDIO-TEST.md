@@ -5,13 +5,14 @@ phone as **`OpenPocket`**, pairs with no PIN, and the phone's music plays **mixe
 
 It is a test image, its own build target (`make bt`). The normal firmware and the installer's packages are unchanged.
 
-> **Status: test build 13.** Builds 1 to 10 ran on a pedal: the radio starts, a phone sees the pedal and links, but no phone
+> **Status: test build 14.** Builds 1 to 10 ran on a pedal: the radio starts, a phone sees the pedal and links, but no phone
 > could pair, and the guitar crackled. Build 11 paired an iPhone (below, "Test build 11"), but no music came out, and the guitar
 > still crackled with Bluetooth on. Build 12 takes the phone's packets where the controller first shows them, sends the output
 > in two slots against the crackles, and records the second core's fault (below, "Test build 12"); on some power-ons it
 > crashed in the reverb, 2 s after power-on. Build 13 stops the reverb's loop at its block's end and counts it, and shows the
-> registers of a crash (below, "Test build 13"). Every part that can be checked on a computer is checked (see "Checked on a
-> computer").
+> registers of a crash (below, "Test build 13"). Build 14 is the same image on OpenPocket v42, with v42's own fix of the
+> crackles' cause and the Bluetooth library folded at build time to make the room (below, "Test build 14"). Every part that
+> can be checked on a computer is checked (see "Checked on a computer").
 
 ## What is in it, and what is not
 
@@ -24,7 +25,7 @@ It is a test image, its own build target (`make bt`). The normal firmware and th
 ## Build
 
 ```
-make bt           # firmware/openpocket-bt.bin and build/bt/PocketX_940.fwsc, BlackBox_940.fwsc, manifest.json
+make bt           # firmware/openpocket-bt.bin and build/bt/PocketX_942.fwsc, BlackBox_942.fwsc, manifest.json
 ```
 
 (`node tools/op.mjs bt` is the same; `OP_BT=1 sh firmware/build.sh` inside the container.) CI builds it on every pull request:
@@ -36,7 +37,7 @@ Your pedal must already run OpenPocket.
 
 1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
    USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
-2. **Connect**, **Install**. The start-up screen reads `v40 BT AUDIO TEST 13` (the number is the test build's).
+2. **Connect**, **Install**. The start-up screen reads `v42 BT AUDIO TEST 14` (the number is the test build's).
    Before pairing with a phone that saw an earlier build, forget the pedal there first (iPhone: **Settings > Bluetooth**, the
    **i** next to `OpenPocket` or `Accessorio`, **Forget This Device**).
 3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
@@ -59,16 +60,17 @@ shows `KEY`). Switch off for real (USB out too, 10 s) before each boot you compa
 | --- | --- |
 | **REV** | Bluetooth off (`BT OFF`): the same image with the radio off, to compare the sound with and without Bluetooth by ear |
 
-(CAB and DLY held at power-on do nothing in test build 13: the c1 line only shows `KEY 1` or `KEY 2`. Test build 12's DLY key,
-the output in one slot as build 11 sent it, is gone: its A/B is settled, the two slots stay. A CAB key for the stock
-firmware's supply levels did not fit in the flash.)
+(CAB and DLY held at power-on do nothing since test build 13: the c1 line only shows `KEY 1` or `KEY 2`. Test build 12's DLY
+key, the output in one slot as build 11 sent it, is gone: its A/B is settled. Since build 14 the output is sent as v42 sends
+it, in place of the two slots (below, "Test build 14"). A CAB key for the stock firmware's supply levels did not fit in the
+flash.)
 
 `FAILED s c` means the start failed: the line that scrolls says which step and stage (the BLE image's codes,
-[BLE-TEST.md](BLE-TEST.md#reading-the-status-text)). The stall watch, the crash screen and the `LAST BOOT FAILED` report work as in
-the BLE image, and after a failed boot Bluetooth stays off for that boot, so the pedal can always be re-flashed. Since test
-build 13 this image's `LAST BOOT FAILED` report shows the registers of a crash (`R1` `R6`, then `R12` `SP`) where the BLE image
-shows `DSP CODE AT`, and has no `PLEASE TAKE A PHOTO` line: the red crash screen before it asks already. Photograph both
-screens (below, "Test build 13").
+[BLE-TEST.md](BLE-TEST.md#reading-the-status-text)). The stall watch, the crash screen and the `LAST START FAILED` report (v42's
+name; up to test build 13 `LAST BOOT FAILED`) work as in the BLE image, and after a failed boot Bluetooth stays off for that
+boot, so the pedal can always be re-flashed. Since test build 13 this image's report shows the registers of a crash (`R1` `R6`,
+then `R12` `SP`) where the BLE image shows `DSP CODE AT`; the lines below them move one line down, and v42's `PHOTO THIS FOR A
+BUG REPORT` is the screen's last line. Photograph both screens (below, "Test build 13").
 
 ### If it stalls (`VEC 3F`, then a safe-mode boot)
 
@@ -160,7 +162,7 @@ The trace line ends with `CR`, the last calls the library made into the firmware
 
 ### The isr line (test builds 11, 12)
 
-`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/0 3/3 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0`
+`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/3 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0`
 
 What the interrupts cost the audio, and the DSP's state, for the crackles. Times are in microseconds.
 
@@ -171,7 +173,7 @@ What the interrupts cost the audio, and the DSP's state, for the crackles. Times
 | `AG a/b` | the longest gap between two audio interrupt entries (last second / since boot). 2,902 when one entry serves a period; less (2,144 in build 11's log): two entries a period, the input's and then the output's, so AG is the period less the input's stay; more: an entry came late. A preset change or a flash write is not counted |
 | `AI a/b` | the audio interrupt's longest stay (last second / since boot) |
 | `EN a/b/c/d/e` | (test build 12) the audio interrupt's entries in the last second, by the flags they found: none / the output's only / the input's only / both / another channel's. About 344 a second each is two entries a period; `d` counts the periods whose output callback ran first; `e` must be 0 |
-| `OC a/b c/d` | (test build 12) the callbacks' order changes in the last second and since boot: two output callbacks in a row / two input ones. Up to test build 11 each one repeated a 2.9 ms block or skipped one: a click on any sounding note. With the two slots they cost nothing. Each full preset change and each flash write (the audio interrupt held) adds one of each by itself |
+| `OC a/b` | (test build 14) the output blocks the driver asked for before their input's, in the last second / since boot (v42's `firmware/px_aorder.h`, `a_swaps`). Up to test build 11 each one repeated a 2.9 ms block and skipped the next: a click on any sounding note; builds 12 and 13 sent the block before (their `OC a/b c/d` counted the changes of order); since build 14 each such block is filled as soon as its input's block is made, with no click and no latency more |
 | `C1` | 1: the second core runs; 0: the whole DSP is on one core (heavy presets then go to `BYP`) |
 | `G` | why the second core is off: 0 it is not; 1 it misread shared memory, 2 a job was not back within 8 ms, 4 it faulted (1, 2 and 4: retired in this boot, and barred at every start until a power-off); 3 barred at start (by such a retirement, or by a crash of the first core while it ran, in an earlier boot of the same build); 5 it did not answer at start. The c1 line has the rest |
 | `NAM` | 1: the preset's NAM amp is one that runs on both cores; 0: not (test build 12: whatever `C1` is) |
@@ -227,7 +229,7 @@ words are cut off.
   analog side, which no firmware change can fix.
 - After any boot whose c1 line shows `G 4` or a `W` other than `W 0`: the c1 line as it is (its words, looked up in
   `build-bt/symbols.txt` of the same CI run, say where the second core faulted). A red crash screen: a photo of it (PC, RETS,
-  VEC, DBG), before switching off, and one of the `LAST BOOT FAILED` report that follows it (test build 13: the registers).
+  VEC, DBG), before switching off, and one of the `LAST START FAILED` report that follows it (since test build 13: the registers).
 
 ## Known limits and risks
 
@@ -266,6 +268,7 @@ firmware/bt/bt_cfg.c         the stack's configuration: classic only, one link, 
 firmware/bt/bt_stubs.c       empty stand-ins for what the image leaves out (LE, TWS, calls, other profiles), counted
 firmware/bt/app-bt.ld        the memory map: the classic stack's sections, its pools, the ring
 firmware/bt/members.txt      the JieLi objects compiled (third_party/jieli-ble + third_party/jieli-bt)
+tools/jlfold.py              since test build 14 they are compiled folded: their configuration constants known (bt_cfg.c)
 firmware/ble/                shared with the BLE image: the scheduler and heap, the radio start-up, the stall watch, DIAG
 ```
 
@@ -281,8 +284,9 @@ firmware/ble/                shared with the BLE image: the scheduler and heap, 
   ring.
 - **Memory** (beyond the BLE image's): three task stacks of 4 KB in NOINIT (test builds 1 to 10: four of 2.75 KB, the fourth
   never used), the baseband's table (4.2 KB) and the receive pool in the SRAM below the RAM, the ring, the decoder's state and
-  the mix buffer above it, the pairing store (672 bytes of RAM), the FIFO (10.8 KB of the Bluetooth heap), the output's two slots
-  (1 KB in the RAM code window's free end).
+  the mix buffer above it, the pairing store (672 bytes of RAM), the FIFO (10.8 KB of the Bluetooth heap); in the RAM code
+  window's free end, the output block (512 bytes; builds 12 and 13: two, 1 KB) and, since test build 14, the engine's buffers
+  that v42 moved below the RAM (14.6 KB: there they would take the baseband's table and the receive pool's place).
 - **The baseband's 64 KB window.** The classic baseband reaches memory as 16-bit offsets from its table (`bd_base`, register
   0x2FC44): everything the library hands it must lie less than 64 KB above `bd_base`, and the library asserts it (a failed
   assertion stops in a loop). So the send pool (2 KB, also the page and inquiry scan buffers), the controller's own variables
@@ -391,7 +395,7 @@ last boot only. Send all the readings.
 | 5 | its Bluetooth off until the pedal shows `BT VISIBLE` | none |
 | 5 | its Bluetooth on and near | none |
 
-If a boot crashes: a photo of the red crash screen, then one of the `LAST BOOT FAILED` report that follows (it stays 12 s),
+If a boot crashes: a photo of the red crash screen, then one of the `LAST START FAILED` report that follows (it stays 12 s),
 then the log reading. That reading is of the safe-mode boot, whose DSP is off: it cannot show the crashed boot's `W`.
 
 Before the third set, pair the phone with the pedal once in this build (step 3 of "What you should see"), and do not forget
@@ -434,17 +438,63 @@ core happened to be, and R1, R6 and R12 say nothing about the loop.
 | `SP` | the stack at the crash: about `01C7BE2C`..`01C7BE40` when the audio interrupt came from the main loop |
 | another `PC` | the registers are that code's: look the PC up in `build-bt/symbols.txt` of the same CI run |
 
-**Before flashing build 13**, check `rv_block` in the CI run's `listings/px_dsp.s` (the compiler's assembly) or
-`listings/linked.txt` (the linked bytes):
+**Before flashing build 13** (and again for build 14: v42 puts `rv_front` inside `rv_block`, so its code and frame change), check
+`rv_block` in the CI run's `listings/px_dsp.s` (the compiler's assembly) or `listings/linked.txt` (the linked bytes):
 
 - the four loop heads each compare k, unsigned, against 63 or 64, and branch to one shared cut path;
 - each loop's end test reloads n from one stack word on every sample, and the cut path records n from that same word;
-- k is still saved to the stack and reloaded around the call to `rv_front`;
+- k is still saved to the stack and reloaded around the call to `rv_front` (build 13; in build 14 there is no call);
 - the frame: build 12 had n at `[sp+128]`, k at `[sp+88]` and the store's pointer at `[sp+132]`. Write down the new places if
   they moved: a writer at a fixed address would now hit another word;
 - the registers: the report prints r1, r6 and r12, build 12's n (reloaded), k + 1 and the store's address + 4. If build 13's
-  loop keeps them in others, change `rn` in `firmware/openpocket.c` (the `LAST BOOT FAILED` report, this image only) to
+  loop keeps them in others, change `rn` in `firmware/openpocket.c` (the `LAST START FAILED` report, this image only) to
   those registers and build again.
+
+## Test build 14
+
+The same image on OpenPocket v42 (v41: the NAM network split between the cores by a worker that stays on the second core,
+the NAM's hand routines rdm6, rdm15 and post5; v42: the pedal's controls and screens, the audio callbacks' order, USB audio,
+which is not in this image). What changed for Bluetooth:
+
+1. **The crackles' cause, fixed as v42 fixes it.** v42 found the same fault from the other side (`firmware/px_aorder.h`): the
+   10 kHz timer, above the audio interrupt, makes it enter late, both callbacks are due, and the output's runs first. An output
+   block asked for before its input's is now filled as soon as that input's block is made, in the same interrupt, so the
+   block goes out with no latency more. Builds 12 and 13's two slots (one block, 2.9 ms, more latency) are gone, and `OC` in
+   the isr line counts these blocks. With the radio's interrupts above the audio's an entry can wait longer than v42 measured:
+   a block asked for and not filled within 725 µs is sent as it was (a click). The isr line's `40` and `41` (the baseband's
+   longest) and `AI` show how long those waits get.
+2. **The second core's worker.** While a NAM preset plays, v41's layer split keeps one job running on the second core. The
+   radio's start-up burst and the flash reads (`ota_fread`), which switch the flash path off, waited for the second core's job
+   to end; this one never ends, and that wait would retire the core after 8 ms (`G 2`, then `BYP` on NAM presets until
+   power-off). They now wait until the worker idles in its loop (RAM code) with nothing left to do (`px_audio.h
+   a_cpu1_quiet`), within the same 8 ms.
+3. **The library folded at build time** (`tools/jlfold.py fold`, the folding probe's variant B): the configuration constants
+   the firmware gives it folded in, the print helpers the firmware leaves empty dropped: 94.7 KB less flash. v41's and v42's
+   firmware does not fit the app slot without it. The code is JieLi's IR compiled again with its constants known, not the
+   published objects: pairing and the music must be checked again. In the container, `OP_BT=1 OP_BT_FOLD=0 sh
+   firmware/build.sh` builds the library as before (the image then does not fit). The probe still runs: its `B` must give
+   "the real image's bytes".
+4. **Memory.** v40.4 moved the engine's buffers (14.6 KB) to the SRAM below the RAM, where this image keeps the baseband's
+   table and the receive pool: here they stay in the RAM code window, as in builds 12 and 13 (`firmware/bt/app-bt.ld`). To make
+   that room, the NAM's hot routines (rdm6, rdm15, post5) run from the flash, as in the release (the BLE image keeps them in
+   RAM, `firmware/build.sh PXN_HOT_RAM`). How they run from the flash with the radio's code also running from it is not
+   measured: compare `LD` and `PK` of a NAM preset with build 13's.
+5. **v42's screens**: `LAST START FAILED`; in the status area `DSP 42%`, `DSP 42%!` after a late block, and an overload shows a
+   red banner. HOME on the play screen opens the preset list; HOME held opens the tuner, then the diagnostics; both footswitches
+   together open the tuner. A new id for the second core's bar, so a bar left by build 13 does not carry over.
+
+### What to check
+
+1. "What you should see", steps 1 to 5, with the phone that paired with build 13 (forget the pedal there first): the folded
+   library pairs and plays.
+2. The crackles: with the music playing, the guitar through CHURCH ORGAN and a heavy NAM preset. `OC` above 0 with no clicks is
+   the fix working; with clicks, the isr line (`OC`, `AG`, `AI`, `T5`, `XR`) while they happen.
+3. The load: `node tools/op.mjs dsp --presets 1,14,18,19,20,21,24 --seconds 8` with the music playing and paused, against build
+   13's figures (the NAM routines from the flash, item 4).
+4. The crash at the radio's start-up (about 1.96 s): the same 15 boots as build 13 ("What to do"), with `W` and `G` of each.
+   Build 12's record showed the second core trapping at that moment in every Bluetooth boot; v41's worker keeps it busy through
+   the whole start-up on a NAM preset. Before flashing, check `rv_block` in the listings as for build 13 ("Reading the
+   registers").
 
 ## Checked on a computer
 
@@ -466,5 +516,11 @@ core happened to be, and R1, R6 and R12 say nothing about the loop.
   same as without it and leave `W` at 0; `rv_block` called with an n above 64 stops at k 64 in each of its four loops, records n
   and k, and writes nothing past frame 63. With the guard off (the release and BLE images) `engine/px_dsp.c` preprocesses to
   the same text as before.
+- Test build 14, by hand: the engine is v42's and the cut (`tests/engine/equiv.c`, 852 runs: the same output as v42's engine,
+  with and without `-DPX_LOOP_GUARD=1`, `W` 0); the engine tests, plain and with the guard; `engine/px_dsp.c` and
+  `firmware/openpocket.c` preprocessed for the release image as v42's (`px_dsp.c` byte for byte; `openpocket.c` apart from
+  macros that compile to nothing and two leftovers of test build 11, the stall watch's exception to the second core's bar,
+  12 bytes, and the power-on key's record); `tools/jlfold.py fold` on the library's IR (the same 149 constants folded and 86
+  print helpers emptied as the probe in CI); v42's `tests/test_aorder.c` (the callbacks' order).
 - The member set was chosen from the archives' symbol tables: what it references and does not define is supplied
   (`bt_glue.c`, `bt_cfg.c`) or stood in for (`bt_stubs.c`), with the library's own types.
