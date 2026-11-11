@@ -540,18 +540,21 @@ static void a_collect(void)                            /* collects the block in 
  * fm1_ble_rf.h): nothing of CPU1's may run from the flash then. A block's job is waited for (fm1_cpu1_wait). v41's layer-split
  * worker never ends while the split runs, so fm1_cpu1_wait would retire it (LATE) after 8 ms: it is waited for until it idles in
  * its loop (RAM code) with no request and no network block left, within the same 8 ms. A core that faulted or misread is held
- * (fm1_cpu1_wait retires it): its fault handler parks in the flash */
+ * (fm1_cpu1_wait retires it): its fault handler parks in the flash. A core retired, here or before, is collected here as v42's
+ * own retirements are (a_collect: one core, the layer split and the lanes off, the queue emptied, the engine reset): the next
+ * interrupt would otherwise hand network blocks to the stopped core and wait 8 ms for them (pxn_lp_a), then retire it again
+ * as LATE over a fault's G 4. Both callers have the flash on and CPU0's interrupts off */
 static void a_cpu1_quiet(void)
 {
     if (a_lpw) {
         const uint32_t t = fm1_ticks();
         while ((a_lpdone != a_lpreq || px_nam_lp_queued()) && fm1_cpu1_busy()) {
             fm1_cpu1_sync();
-            if (fm1_ticks() - t >= FM1_CPU1_TIMEOUT_US * FM1_TICKS_PER_US) { fm1_cpu1_retire(FM1_CPU1_LATE); return; }
+            if (fm1_ticks() - t >= FM1_CPU1_TIMEOUT_US * FM1_TICKS_PER_US) { fm1_cpu1_retire(FM1_CPU1_LATE); break; }
         }
-        if (!fm1_cpu1_on || !(fm1_cpu1_fault.count || fm1_cpu1_mb.rejected)) return;   /* (idle in its loop, or off) */
+        if (fm1_cpu1_on && !(fm1_cpu1_fault.count || fm1_cpu1_mb.rejected)) return;   /* (idle in its loop) */
     }
-    (void)fm1_cpu1_wait();
+    if (fm1_cpu1_wait() < 0) a_collect();             /* (retired, or off: nothing of the worker's left to the interrupt) */
 }
 #define FM1_CPU1_QUIET() a_cpu1_quiet()                /* (fm1_ble_rf.h's burst) */
 #endif
@@ -729,7 +732,19 @@ static void a_send(int32_t *d, uint32_t n)             /* an output block filled
     }
 #endif
 }
+#if OP_BT_AUDIO
+/* test build 14: the radio's interrupts run above the audio's, so between a_dec and a_enc of one entry they can stay longer than
+ * the 10 kHz timer's 40 us v42 measured. A noted block plays one block after its output callback was due: an a_enc within half a
+ * block of its note is still the same entry's, and fills it in time while the entry's lateness, that gap and the DSP's wait stay
+ * under a block. A note dropped leaves that half's old block to play again (a click). The isr line counts them (bt/bt_a2dp.c):
+ * a_ord_drop the notes dropped, a_ord_age the longest from a note to its a_enc (ticks; this second, since boot) */
+#define A_ORDER_TICKS (A_BUDGET / 2u)
+static volatile uint32_t a_ord_drop, a_ord_age_s, a_ord_age;
+#define A_ORDER_SEEN(filled) do { const uint32_t g_ = fm1_ticks() - a_dqt; if (!(filled)) a_ord_drop++; \
+        if (g_ > a_ord_age_s) a_ord_age_s = g_; if (g_ > a_ord_age) a_ord_age = g_; } while (0)
+#else
 #define A_ORDER_TICKS (A_BUDGET / 4u)                  /* an a_enc this soon after an a_dec is the same interrupt's (it comes within microseconds) */
+#endif
 #include "px_aorder.h"                                /* v42: a_enc and a_dec, in whichever order the driver calls them */
 #if OP_BLE_TEST
 /* the Bluetooth test images time the audio interrupt (the log's isr line, bt/bt_a2dp.c): the longest gap between two entries

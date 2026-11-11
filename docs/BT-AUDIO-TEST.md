@@ -107,7 +107,7 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 | `IRQ 40` `41` | the classic baseband's interrupts (packets, the alarm) and the slot timers: they rise when the radio runs |
 | `EV` | events from the stack; `RDY`: it said it is ready (`NORDY`: it did not, the pedal made itself visible anyway after 2 s) |
 | `SCAN` | times "visible and connectable" was sent to the controller |
-| `V` | the stored radio calibration: found records (`F` = all four), the VM area (flash / 4096), the crystal trim (as the BLE image) |
+| `V` | the stored radio calibration: found records (`F` = all four; since test build 14 the BLE image's flags in full: `10` and `20`, VM 106 or 107 missing and v41's defaults given in its place, `400` the calibration measured, `100` and `200` its scan or trim failed), the VM area (flash / 4096), the crystal trim (as the BLE image) |
 | `ADDR` | this pedal's Bluetooth address, made from the flash chip's unique ID (`UID 1`; `UID 0`: not read, the fixed BLE address is used) |
 | `HEAP` | the Bluetooth heap's lowest free bytes |
 | `STUB` | calls of the stand-ins (functions this image leaves out) and the last one's name (the trace line lists them in order) |
@@ -160,9 +160,9 @@ The trace line ends with `CR`, the last calls the library made into the firmware
 | `FQ` | the phone's packets waiting in the FIFO (test build 12; 16 at most, about 6 to 10 while it plays). Test build 11 had `PD` here |
 | `F` | each Bluetooth task's stack never used, in bytes, after its initial: `A` btapp, `C` btctrler, `S` btstack (`!`: it nearly overflowed) |
 
-### The isr line (test builds 11, 12)
+### The isr line (since test build 11)
 
-`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/3 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0`
+`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0`
 
 What the interrupts cost the audio, and the DSP's state, for the crackles. Times are in microseconds.
 
@@ -171,9 +171,11 @@ What the interrupts cost the audio, and the DSP's state, for the crackles. Times
 | `40:a/b/c` `41:a/b/c` | the classic baseband's two interrupts: the longest in the last second, the longest since boot, and the time they took in all in the last second. They run above the audio |
 | `T5 a/b` | the 10 kHz timer (USB, the stall watch), also above the audio: the longest in the last second / since boot |
 | `AG a/b` | the longest gap between two audio interrupt entries (last second / since boot). 2,902 when one entry serves a period; less (2,144 in build 11's log): two entries a period, the input's and then the output's, so AG is the period less the input's stay; more: an entry came late. A preset change or a flash write is not counted |
-| `AI a/b` | the audio interrupt's longest stay (last second / since boot) |
+| `AI a/b` | the audio interrupt's longest stay (last second / since boot), the DSP and its wait for the second core included |
 | `EN a/b/c/d/e` | (test build 12) the audio interrupt's entries in the last second, by the flags they found: none / the output's only / the input's only / both / another channel's. About 344 a second each is two entries a period; `d` counts the periods whose output callback ran first; `e` must be 0 |
-| `OC a/b` | (test build 14) the output blocks the driver asked for before their input's, in the last second / since boot (v42's `firmware/px_aorder.h`, `a_swaps`). Up to test build 11 each one repeated a 2.9 ms block and skipped the next: a click on any sounding note; builds 12 and 13 sent the block before (their `OC a/b c/d` counted the changes of order); since build 14 each such block is filled as soon as its input's block is made, with no click and no latency more |
+| `OC a/b` | (test build 14) the output blocks the driver asked for before their input's, in the last second / since boot (v42's `firmware/px_aorder.h`, `a_swaps`). Up to test build 11 each one repeated a 2.9 ms block and skipped the next: a click on any sounding note; builds 12 and 13 sent the block before (their `OC a/b c/d` counted the changes of order); since build 14 each such block is filled as soon as its input's block is made, in the same entry, with no latency more, unless its input's callback comes too late (`OD`). Each full preset change and each flash write (the audio interrupt held) adds one by itself |
+| `OD` | (test build 14) of those, the ones whose input's callback came more than half a block (1,451 µs) after the output's, since boot (`px_audio.h` `A_ORDER_TICKS`): each one a click, that half of the output playing its old block again. It must stay 0 |
+| `OG a/b` | (test build 14) the longest from an output callback that came first to its input's callback (last second / since boot): the radio's interrupts (`40`, `41`) and `T5` running between the two. `OD` rises once it reaches 1,451 µs |
 | `C1` | 1: the second core runs; 0: the whole DSP is on one core (heavy presets then go to `BYP`) |
 | `G` | why the second core is off: 0 it is not; 1 it misread shared memory, 2 a job was not back within 8 ms, 4 it faulted (1, 2 and 4: retired in this boot, and barred at every start until a power-off); 3 barred at start (by such a retirement, or by a crash of the first core while it ran, in an earlier boot of the same build); 5 it did not answer at start. The c1 line has the rest |
 | `NAM` | 1: the preset's NAM amp is one that runs on both cores; 0: not (test build 12: whatever `C1` is) |
@@ -460,14 +462,23 @@ which is not in this image). What changed for Bluetooth:
    10 kHz timer, above the audio interrupt, makes it enter late, both callbacks are due, and the output's runs first. An output
    block asked for before its input's is now filled as soon as that input's block is made, in the same interrupt, so the
    block goes out with no latency more. Builds 12 and 13's two slots (one block, 2.9 ms, more latency) are gone, and `OC` in
-   the isr line counts these blocks. With the radio's interrupts above the audio's an entry can wait longer than v42 measured:
-   a block asked for and not filled within 725 µs is sent as it was (a click). The isr line's `40` and `41` (the baseband's
-   longest) and `AI` show how long those waits get.
+   the isr line counts these blocks. What can still click is the time between the two callbacks of one entry, where the
+   radio's interrupts and the 10 kHz timer, above the audio's, can run for longer than v42 measured: an input's callback that
+   comes later than the window after its output's (`px_audio.h A_ORDER_TICKS`: half a block, 1,451 µs, in this image; v42's
+   725 µs elsewhere) is taken for another entry's, and that output block is left as it was (a click). `OD` counts those,
+   `OG` the longest that time got (`AI` is the whole stay, the DSP included, and does not show it). Two costs of filling the
+   block in its own entry, which builds 12 and 13 did not have: in every period the audio interrupt waits there for the
+   second core's block (its job or the layer split's blocks after the amp), so the main loop, which decodes the music and runs
+   the Bluetooth tasks, gets less of the first core's time; and the block must be ready within the period, the entry's
+   lateness included, where the slots had a whole period more.
 2. **The second core's worker.** While a NAM preset plays, v41's layer split keeps one job running on the second core. The
    radio's start-up burst and the flash reads (`ota_fread`), which switch the flash path off, waited for the second core's job
    to end; this one never ends, and that wait would retire the core after 8 ms (`G 2`, then `BYP` on NAM presets until
    power-off). They now wait until the worker idles in its loop (RAM code) with nothing left to do (`px_audio.h
-   a_cpu1_quiet`), within the same 8 ms.
+   a_cpu1_quiet`), within the same 8 ms. A core retired there (it never idled, or it faulted) is collected there at once, as
+   v42's own retirements are: one core from then on, the engine reset (15 to 50 ms of silence, `NAN`), and `G` keeps why
+   (`4` for a fault). Left to the next audio interrupt, that interrupt would have handed network blocks to the stopped core,
+   waited 8 ms for them, and retired it again as `G 2`.
 3. **The library folded at build time** (`tools/jlfold.py fold`, the folding probe's variant B): the configuration constants
    the firmware gives it folded in, the print helpers the firmware leaves empty dropped: 94.7 KB less flash. v41's and v42's
    firmware does not fit the app slot without it. The code is JieLi's IR compiled again with its constants known, not the
@@ -479,19 +490,28 @@ which is not in this image). What changed for Bluetooth:
    that room, the NAM's hot routines (rdm6, rdm15, post5) run from the flash, as in the release (the BLE image keeps them in
    RAM, `firmware/build.sh PXN_HOT_RAM`). How they run from the flash with the radio's code also running from it is not
    measured: compare `LD` and `PK` of a NAM preset with build 13's.
-5. **v42's screens**: `LAST START FAILED`; in the status area `DSP 42%`, `DSP 42%!` after a late block, and an overload shows a
-   red banner. HOME on the play screen opens the preset list; HOME held opens the tuner, then the diagnostics; both footswitches
-   together open the tuner. A new id for the second core's bar, so a bar left by build 13 does not carry over.
+5. **v42's screens**: `LAST START FAILED`, and an overload shows a red banner. The status area still shows the Bluetooth state
+   (scrolling while visible or linked); v42's load text replaces it only after a late block (`DSP 88%!`) or in bypass, and
+   beside `BT OFF` or `BT START` it is cut off: the isr line has `LD` and `C1`. HOME on the play screen opens the preset list;
+   HOME held opens the tuner, then the diagnostics; both footswitches together open the tuner. A new id for the second core's
+   bar, so a bar left by build 13 does not carry over.
+6. **The visible line's `V`** shows the BLE image's flags in full (`F` stays `F`): v41 gives a pedal whose VM 106 or 107 is
+   missing the Pocket X backup's values instead of zeros (`10`, `20`), so the crystal trim beside it may be that default.
 
 ### What to check
 
 1. "What you should see", steps 1 to 5, with the phone that paired with build 13 (forget the pedal there first): the folded
    library pairs and plays.
-2. The crackles: with the music playing, the guitar through CHURCH ORGAN and a heavy NAM preset. `OC` above 0 with no clicks is
-   the fix working; with clicks, the isr line (`OC`, `AG`, `AI`, `T5`, `XR`) while they happen.
+2. The crackles: with the music playing, the guitar through CHURCH ORGAN and a heavy NAM preset. `OC` rising (beyond one for
+   each preset change and flash write) with `OD` at 0 and no clicks is the fix working, and `OG` says how close those entries
+   came to the window (1,451 µs); with clicks, the isr line (`OD`, `OG`, `40`, `41`, `T5`, `XR`) while they happen. Clicks with
+   `OD` 0 and `XR` 0 point at a block not ready within its period: build 13's two slots are the way back.
 3. The load: `node tools/op.mjs dsp --presets 1,14,18,19,20,21,24 --seconds 8` with the music playing and paused, against build
    13's figures (the NAM routines from the flash, item 4).
-4. The crash at the radio's start-up (about 1.96 s): the same 15 boots as build 13 ("What to do"), with `W` and `G` of each.
+4. The music's decoding: with the music playing for a few minutes, the link line's `UND` and `BUF` on a heavy preset without NAM
+   (`C1 1`, a high `LD`) and on a heavy NAM preset, against build 13. `UND` rising where build 13's stayed at 0 is the first
+   core's new wait in each period (item 1) leaving the main loop too little time.
+5. The crash at the radio's start-up (about 1.96 s): the same 15 boots as build 13 ("What to do"), with `W` and `G` of each.
    Build 12's record showed the second core trapping at that moment in every Bluetooth boot; v41's worker keeps it busy through
    the whole start-up on a NAM preset. Before flashing, check `rv_block` in the listings as for build 13 ("Reading the
    registers").
@@ -519,8 +539,13 @@ which is not in this image). What changed for Bluetooth:
 - Test build 14, by hand: the engine is v42's and the cut (`tests/engine/equiv.c`, 852 runs: the same output as v42's engine,
   with and without `-DPX_LOOP_GUARD=1`, `W` 0); the engine tests, plain and with the guard; `engine/px_dsp.c` and
   `firmware/openpocket.c` preprocessed for the release image as v42's (`px_dsp.c` byte for byte; `openpocket.c` apart from
-  macros that compile to nothing and two leftovers of test build 11, the stall watch's exception to the second core's bar,
-  12 bytes, and the power-on key's record); `tools/jlfold.py fold` on the library's IR (the same 149 constants folded and 86
-  print helpers emptied as the probe in CI); v42's `tests/test_aorder.c` (the callbacks' order).
+  macros that compile to nothing: its optimised IR is v42's, function for function, now that test build 11's stall-watch
+  exception to the second core's bar and power-on key record are built in the Bluetooth images only); `tools/jlfold.py fold`
+  on the library's IR (the same 149 constants folded and 86 print helpers emptied as the probe in CI); v42's
+  `tests/test_aorder.c` (the callbacks' order). A host model with the real `px_audio.h` and engine and a stand-in second core:
+  `a_cpu1_quiet` returns at once for an idle worker, drains a request and its queued network blocks, retires a worker that
+  never idles as `G 2` within 8 ms and a faulted core as `G 4`, and collects both (one core, nothing left queued, the next
+  interrupt hands nothing over: before, it waited 8 ms and turned `G 4` into `G 2`); this image's callbacks' order fills an
+  output-first block whose input comes up to 1,440 µs later and counts one at 1,460 µs in `OD`, with `OG` its time.
 - The member set was chosen from the archives' symbol tables: what it references and does not define is supplied
   (`bt_glue.c`, `bt_cfg.c`) or stood in for (`bt_stubs.c`), with the library's own types.

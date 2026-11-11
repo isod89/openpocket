@@ -454,7 +454,7 @@ static void bt_decode(void)
 /* ---- the isr line's figures (bt_isr_line): the interrupts keep the longest and the sum of the current second, the main loop
  * turns the second over here (the interrupts off for a few loads and stores) and keeps the last whole second's */
 static uint32_t bt_isr_t_s;
-static struct { uint32_t br_max, br_sum, slot_max, slot_sum, t5, gap, in, en[5], sw, sw0; } bt_isr_last;
+static struct { uint32_t br_max, br_sum, slot_max, slot_sum, t5, gap, in, en[5], sw, sw0, age; } bt_isr_last;
 static void bt_isr_second(uint32_t now)
 {
     uint32_t i;
@@ -468,6 +468,7 @@ static void bt_isr_second(uint32_t now)
     bt_isr_last.in = a_irq_in_s; a_irq_in_s = 0;
     for (i = 0; i < 5u; i++) { bt_isr_last.en[i] = a_en_s[i]; a_en_s[i] = 0; }   /* (test build 12: px_audio.h fm1_alnk0_irq) */
     bt_isr_last.sw = a_swaps - bt_isr_last.sw0; bt_isr_last.sw0 = a_swaps;   /* (v42 px_aorder.h: the output blocks asked first) */
+    bt_isr_last.age = a_ord_age_s; a_ord_age_s = 0;   /* (and the longest from such a block's note to its input: px_audio.h) */
     local_irq_enable();
 }
 
@@ -639,7 +640,7 @@ void ble_test_line(char *out)
     o = ble__put(o, " EV "); o = bt__dec(o, bt_ev_n);
     o = ble__put(o, bt_init_ok ? " RDY" : " NORDY");
     o = ble__put(o, " SCAN "); o = bt__dec(o, bt_scans);
-    o = ble__put(o, " V "); o = bt__hex(o, ble_vm_have, 1); *o++ = ' '; o = bt__hex(o, ble_vm_area >> 12, 2);
+    o = ble__put(o, " V "); o = ble__hex(o, ble_vm_flags()); *o++ = ' '; o = bt__hex(o, ble_vm_area >> 12, 2);   /* (as the BLE image) */
     *o++ = ' '; o = bt__hex(o, ble_vm_trim(), 4);
     o = ble__put(o, " ADDR ");
     for (i = 6; i--;) o = bt__hex(o, bt_mac[i], 2);
@@ -826,15 +827,17 @@ void bt_c1_line(char *out)
 }
 
 /* the interrupts against the audio (test builds 11, 12): "ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2905/3120 AI 1710/2620 EN 0/344/
- * 344/0/0 OC 0/3 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0". Times in microseconds: for the
+ * 344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2 OVF 0 NAN 0". Times in microseconds: for the
  * baseband's two interrupts (40, 41) the longest in the last second, the longest since boot and the time they took in the last
  * second; T5 the 10 kHz timer's longest (last second / since boot); AG the longest gap between two audio interrupts (2,902 when
  * one entry serves a period; less: two entries a period, the input's and the output's; more: an entry that came late) and AI its
  * longest stay (last second / since boot). Test build 12: EN the audio interrupt's entries in the last second by the flags they
  * found (none / the output's only / the input's only / both / another channel's), OC the output blocks the driver asked for before
  * their input's (px_aorder.h a_swaps), last second / since boot: each one a repeated and a skipped block up to test build 11,
- * one block of latency more in test builds 12 and 13; since v42 each is filled once its own input's block is made), NAN the
- * engine's resets after a NaN since boot. Then the DSP: C1 the second core runs (0: one core), G why it is off (fm1_cpu1.h
+ * one block of latency more in test builds 12 and 13; since v42 each is filled once its own input's block is made; each hold of
+ * the interrupt, a full preset change or a flash write, adds one), OD (test build 14) those whose input's callback came too late
+ * since boot (px_audio.h A_ORDER_TICKS: each one a click), OG the longest from such a block's note to its input's callback (last
+ * second / since boot), NAN the engine's resets after a NaN since boot. Then the DSP: C1 the second core runs (0: one core), G why it is off (fm1_cpu1.h
  * FM1_CPU1_*: 0 it is not; 1 a misread, 2 a job not back within 8 ms, 4 a fault: these three
  * retired it in this boot and bar it at every start until a power-off; 3 barred at start; 5 no answer at start; the c1 line has
  * the rest), NAM 1 the preset's NAM amp is one that runs on both cores (test build 12: whatever C1 is), LD the load and PK its
@@ -851,11 +854,14 @@ void bt_isr_line(char *out)
     o = ble__put(o, " T5 "); o = bt__dec(o, bt_us(bt_isr_last.t5)); *o++ = '/'; o = bt__dec(o, bt_us(px_t5_in));
     o = ble__put(o, " AG "); o = bt__dec(o, bt_us(bt_isr_last.gap)); *o++ = '/'; o = bt__dec(o, bt_us(a_irq_gap));
     o = ble__put(o, " AI "); o = bt__dec(o, bt_us(bt_isr_last.in)); *o++ = '/'; o = bt__dec(o, bt_us(a_irq_in));
-    {   /* test build 12: the entries by the flags seen (px_audio.h); test build 14: the output blocks asked first (px_aorder.h) */
+    {   /* test build 12: the entries by the flags seen (px_audio.h); test build 14: the output blocks asked first (px_aorder.h),
+         * the notes of them dropped, the longest from a note to its input's callback */
         uint32_t i;
         o = ble__put(o, " EN");
         for (i = 0; i < 5u; i++) { *o++ = i ? '/' : ' '; o = bt__dec(o, bt_isr_last.en[i]); }
         o = ble__put(o, " OC "); o = bt__dec(o, bt_isr_last.sw); *o++ = '/'; o = bt__dec(o, a_swaps);
+        o = ble__put(o, " OD "); o = bt__dec(o, a_ord_drop);
+        o = ble__put(o, " OG "); o = bt__dec(o, bt_us(bt_isr_last.age)); *o++ = '/'; o = bt__dec(o, bt_us(a_ord_age));
     }
     o = ble__put(o, " C1 "); o = bt__dec(o, a_c1);
     o = ble__put(o, " G "); o = bt__dec(o, fm1_cpu1_gave_up);

@@ -30,6 +30,9 @@
 #if OP_BT_AUDIO
 #define FM1_CPU1_RECORD 1  /* the second core's fault record in full (the Bluetooth audio image's c1 line, bt/bt_a2dp.c) */
 #endif
+#if OP_BLE_TEST
+#define FM1_CPU1_NOBAR 1   /* the stall watch's own crash bars no core (px_usb.h fm1_timer5_irq) */
+#endif
 #include "fm1_cpu1.h"
 #endif
 #include "font8x8.h"
@@ -455,7 +458,9 @@ static int keys_decode(int32_t v)
     for (int i = 0; i < 3; i++) { int32_t e = v - REF[i]; if (e < 0) e = -e; if (e < bd) { bd = e; best = i; } }
     return (bd <= 42) ? best + 1 : KEY_NONE;
 }
+#if OP_BT_AUDIO
 static int keys_held_at_boot;           /* the analog button held while the pedal started: 1 CAB, 2 DLY, 3 REV, 0 none */
+#endif
 static void keys_capture_idle(void)
 {
     fm1_delay_ms(20);
@@ -464,7 +469,11 @@ static void keys_capture_idle(void)
     static const int32_t REF[3] = { 617, 706, 788 };
     for (int i = 0; i < 3 && keys_idle >= 0; i++) {
         int32_t e = keys_idle - REF[i]; if (e < 0) e = -e;
-        if (e <= 45) { keys_idle = 1023; keys_held_at_boot = i + 1; break; }
+#if OP_BT_AUDIO
+        if (e <= 45) { keys_idle = 1023; keys_held_at_boot = i + 1; break; }   /* (the Bluetooth audio image's boot keys) */
+#else
+        if (e <= 45) { keys_idle = 1023; break; }
+#endif
     }
 }
 #if ADC_PROBE
