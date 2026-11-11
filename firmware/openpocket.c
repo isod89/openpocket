@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 14
+#define BT_TEST_BUILD 15
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -30,7 +30,9 @@
 #if OP_BT_AUDIO
 #define FM1_CPU1_RECORD 1  /* the second core's fault record in full (the Bluetooth audio image's c1 line, bt/bt_a2dp.c) */
 #define FM1_CPU1_ECHO 1    /* test build 14: CPU0's exceptions that are CPU1's fault echoed, or the late flag of holding it,
-                            * resumed (a few a boot) instead of a crash (fm1_cpu1.h fm1_cpu1_echo) */
+                            * recognised and counted (fm1_cpu1.h fm1_cpu1_echo) */
+#define FM1_CPU1_ECHO_MAX 0u /* test build 15: none resumed (CPU0's crash, as up to build 13). Build 14 resumed up to 4: on
+                            * the pedal the boots it resumed hung until the watchdog, the others did not */
 #define FM1_CPU1_OWN_RAM 1 /* test build 14: its mailbox in a section of its own, out of the radio's window with its stacks
                             * (bt/app-bt.ld) */
 #endif
@@ -876,7 +878,7 @@ static void app_main(void)
      * then SYSVDD 1.26 -> 1.38 V with its strong drive, a level per 100 us), before the audio; the 1.3 V regulator and VDDIO
      * stay as found. With the DSP's timing of test build 13 (no hold, bt/bt_a2dp.c): the A/B against DLY for the supply
      * margin (B'). The c1 line's P reads them back */
-    if (keys_held_at_boot == 1 && !safe) {
+    if (keys_held_at_boot != 1 && !safe) {   /* test build 15: on every boot; CAB held = the boot loader's (builds 12-14's) */
         fm1_vdc14_raise(7u);
         fm1_p33_or(FM1_P3_ANA_CON6, 0x08u);
         fm1_p33_or(FM1_P3_ANA_CON9, 0x10u);

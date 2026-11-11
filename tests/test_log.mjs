@@ -127,11 +127,11 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
   let cw = c1Words(`${c14} W 0`);
   ok(cw?.key === 0 && cw.vdc14 === 3 && cw.sysvdd === 11 && !cw.strong && cw.v === 1452 && cw.d === 3452 && cw.se === 1 && cw.seMs === 1453
      && cw.echo === 0 && cw.late === 0 && cw.cn === 0 && cw.faults === 0 && cw.record === null
-     && /KEY 0: none: the DSP waited for Bluetooth/.test(cw.text) && /VDC14 3 \(1\.40 V\), SYSVDD 11 \(1\.26 V\), the boot loader's/.test(cw.text)
+     && /KEY 0: none: the DSP at 1\.5 s and the stock core supplies/.test(cw.text) && /VDC14 3 \(1\.40 V\), SYSVDD 11 \(1\.26 V\), the boot loader's/.test(cw.text)
      && /D 3452 ms: the DSP on \(2000 ms after VISIBLE\)/.test(cw.text) && /SE 1 scan enable, the last at 1453 ms/.test(cw.text)
      && /E 0\/0: CPU0's exceptions resumed/.test(cw.text) && /canary after the Bluetooth heap intact/.test(cw.text), `build 14's fields named: ${cw?.text}`);
   cw = c1Words("C1 1 G 0@0 K 1976 KEY 1 P 0F/1F V 1560 D 1503 SE 3@9120 E 1/1 01C67A04 CN 2 DEADBEEF S 42400006 F 0/0 W 0");
-  ok(cw?.key === 1 && cw.vdc14 === 7 && cw.sysvdd === 15 && cw.strong === 1 && /CAB: the DSP at 1\.5 s and the stock core supplies/.test(cw.text)
+  ok(cw?.key === 1 && cw.vdc14 === 7 && cw.sysvdd === 15 && cw.strong === 1 && /CAB: the boot loader's core supplies/.test(cw.text)
      && /VDC14 7 \(1\.60 V\), SYSVDD 15 \(1\.38 V\) with its strong drive, the stock firmware's/.test(cw.text) && /57 ms before VISIBLE/.test(cw.text)
      && cw.echo === 1 && cw.late === 1 && cw.epc === 0x01C67A04 && /1 echo of the second core's fault, 1 late flag of holding it \(the latest with CPU0 at PC 01C67A04\)/.test(cw.text)
      && cw.cn === 2 && cw.cnFirst === 0xDEADBEEF && /changed \(2 words; the first read DEADBEEF\)/.test(cw.text), `CAB, E and CN named: ${cw?.text}`);
@@ -139,7 +139,7 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
   cw = c1Words(`C1 0 G 4@1967 K 1976 KEY 2 P 03/0B V 1452 D 1503 SE 1@1453 E 1/0 01C67A04 CN 0 S 42400006 F 1/1 W 0${rec9} X 0 0 DE 7E 40 140 3FF 3FF 3FF 3FF`);
   ok(cw?.key === 2 && cw.faults === 1 && cw.cpu === 1 && cw.record.DBG === 0x40000 && cw.record.PC === 0x01C6F6DE && cw.record.ms === 1964
      && cw.record.fn === 0x01C5FD46 && cw.x?.length === 10 && cw.x[2] === 0xDE && cw.x[9] === 0x3FF
-     && /DLY: the DSP at 1\.5 s/.test(cw.text) && /faulted 1 time, the last taken by CPU1 at 1964 ms, PC 01C6F6DE, DBG 00040000; debug unit 0 0 DE 7E/.test(cw.text),
+     && /DLY: as none/.test(cw.text) && /faulted 1 time, the last taken by CPU1 at 1964 ms, PC 01C6F6DE, DBG 00040000; debug unit 0 0 DE 7E/.test(cw.text),
      `a fault after W 0: its 9 words and X, not taken for W's: ${cw?.text}`);
   cw = c1Words(`C1 0 G 4@1967 K 1976 KEY 2 P 03/0B V 1452 D 1503 SE 1@1453 E 0/0 CN 0 S 42400006 F 1/1 W 1/2 00000010 00000041 000007AE 42400006${rec9.slice(0, 58)}`);
   ok(cw?.record.DBG === 0x40000 && cw.record.ms === 1964 && Object.keys(cw.record).length === 6 && cw.x === null && /3 of its words cut off/.test(cw.text),

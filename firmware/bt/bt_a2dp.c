@@ -500,8 +500,9 @@ static __attribute__((noinline)) uint32_t bt_snap(void)   /* (one copy for its t
 #define BT_DSP_MAX_MS 8000u
 static int bt_dsp_may_start(uint32_t now)
 {
-    if (keys_held_at_boot == 1 || keys_held_at_boot == 2 || bt_st == BT_OFF || bt_st == BT_FAILED) return 1;
-    return (bt_t_vis && now - bt_t_vis >= BT_DSP_HOLD_MS) || now >= BT_DSP_MAX_MS;
+    (void)now;   /* test build 15: no hold. In build 14 the start-up event moved with the DSP's start (the normal boots hung
+                  * then too), and with the stock core supplies (build 14's CAB boot) it did not come at all */
+    return 1;
 }
 
 /* test build 14: a pattern right after the Bluetooth heap's end (bt/app-bt.ld .bss.bt_canary: then the library's own data,
