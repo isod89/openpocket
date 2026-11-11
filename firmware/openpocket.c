@@ -570,6 +570,11 @@ static const int8_t QDEC[16] = {0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0};
 #endif
 
 #if !AUDIO_PROBE
+#if PX_OWN_FX   /* SYN PAD (the Bluetooth audio image's own effect): the chord caught and let go on the engine, from ui.h's left
+                 * footswitch and px_midi_io.h's CC 64 (the main loop: px_dsp.c only reads the two counters) */
+#define PX_PAD_PRESS() px_pad_press(&g_eng)
+#define PX_PAD_STOP() px_pad_stop(&g_eng)
+#endif
 #include "ui.h"
 #include "px_lights.h"      /* the button lights follow the blocks (issue #8; px_leds.h drives them) */
 #define PX_LIGHTS_OFF() lights_off()

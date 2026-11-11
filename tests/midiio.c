@@ -3,7 +3,8 @@
  * screen mode and the store stubbed: what a host's Program Change, Control Change and clock do to the sound, when the
  * pedal must ignore them, that the input ring is always emptied (usb.c stops reading the host's packets when it is
  * nearly full, and the editor's SysEx arrives in the same packets), and what the pedal sends back.
- *   cc -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/midiio tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm && build/midiio */
+ *   cc -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/midiio tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm && build/midiio
+ * With -DPX_OWN_FX=1 (the Bluetooth audio image's): CC 64 catches a SYN PAD's chord, and only that. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +59,11 @@ static uint32_t ft_box(uint32_t x, uint32_t y, uint32_t w, const char *s, const 
 #define UI_BG 0
 #define OP_BLE_TEST 1
 static uint32_t ms_now(void) { return 0; }
+#if PX_OWN_FX                                            /* SYN PAD (the Bluetooth audio image): as ui.h, and a counter */
+static int ui_pad_on(void) { return PRESET.on[PX_B_SYN] && PRESET.type[PX_B_SYN] % PX_SYN_COUNT == PX_SYN_PAD; }
+static int pad_presses;
+#define PX_PAD_PRESS() (pad_presses++)
+#endif
 #include "px_midi_io.h"
 
 static uint32_t cc(uint32_t ch, uint32_t n, uint32_t v) { return 0xBu | (0xB0u | ch) << 8 | n << 16 | v << 24; }
@@ -225,6 +231,22 @@ int main(void)
         px_midi_service();
         ok(PRESET.on[PX_B_DRIVE] == !was, "after a preset change the toggle flips what the new preset has");
     }
+#if PX_OWN_FX
+    {   /* CC 64 (sustain) catches the PAD's chord: at 64 and up, with a PAD on; nothing else changes */
+        reset();
+        px_preset_t before;
+        PRESET.type[PX_B_SYN] = PX_SYN_PAD; PRESET.on[PX_B_SYN] = 1; before = PRESET; pad_presses = 0;
+        midi_enqueue(cc(0, 64, 127), 1); midi_enqueue(cc(0, 64, 0), 2); midi_enqueue(cc(0, 64, 64), 3); midi_enqueue(cc(0, 64, 63), 4);
+        px_midi_service();
+        int on = pad_presses == 2 && !memcmp(&before, &PRESET, sizeof before);
+        PRESET.on[PX_B_SYN] = 0; pad_presses = 0;
+        midi_enqueue(cc(0, 64, 127), 5); px_midi_service();
+        int off = pad_presses == 0;
+        PRESET.on[PX_B_SYN] = 1; PRESET.type[PX_B_SYN] = PX_SYN_STRINGS; pad_presses = 0;
+        midi_enqueue(cc(0, 64, 127), 6); px_midi_service();
+        ok(on && off && pad_presses == 0, "CC 64 at 64 and up catches the PAD's chord (PAD on only), the sound unchanged");
+    }
+#endif
     printf("\n%s\n", failed ? "MIDI glue tests FAILED" : "all MIDI glue tests passed");
     return failed ? 1 : 0;
 }

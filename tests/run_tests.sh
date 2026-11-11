@@ -16,6 +16,8 @@
 #  - wet lanes (v39): the delay through its lane as inline bit for bit, the reverb's tail lag frames later, the pipeline
 #  - NAM: engine/px_nam.c against tools/nam_a2.py with every factory model (needs numpy)
 #  - MIDI: the musical-MIDI code (firmware/px_midi.h) on a PC: decoder, CC map, messages sent, settings byte, clock
+#  - the Bluetooth audio image's controls (PX_OWN_FX): SYN PAD's left footswitch and the tuner on both (tests/uisim.c), CC 64
+#    (tests/midiio.c), the two effects' pages drawn whole
 #  - preset store: save / reload / power cut at every step of a save (firmware/px_store.h on a simulated flash)
 #  - the audio callbacks' order (v42, firmware/px_aorder.h): the I2S driver calls the output's callback before the
 #    input's when its interrupt enters late; every output block must still be the sound of that interrupt's guitar block
@@ -97,12 +99,21 @@ echo "== screen (every page fully drawn)"
 mkdir -p build/ui && $CC -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/uisim tests/uisim.c engine/px_dsp.c firmware/px_math.c -lm
 build/uisim build/ui > build/ui/log.txt
 if grep -q "never drawn" build/ui/log.txt; then grep "never drawn" build/ui/log.txt; echo "screen: FAIL"; exit 1; else echo "screen: $(wc -l < build/ui/log.txt) pages ok (build/ui/*.ppm)"; fi
+# the Bluetooth audio image's screen (PX_OWN_FX): the same, then SYN PAD's left footswitch against v42's both-footswitch
+# tuner, and the two effects' pages
+mkdir -p build/ui_fx && $CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -Iengine -Ifirmware -o build/uisim_fx tests/uisim.c engine/px_dsp.c firmware/px_math.c -lm
+build/uisim_fx build/ui_fx > build/ui_fx/log.txt || { tail -3 build/ui_fx/log.txt; echo "screen (PX_OWN_FX): FAIL"; exit 1; }
+if grep -q "never drawn" build/ui_fx/log.txt; then grep "never drawn" build/ui_fx/log.txt; echo "screen (PX_OWN_FX): FAIL"; exit 1; else echo "screen (PX_OWN_FX): $(wc -l < build/ui_fx/log.txt) pages ok, SYN PAD's footswitch ok (build/ui_fx/*.ppm)"; fi
 echo "== MIDI (firmware/px_midi.h: decoder, Control Change map, what the pedal sends, settings, clock)"
 for t in midisim midiio; do
   $CC -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/$t tests/$t.c engine/px_dsp.c firmware/px_math.c -lm
   build/$t > build/$t.log || { grep FAIL build/$t.log; exit 1; }
   tail -1 build/$t.log
 done
+# (the Bluetooth audio image's: CC 64 catches a SYN PAD's chord)
+$CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -Iengine -Ifirmware -o build/midiio_fx tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm
+build/midiio_fx > build/midiio_fx.log || { grep FAIL build/midiio_fx.log; exit 1; }
+tail -1 build/midiio_fx.log
 echo "== LED map and the lights driver (LED_PROBE build, issue #8)"
 mkdir -p build/lp && $CC -O1 -Wall -Wno-unused-function -Ifirmware -o build/lpsim tests/lpsim.c && build/lpsim build/lp
 echo "== button lights in the normal firmware (px_lights.h, issue #8)"

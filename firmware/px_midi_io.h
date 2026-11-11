@@ -5,7 +5,8 @@
  * midi_in_q (4-byte USB-MIDI event packets, with the millisecond they arrived) and sends what is put in midi_out_q.
  * SysEx never takes this road: it goes to the update code (ota.c) and the editor (px_editor.h) only.
  * The including file provides px_midi.h, usb.c's rings, PRESET, cur_preset, load_preset, master_vol, ui_mode / ui_item /
- * ui_nitems (ui.h), st_midi, st_usb and st_commit (px_store.h), and ms_now.
+ * ui_nitems (ui.h), st_midi, st_usb and st_commit (px_store.h), and ms_now; in the Bluetooth audio image (PX_OWN_FX) also
+ * ui_pad_on (ui.h) and PX_PAD_PRESS (openpocket.c), for CC 64.
  *
  * The ring must be emptied: usb.c leaves the host's USB packet unread (NAK) while the ring is nearly full, and the
  * editor's and installer's SysEx come in the same packets. Nothing drained it before this file.
@@ -60,6 +61,10 @@ static void px_midi_in(uint32_t pkt, uint32_t ms, int free_ui, int *touched)
             if ((int)ui_item >= ui_nitems()) ui_item = 0;
             *touched = 1;
         }
+#if PX_OWN_FX
+    } else if (m.d1 == 64u) {                          /* CC 64 (a sustain pedal) at 64 and up: a SYN PAD catches the chord */
+        if (m.d2 >= 64u && ui_pad_on()) PX_PAD_PRESS();
+#endif
     } else {
         uint32_t mv = master_vol;
         int mset = 0;
