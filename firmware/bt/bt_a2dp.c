@@ -69,6 +69,9 @@ static volatile uint32_t bt_init_ok, bt_links, bt_enc, bt_a2dp_ch, bt_media, bt_
 static volatile uint32_t bt_cmd_bits, bt_scans;                 /* for the app task: bit 0 = visible and connectable */
 static uint32_t bt_cmd_sem[4];
 static uint32_t bt_t_start, bt_t_init;
+/* test build 14 (ms since power-on, ms_now, as the main loop's): when Bluetooth first became VISIBLE, when the DSP came on
+ * (openpocket.c), the last scan enable (bt_app_task: the first at start-up, the others after a link's end or a KICK) */
+static uint32_t bt_t_vis, bt_dsp_ms, bt_scan_ms;
 #define BT_QUIET_MS 5000u
 static uint32_t bt_q40_n, bt_q40_t, bt_kicks;                  /* the baseband interrupt's last count and when it changed */
 extern uint8_t acl_tx_pool[], acl_tx_pool_end[], acl_rx_pool[], acl_rx_pool_end[];   /* app-bt.ld */
@@ -235,6 +238,7 @@ int bt_event_notify(int from, void *e)
     switch (code) {
     case BT_STATUS_INIT_OK:
         bt_init_ok = 1; bt_st = BT_VISIBLE; ble_state = BLE_ADV;
+        if (!bt_t_vis) bt_t_vis = ms_now();
         bt_cmd(1u);                                             /* visible (inquiry scan) and connectable (page scan) */
         break;
     case BT_STATUS_START_CONNECTED: case BT_STATUS_FIRST_CONNECTED: case BT_STATUS_SECOND_CONNECTED:
@@ -283,6 +287,7 @@ static void bt_app_task(void *arg)
             user_send_cmd_prepare(USER_CTRL_WRITE_SCAN_ENABLE, 0, 0);
             user_send_cmd_prepare(USER_CTRL_WRITE_CONN_ENABLE, 0, 0);
             bt_scans++;
+            bt_scan_ms = ms_now();
         }
     }
 }
@@ -483,12 +488,51 @@ static __attribute__((noinline)) uint32_t bt_snap(void)   /* (one copy for its t
     return (ble_stage & 15u) << 28 | (bt_st & 15u) << 24 | (uint32_t)(a_hold != 0) << 23 | 1u << 22 | (bt_cnt_irq_br & 0x3FFFFFu);
 }
 
+/* test build 14: the DSP waits for Bluetooth's start-up. In every Bluetooth boot of test build 13 the second core faulted at
+ * 1,964 ms, about 0.46 s after the scans and the DSP started (1.5 s); with the radio off (REV), never. The DSP (openpocket.c
+ * a_hold: dry guitar meanwhile) comes on once Bluetooth has been VISIBLE for BT_DSP_HOLD_MS, or BT_DSP_MAX_MS after power-on at
+ * the latest. Bluetooth off (REV, safe mode) or failed: at once (openpocket.c's 1.5 s, as before). DLY or CAB held at
+ * power-on: at once too, test build 13's timing (the window kept measurable; CAB also raises the core supplies). The scans
+ * that start again after a link's end or a KICK run with the DSP on: SE in the c1 line says when the last one was */
+#define BT_DSP_HOLD_MS 2000u
+#define BT_DSP_MAX_MS 8000u
+static int bt_dsp_may_start(uint32_t now)
+{
+    if (keys_held_at_boot == 1 || keys_held_at_boot == 2 || bt_st == BT_OFF || bt_st == BT_FAILED) return 1;
+    return (bt_t_vis && now - bt_t_vis >= BT_DSP_HOLD_MS) || now >= BT_DSP_MAX_MS;
+}
+
+/* test build 14: a pattern right after the Bluetooth heap's end (bt/app-bt.ld .bss.bt_canary: then the library's own data,
+ * the firmware's after it; the second core's stacks and mailbox, which lay there up to test build 13, are now above the
+ * radio's 64 KB window), checked on every main-loop pass: CN in the c1 line, the words found changed (each one put back) and
+ * the first one's value. Armed by app_main before Bluetooth starts */
+#define BT_CANARY_N 8u
+#define BT_CANARY(i) (0xCA9A5000u + (i))
+static volatile uint32_t bt_canary[BT_CANARY_N] __attribute__((aligned(8), section(".bss.bt_canary")));
+static uint32_t bt_cn_hits, bt_cn_bad;
+static void bt_canary_arm(void)
+{
+    uint32_t i;
+    for (i = 0; i < BT_CANARY_N; i++) bt_canary[i] = BT_CANARY(i);
+}
+static void bt_canary_check(void)
+{
+    uint32_t i, v;
+    for (i = 0; i < BT_CANARY_N; i++)
+        if ((v = bt_canary[i]) != BT_CANARY(i)) {
+            if (!bt_cn_hits) bt_cn_bad = v;
+            bt_cn_hits++;
+            bt_canary[i] = BT_CANARY(i);
+        }
+}
+
 void ble_test_poll(void)
 {
     uint32_t now;
     ble_busy(1);
     ble_poll();
     ble_busy(0);
+    bt_canary_check();
     now = ble_ms();
     bt_isr_second(now);
     if (fm1_cpu1_fault.count && !bt_c1_snap) bt_c1_snap = bt_snap();
@@ -501,6 +545,7 @@ void ble_test_poll(void)
     }
     if (bt_st == BT_STARTING && bt_t_init && !bt_init_ok && now - bt_t_init > 2000u) {
         bt_st = BT_VISIBLE; ble_state = BLE_ADV;                /* no "ready" event within 2 s of the init: make it visible anyway */
+        if (!bt_t_vis) bt_t_vis = ms_now();
         bt_cmd(1u);
     }
     if (bt_cnt_irq_br != bt_q40_n) { bt_q40_n = bt_cnt_irq_br; bt_q40_t = now; }
@@ -800,28 +845,51 @@ void bt_fifo_line(char *out)
     *o = 0;
 }
 
-/* the second core (test build 12): "C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0 W 0", and after a fault 19 words in hex: DBG, the
- * taking core's EMU_MSG, PC, RETS (CPU0's when CPU0 took it, F's second figure 0), CPU1's EMU_MSG, the time (ms, wraps at
- * 179 s), the job handed and the job finished (different: one was running), its function, the debug unit's ten words from
- * 0x1EEE358 (the write-limit error counts, the bus masters' ids). G: why it is off and when (ms); K: how deep its stack has
- * gone (bytes of 2,816); KEY: the key held at power-on (1 CAB, 2 DLY: nothing in this build; 3 REV); S: bt_c1_snap. Test
- * build 13: W, the reverb's loop's cuts at its block's end (engine/px_dsp.h px_loop_wild), and after one, 4 words in hex: n
- * (as the loop reloaded it) and k at the latest, the first one's time (ms) and its S word (bt_w_at). Without a cut the line
- * stays within its 223 characters with a fault's 19 words; with both, the debug unit's last words are cut */
+/* the second core (test build 12): "C1 1 G 0@0 K 2232 KEY 0 P 03/0B V 1452 D 3452 SE 1@1453 E 0/0 CN 0 S 00000000 F 0/0 W 0".
+ * G: why it is off and when (ms); K: how deep its stack has gone (bytes of 2,816); KEY: the key held at power-on (1 CAB, 2
+ * DLY, 3 REV: openpocket.c). Test build 14:
+ *  P, the core supplies read back, P3_ANA_CON6 / CON9 in hex: VDC14 their low 3 bits (1.25 V + 50 mV a level), SYSVDD the
+ *    low 4 (0.93 V + 30 mV a level), CON9 bit 4 its strong drive; levels 3 and 11 as the boot loader leaves them, 7 and 15
+ *    with CON6 bit 3 and CON9 bit 4 as CAB sets them (the stock firmware's 0F/1F);
+ *  V, when Bluetooth first became VISIBLE, and D, when the DSP came on (ms since power-on; 0 = not yet);
+ *  SE, the scan enables sent and the last one's time (ms);
+ *  E, CPU0's exceptions resumed as not its own (the echo of CPU1's fault / the late flag of a hold, fm1_cpu1.h
+ *    fm1_cpu1_echo), and after one the PC CPU0 was at (the latest), in hex;
+ *  CN, the canary's words found changed after the Bluetooth heap, and after one the first one's value in hex.
+ * S: bt_c1_snap. Test build 13: W, the loops' cuts at their block's end (engine/px_dsp.h px_loop_wild); test build 14: after
+ * one "/id" (1 the reverb, 2 the delay, 3 a lane's frame count, 4 the lanes' buffer index: PX_WILD_*), then 4 words in hex: n
+ * (as the loop reloaded it, or the value read) and k (or the lane) at the latest, the first one's time (ms) and its S word
+ * (bt_w_at). After a fault (F count/cpu), 9 words in hex: DBG, the taking core's EMU_MSG, PC, RETS (CPU0's when CPU0 took
+ * it, F's second figure 0), CPU1's EMU_MSG, the time (ms, wraps at 179 s), the job handed and the job finished (different:
+ * one was running), its function; then X and the debug unit's ten words from 0x1EEE358 in short hex (the write-limit error
+ * counts, the bus masters' ids), the first thing cut when the line passes its 223 characters */
 void bt_c1_line(char *out)
 {
     char *o = ble__put(bt_line_t, "C1 ");
+    uint32_t i;
     o = bt__dec(o, a_c1); o = ble__put(o, " G "); o = bt__dec(o, fm1_cpu1_gave_up); *o++ = '@'; o = bt__dec(o, fm1_cpu1_gave_ms);
     o = ble__put(o, " K "); o = bt__dec(o, fm1_cpu1_stack_used());
     o = ble__put(o, " KEY "); o = bt__dec(o, (uint32_t)keys_held_at_boot);
+    o = ble__put(o, " P "); o = bt__hex(o, fm1_p33_read(FM1_P3_ANA_CON6), 2); *o++ = '/'; o = bt__hex(o, fm1_p33_read(FM1_P3_ANA_CON9), 2);
+    o = ble__put(o, " V "); o = bt__dec(o, bt_t_vis);
+    o = ble__put(o, " D "); o = bt__dec(o, bt_dsp_ms);
+    o = ble__put(o, " SE "); o = bt__dec(o, bt_scans); *o++ = '@'; o = bt__dec(o, bt_scan_ms);
+    o = ble__put(o, " E "); o = bt__dec(o, fm1_cpu1_fault.e[0]); *o++ = '/'; o = bt__dec(o, fm1_cpu1_fault.e[1]);
+    if (fm1_cpu1_fault.e[0] | fm1_cpu1_fault.e[1]) { *o++ = ' '; o = bt__hex(o, fm1_cpu1_fault.epc, 8); }
+    o = ble__put(o, " CN "); o = bt__dec(o, bt_cn_hits);
+    if (bt_cn_hits) { *o++ = ' '; o = bt__hex(o, bt_cn_bad, 8); }
     o = ble__put(o, " S "); o = bt__hex(o, bt_c1_snap, 8);
     o = ble__put(o, " F "); o = bt__dec(o, fm1_cpu1_fault.count); *o++ = '/'; o = bt__dec(o, fm1_cpu1_fault.cpu);
     {   /* (the count read once: a cut meanwhile cannot leave "W 1" without its words) */
         const uint32_t w = px_loop_wild[0];
         o = ble__put(o, " W "); o = bt__dec(o, w);
-        if (w) { o = bt_words(o, px_loop_wild + 1, 2u); o = bt_words(o, bt_w_at, 2u); }
+        if (w) { *o++ = '/'; o = bt__dec(o, px_loop_wild[3]); o = bt_words(o, px_loop_wild + 1, 2u); o = bt_words(o, bt_w_at, 2u); }
     }
-    if (fm1_cpu1_fault.count) o = bt_words(o, &fm1_cpu1_fault.dbg, 19u);   /* (dbg .. dbgx[9]: the struct's end) */
+    if (fm1_cpu1_fault.count) {
+        o = bt_words(o, &fm1_cpu1_fault.dbg, 9u);              /* (dbg .. fn) */
+        o = ble__put(o, " X");
+        for (i = 0; i < 10u; i++) { *o++ = ' '; o = ble__hex(o, fm1_cpu1_fault.dbgx[i]); }
+    }
     *o = 0;
     bt_line_out(out, bt_line_t);
 }

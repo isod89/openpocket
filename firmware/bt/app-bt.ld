@@ -64,18 +64,42 @@ SECTIONS
      * (__write_reg_txericntl and its siblings) and a failed assertion stops in a loop: the first test build's stall, with the
      * send pool at the end of the RAM, 118 KB above bd_base. So, first in the RAM, as the SDK's btctler_lib_bss.ld keeps them
      * next to bd_base: the send pool (bt_malloc's page and inquiry scan buffers come from it too: a sink sends little), the
-     * controller's own variables, and the Bluetooth heap (ble_os.c). The check below the sections holds the line. */
+     * controller's own variables, and the Bluetooth heap (ble_os.c). The check below the sections holds the line.
+     * Test build 14: what follows the heap. Up to test build 13 the second core's stacks (fm1_cpu1.S) came right after it, and
+     * its mailbox (fm1_cpu1.h) after them, inside that 64 KB window: CPU1 took a bus fault reading its own stack at 1.96 s in
+     * every boot with the radio on. Now, after the heap: a canary (bt/bt_a2dp.c, checked by the main loop), then data only CPU0
+     * and the radio touch (the library's own, its dead static pools first: btcontroller_heap.c's, never referenced; the SBC
+     * decoder's, the I2S driver's, the runtime's, the firmware's common symbols, which are the Bluetooth code's), enough to
+     * fill the window's rest (the build prints by how much, firmware/build.sh); then the firmware's and the engine's data;
+     * then CPU1's mailbox (.bss.c1.mb) and stacks, at the end of the RAM, far above the window (the check below). The same
+     * bytes, in another order: only the canary is new */
     .bss (NOLOAD) : { _bss_start = .;
                       . = ALIGN(4); acl_tx_pool = .; . += 2048; acl_tx_pool_end = .;
                       *(.bt_rf_bss) *(.hci_controller_bss) *(.hci_interface_bss) *(.device_manager_bss) *(.vendor_manager_bss)
                       *(.ble_hci_bss) *(.ble_ll_bss) *(.ble_rf_bss) *(.classic_*_bss)
                       . = ALIGN(8); *(.bss.bt_heap)
                       _bt_window_end = .;
-                      *(.bss*) *(.sbss*) *(.*_bss) *(COMMON)
+                      *(.bss.bt_canary)
+                      *libjl.a:btctrler_btcontroller_heap.c.o(.bss .bss.* COMMON)
+                      *libjl.a:*(.bss .bss.* .sbss* .*_bss COMMON)
+                      *sbc/*.o(.bss .bss.* COMMON) *iis.o(.bss COMMON) *bt_rt.o(.bss COMMON) *openpocket.o(COMMON)
+                      _bt_c0_end = .;
+                      *(EXCLUDE_FILE(*cpu1.o) .bss) *(.sbss*) *(.*_bss) *(COMMON)
+                      . = ALIGN(32); _c1_ram_start = .;
+                      *(.bss.c1.mb) *(.bss.fm1_cpu1_stack)
+                      _c1_ram_end = .;
+                      *(.bss*)
                       . = ALIGN(4); _bss_end = .; } > RAM
     ASSERT(acl_rx_pool >= bd_base && acl_tx_pool >= bd_base && acl_rx_pool_end - bd_base < 0xFFFF
            && _bt_window_end - bd_base < 0xFFFF && _data_end - bd_base < 0xFFFF,
            "the classic baseband's memory (its pools, the controller's variables, the Bluetooth heap) must lie within 64 KB above bd_base")
+    /* test build 14: the second core's stacks and mailbox above the window, whole (2,816 + 256 + 64 bytes: the mailbox is in
+     * its section, fm1_cpu1.h FM1_CPU1_OWN_RAM), and nothing else between _c1_ram_start and _c1_ram_end (an image without
+     * the second core, openpocket.c DSP_CPU1 0, has neither) */
+    ASSERT(!DEFINED(fm1_cpu1_ustack) || (_c1_ram_start >= bd_base + 0x10000 && fm1_cpu1_ustack >= _c1_ram_start
+           && fm1_cpu1_sstack_top <= _c1_ram_end && _c1_ram_end - _c1_ram_start == 2816 + 256 + 64
+           && _c1_ram_end <= ORIGIN(RAM) + LENGTH(RAM)),
+           "the second core's stacks and mailbox must lie above the classic baseband's 64 KB window (bd_base + 0x10000)")
     .noinit (NOLOAD) : { *(.noinit) *(.noinit.ble) . = ALIGN(8); _ble_stack_lo = .; *(.noinit.ble_stack) _ble_stack_hi = .; *(.noinit*) } > NOINIT
     .cram (NOLOAD) : { _cram_lo = .; *(.cram*) . = ALIGN(8); _cram_hi = .; } > CRAM   /* CPU-only data, zeroed by pxc_init */
     .pool (NOLOAD) : { . = ALIGN(8); *(.pool) . = ALIGN(8); _pool_tail_start = .; *(.pool.tail.*) . = ALIGN(4); _pool_tail_end = .; } > POOL

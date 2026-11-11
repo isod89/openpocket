@@ -159,8 +159,9 @@ PY
   for b in btctrler/lmp.c btstack/a2dp_media_codec.c btstack/a2dp_sink.c; do
     $CC -Os -S -x ir "$HERE/../third_party/jieli-bt/$b.bc" -o "$O/listings/$(basename "$b").s" 2>/dev/null || true
   done
+  # (test build 14: dly_block too, its 11 loops capped as rv_block's 4, engine/px_dsp.c PX_LOOP_CAP)
   for f in lmp_rx_handler lmp_private_open_sbc_channel lmp_send_acl_u_packet_to_host acl_u_packet_analyse \
-           a2dp_media_packet_user_handler a2dp_rx_notice_to_decode rv_block; do
+           a2dp_media_packet_user_handler a2dp_rx_notice_to_decode rv_block dly_block; do
     r=$(awk -v n="$f" '$NF==n && $3=="F" {print $1" "$(NF-1); exit}' "$O/symbols.txt")
     [ -n "$r" ] || continue
     a=${r% *}; z=${r#* }
@@ -196,6 +197,12 @@ ps_,pe=sym("_pool_tail_start"),sym("_pool_tail_end")
 if ps_ and pe: print(f"pool tail : {pe-ps_} bytes, {0x01C5E000-pe} left before the RAM code")
 if re_ and he: print(f"hi RAM    : RAM code {re_-0x01C5E000}, data {he-hs}, free {0x01C74000-he} of 90112 bytes (the RAM code window)")
 if be: print(f"RAM       : {be-0x01C08000} of 98304 bytes ({98304-(be-0x01C08000)} free)")
+bd,bw,b0,c1s,c1e=sym("bd_base"),sym("_bt_window_end"),sym("_bt_c0_end"),sym("_c1_ram_start"),sym("_c1_ram_end")
+if bd is not None and bw and b0 and c1s and c1e:   # the Bluetooth audio image (bt/app-bt.ld, test build 14)
+    w=bd+0x10000
+    print(f"bt window : {bd:#x}..{w:#x}: the heap to {bw:#x}, then the canary and CPU0's data to {b0:#x} ({b0-w:+d}: "
+          f"{'the firmware data is above the window' if b0>=w else 'SHORT, the firmware data begins inside the window'}); "
+          f"the second core's mailbox and stacks {c1s:#x}..{c1e:#x} ({c1s-w:+d} above it)")
 if nb and nb >= 0x01C7C000 and nb > sym("_ble_stack_lo"): print(f"NOINIT    : {nb-0x01C7C000} of 15696 bytes up to the BLE task stacks' end")
 if cl is not None and ch is not None: print(f"cache RAM : {ch-cl} of 28672 bytes (the rest, {28672-(ch-cl)}, to the NAM network's vector unit)")
 assert start==0x02000120,hex(start or 0)

@@ -76,7 +76,12 @@ extern uint32_t fm1_cpu1_ustack[], fm1_cpu1_sstack_top[];
 #define FM1_CPU1_MARK 0x43314D4Bu                       /* "C1MK": how deep its stack has gone */
 
 typedef void (*fm1_cpu1_fn)(uint32_t);
-/* CPU0's words, then CPU1's on a cache line of their own */
+/* CPU0's words, then CPU1's on a cache line of their own. FM1_CPU1_OWN_RAM 1 (the Bluetooth audio image, openpocket.c): in a
+ * section of its own, .bss.c1.mb, which bt/app-bt.ld places with CPU1's stacks (fm1_cpu1.S), out of the classic baseband's
+ * 64 KB window */
+#ifndef FM1_CPU1_OWN_RAM
+#define FM1_CPU1_OWN_RAM 0
+#endif
 static struct {
     volatile uint32_t request;                  /* CPU0: the job's number (request + 1 hands fn(arg) over) */
     fm1_cpu1_fn volatile fn;
@@ -84,7 +89,11 @@ static struct {
     volatile uint32_t ready __attribute__((aligned(32)));   /* CPU1: it started */
     volatile uint32_t complete, rejected;       /* the last job it finished; the jobs it would not run */
     volatile uint32_t misread, jobs;            /* the last refused, as it read it; how many it ran */
+#if FM1_CPU1_OWN_RAM
+} fm1_cpu1_mb __attribute__((aligned(32), section(".bss.c1.mb")));
+#else
 } fm1_cpu1_mb __attribute__((aligned(32)));
+#endif
 #define FM1_CPU1_CHECK(fn, arg, request) ((uint32_t)(uintptr_t)(fn) ^ (arg) ^ (request) * 0x9E3779B1u)
 
 static uint8_t fm1_cpu1_on;                     /* started and answering: CPU0 may hand it work */
@@ -100,13 +109,26 @@ static uint8_t fm1_cpu1_gave_up;                /* why it is off (FM1_CPU1_*), 0
 #ifndef FM1_CPU1_RECORD
 #define FM1_CPU1_RECORD 0
 #endif
+/* FM1_CPU1_ECHO 1 (the Bluetooth audio image): CPU0's exceptions that are an echo of CPU1's fault or the late flag of holding
+ * it are resumed, a few a boot (fm1_cpu1_echo); t_in is when CPU1 entered its fault path, e those resumed by kind, epc the
+ * last one's PC (where CPU0 was) */
+#ifndef FM1_CPU1_ECHO
+#define FM1_CPU1_ECHO 0
+#endif
 static struct {
     volatile uint32_t count;
     uint32_t echoes, cpu, dbg, emu, pc, rets;
 #if FM1_CPU1_RECORD
     uint32_t emu1, ms, req, cmp, fn, dbgx[10];
 #endif
+#if FM1_CPU1_ECHO
+    volatile uint32_t t_in;
+    uint32_t e[2], epc;
+#endif
 } fm1_cpu1_fault;
+#if FM1_CPU1_ECHO
+static uint32_t fm1_cpu1_held_t;                /* when CPU0 last held a running CPU1 (fm1_ticks() | 1), 0 = never */
+#endif
 #if FM1_CPU1_RECORD
 static uint32_t fm1_cpu1_gave_ms;               /* when it was retired (fm1_uptime_ms | 1), 0 = it was not */
 #endif
@@ -211,6 +233,9 @@ static void fm1_cpu1_retire(uint32_t why)
     if (!FM1_CPU1_FALLBACK)
         fm1_cpu1_failure(why, why == FM1_CPU1_FAULT ? fm1_cpu1_fault.pc : fm1_cpu1_mb.misread,
                          why == FM1_CPU1_FAULT ? fm1_cpu1_fault.dbg : 0u);
+#if FM1_CPU1_ECHO
+    fm1_cpu1_held_t = fm1_ticks() | 1u;         /* (before the hold: its late flag may come as soon as the wait ends) */
+#endif
     fm1_cpu1_stop();
     fm1_cpu1_bar_set();
     fm1_cpu1_on = 0;
@@ -355,9 +380,69 @@ static uint32_t fm1_cpu1_stack_used(void)
  * called): it records it and parks until CPU0 holds it (the crash screen and fm1_reboot on CPU1 would hold CPU1
  * itself: a frozen FM-1). Only CPU0 can finish restoring the debug guards after a hold. Without the fallback, CPU0
  * restarts there (fm1_cpu1_failure). With it, CPU0's own crash beside a running CPU1 bars it */
+#if FM1_CPU1_ECHO
+/* CPU0 took the exception: 1 = not a fault of its own, resumed. Test build 13 (the Bluetooth audio image) crashed CPU0 in 3
+ * of 6 boots at the very ms CPU1 faulted, in two ways; each is resumed here, FM1_CPU1_ECHO_MAX a boot at most (then CPU0's
+ * crash, as before), and counted (fm1_cpu1_fault.e, the c1 line's E):
+ *  e[0], the echo: DBG_MSG and EMU_MSG both 0 (boots B and C). CPU1's fault raised the exception on CPU0 as well, before its
+ *    record showed (the test below, echoes < count, then fails). Taken when CPU1 entered its fault path (t_in, its first
+ *    act) within the last 20 ms, or does so within 1 ms of this: CPU0 waits for it, with every interrupt held;
+ *  e[1], the late flag of a hold: DBG_MSG holds only CPU0's bus-error bits (19-21), EMU_MSG 0 or bit 0 (boot A: 00200000,
+ *    EMU 1), within 5 ms of CPU0 holding a running CPU1 (fm1_cpu1_stop waits 256 loops for that flag; one that comes later
+ *    is CPU0-coded). The bits are cleared, as fm1_cpu1_stop clears them.
+ * Anything else (another vector than 1, such as the stall watch's; CPU0's PC or write limits, other EMU bits, no CPU1 fault
+ * or hold near it) is CPU0's own, as before. CPU1 is retired as before (no restart) */
+#ifndef FM1_CPU1_ECHO_MAX
+#define FM1_CPU1_ECHO_MAX 4u
+#endif
+static int fm1_cpu1_echo(const uint32_t *f, uint32_t dbg)
+{
+    const uint32_t emu = FM1_EMU_MSG, t0 = fm1_ticks();
+    uint32_t t, was;
+    if (f[19] - (uint32_t)(uintptr_t)fm1_fatal_stubs != 12u)   /* (vector 1's stub + 6: fm1_vec.S) */
+        return 0;
+    if (fm1_cpu1_fault.e[0] + fm1_cpu1_fault.e[1] >= FM1_CPU1_ECHO_MAX)
+        return 0;
+    if (!dbg && !emu) {
+        for (;;) {
+            FM1_CPU1_SYNC();
+            t = fm1_cpu1_fault.t_in;
+            if (t && (uint32_t)(fm1_ticks() - t) < 20000u * FM1_TICKS_PER_US) {
+                fm1_cpu1_fault.e[0]++;
+                fm1_cpu1_fault.epc = f[16];
+                return 1;
+            }
+            if ((uint32_t)(fm1_ticks() - t0) >= 1000u * FM1_TICKS_PER_US)
+                return 0;
+        }
+    }
+    if (dbg && !(dbg & ~(7u << 19)) && emu <= 1u && fm1_cpu1_held_t &&
+        (uint32_t)(t0 - fm1_cpu1_held_t) < 5000u * FM1_TICKS_PER_US) {
+        was = FM1_DBG_WR_EN & 1u;               /* (writing 0xE7 toggles the unlock) */
+        if (!was)
+            FM1_DBG_WR_EN = 0xE7u;
+        FM1_DBG_MSG_CLR = dbg;
+        if (!was)
+            FM1_DBG_WR_EN = 0xE7u;
+        if (emu)
+            FM1_EMU_MSG = emu;                  /* (its bit 0 cleared, as fm1_irq_init clears them all) */
+        fm1_cpu1_fault.e[1]++;
+        fm1_cpu1_fault.epc = f[16];
+        return 1;
+    }
+    return 0;
+}
+#endif
 static int fm1_cpu1_fault_c(const uint32_t *f)
 {
     uint32_t cpu = fm1_cnum(), dbg = FM1_DBG_MSG, was;
+#if FM1_CPU1_ECHO
+    if (cpu) {
+        fm1_cpu1_fault.t_in = fm1_ticks() | 1u; /* CPU1: its first act, for CPU0's echo (fm1_cpu1_echo) */
+        FM1_CPU1_SYNC();
+    } else if (fm1_cpu1_echo(f, dbg))
+        return 1;
+#endif
     if (!cpu && (dbg & FM1_DBG_C0))
         goto own;
     /* CPU1 took it too and cleared DBG_MSG first. Once per CPU1 fault, so a genuine CPU0 exception with DBG_MSG
@@ -370,6 +455,10 @@ static int fm1_cpu1_fault_c(const uint32_t *f)
     }
     if (!cpu && fm1_cpu1_fault.count >= 16u)
         goto own;                               /* a hold that did not take */
+#if FM1_CPU1_ECHO
+    if (!cpu)
+        fm1_cpu1_held_t = fm1_ticks() | 1u;     /* (before the hold, as fm1_cpu1_retire) */
+#endif
     if (!cpu)
         fm1_cpu1_stop();
     fm1_cpu1_fault.cpu = cpu;

@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BOOT_STAGES, RESET_CAUSES, a2dpWords, diagFields, fifoWords, judge, main, parseBle, parseBoot, parseLast, show, wWords } from "../tools/log.mjs";
+import { BOOT_STAGES, RESET_CAUSES, a2dpWords, c1Words, diagFields, fifoWords, judge, main, parseBle, parseBoot, parseLast, show, wWords } from "../tools/log.mjs";
 import { simAccess } from "./simpedal.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -121,6 +121,67 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
      "the safe-mode boot after a crash: W not measured; the Bluetooth audio image's symbols named");
   ok(wWords(`${c1} W 1 00000010 00000040`) === null && wWords(`${c1} W 1`) === null && wWords(`${c1} W 1 0000001`) === null
      && wWords(c1) === null && wWords(undefined) === null, "a W cut short, damaged or missing (build 12's c1 line) is not named");
+
+  // test build 14's c1 line (bt_c1_line): KEY, P, V, D, SE, E, CN before S; W with the latest cut's loop; the fault's 9 words and X
+  const c14 = "C1 1 G 0@0 K 1976 KEY 0 P 03/0B V 1452 D 3452 SE 1@1453 E 0/0 CN 0 S 00000000 F 0/0";
+  let cw = c1Words(`${c14} W 0`);
+  ok(cw?.key === 0 && cw.vdc14 === 3 && cw.sysvdd === 11 && !cw.strong && cw.v === 1452 && cw.d === 3452 && cw.se === 1 && cw.seMs === 1453
+     && cw.echo === 0 && cw.late === 0 && cw.cn === 0 && cw.faults === 0 && cw.record === null
+     && /KEY 0: none: the DSP waited for Bluetooth/.test(cw.text) && /VDC14 3 \(1\.40 V\), SYSVDD 11 \(1\.26 V\), the boot loader's/.test(cw.text)
+     && /D 3452 ms: the DSP on \(2000 ms after VISIBLE\)/.test(cw.text) && /SE 1 scan enable, the last at 1453 ms/.test(cw.text)
+     && /E 0\/0: CPU0's exceptions resumed/.test(cw.text) && /canary after the Bluetooth heap intact/.test(cw.text), `build 14's fields named: ${cw?.text}`);
+  cw = c1Words("C1 1 G 0@0 K 1976 KEY 1 P 0F/1F V 1560 D 1503 SE 3@9120 E 1/1 01C67A04 CN 2 DEADBEEF S 42400006 F 0/0 W 0");
+  ok(cw?.key === 1 && cw.vdc14 === 7 && cw.sysvdd === 15 && cw.strong === 1 && /CAB: the DSP at 1\.5 s and the stock core supplies/.test(cw.text)
+     && /VDC14 7 \(1\.60 V\), SYSVDD 15 \(1\.38 V\) with its strong drive, the stock firmware's/.test(cw.text) && /57 ms before VISIBLE/.test(cw.text)
+     && cw.echo === 1 && cw.late === 1 && cw.epc === 0x01C67A04 && /1 echo of the second core's fault, 1 late flag of holding it \(the latest with CPU0 at PC 01C67A04\)/.test(cw.text)
+     && cw.cn === 2 && cw.cnFirst === 0xDEADBEEF && /changed \(2 words; the first read DEADBEEF\)/.test(cw.text), `CAB, E and CN named: ${cw?.text}`);
+  const rec9 = " 00040000 00000001 01C6F6DE 01C6C08E 00000001 000007AC 00000129 00000128 01C5FD46";
+  cw = c1Words(`C1 0 G 4@1967 K 1976 KEY 2 P 03/0B V 1452 D 1503 SE 1@1453 E 1/0 01C67A04 CN 0 S 42400006 F 1/1 W 0${rec9} X 0 0 DE 7E 40 140 3FF 3FF 3FF 3FF`);
+  ok(cw?.key === 2 && cw.faults === 1 && cw.cpu === 1 && cw.record.DBG === 0x40000 && cw.record.PC === 0x01C6F6DE && cw.record.ms === 1964
+     && cw.record.fn === 0x01C5FD46 && cw.x?.length === 10 && cw.x[2] === 0xDE && cw.x[9] === 0x3FF
+     && /DLY: the DSP at 1\.5 s/.test(cw.text) && /faulted 1 time, the last taken by CPU1 at 1964 ms, PC 01C6F6DE, DBG 00040000; debug unit 0 0 DE 7E/.test(cw.text),
+     `a fault after W 0: its 9 words and X, not taken for W's: ${cw?.text}`);
+  cw = c1Words(`C1 0 G 4@1967 K 1976 KEY 2 P 03/0B V 1452 D 1503 SE 1@1453 E 0/0 CN 0 S 42400006 F 1/1 W 1/2 00000010 00000041 000007AE 42400006${rec9.slice(0, 58)}`);
+  ok(cw?.record.DBG === 0x40000 && cw.record.ms === 1964 && Object.keys(cw.record).length === 6 && cw.x === null && /3 of its words cut off/.test(cw.text),
+     "a fault after a cut's words, the line cut at 223: the words left named, the cut said");
+  // (bt_c1_line's own output, built on the host from its text with an echo resumed, a fault and a cut in the delay's loop: 253
+  // characters built, cut at 223 after X's first word)
+  const cut223 = "C1 0 G 4@1967 K 1976 KEY 2 P 03/0B V 1452 D 1503 SE 1@1453 E 1/0 01C67A04 CN 0 S 42400006 F 1/1 W 1/2 00000010 00000041 000007AE 42400006 00040000 00000001 01C6F6DE 01C6C08E 00000001 000007AC 00000129 00000128 01C5FD46 X 0 ";
+  cw = c1Words(cut223); ww = wWords(cut223);
+  ok(cut223.length === 223 && Object.keys(cw?.record ?? {}).length === 9 && cw.record.fn === 0x01C5FD46 && cw.x.join() === "0"
+     && cw.epc === 0x01C67A04 && /debug unit 0 \(the rest cut off at 223 characters\)/.test(cw.text) && ww?.id === 2 && ww.k === 0x41,
+     "the line cut at 223 inside X: the record whole, X as far as it got, W's loop named");
+  const wide = `C1 0 G 4@178956 K 1976 KEY 2 P 03/0B V 178956 D 101503 SE 1@178956 E 1/0 01C67A04 CN 1 DEADBEEF S 42400006 F 1/1 W 0${rec9}`
+    + " X 0 0 DE 7E 40 140 3FF 3FF 3FF 3FF";             // (232 characters: bt_line_out keeps 223, inside X's last word)
+  cw = c1Words(wide.slice(0, 223));
+  ok(wide.length === 232 && cw?.x.join() === "0,0,222,126,64,320,1023" && cw.cn === 1 && cw.cnFirst === 0xDEADBEEF
+     && /debug unit 0 0 DE 7E 40 140 3FF \(the rest cut off at 223 characters\)/.test(cw.text),
+     "a line cut inside X's last word: that word dropped, the rest named");
+  cw = c1Words(wide.slice(0, 180));
+  ok(Object.keys(cw?.record ?? {}).length === 7 && cw.record["job handed"] === 0x129 && cw.x === null && /2 of its words cut off/.test(cw.text),
+     "a record cut short: its whole words named, the number missing said");
+  ok(c1Words(`${c1} W 0`) === null && c1Words(undefined) === null, "build 12 and 13's c1 lines (no P): no build-14 fields");
+  ww = wWords(`${c14} W 2/2 00000010 00000041 000008A2 71400123`);
+  ok(ww?.id === 2 && ww.cuts === 2 && /the latest in the delay's loop/.test(ww.text) && /k jumped forward/.test(ww.text), `W, the delay's loop: ${ww?.text}`);
+  ww = wWords(`${c14} W 1/3 0000012C 00000001 000008A2 71400123`);
+  ok(ww?.id === 3 && /a wet lane's frame count was read as 300 \(128 at most\) for lane 1/.test(ww.text), "W, a lane's count held to 128");
+  ww = wWords(`${c14} W 1/4 00000007 00000000 000008A2 71400123`);
+  ok(ww?.id === 4 && /buffer index was read as 7 \(0 or 1\)/.test(ww.text), "W, the lanes' buffer index held");
+  ww = wWords(`${c14} W 1/1 00000010 00000040 000008A2 71400123`);
+  ok(ww?.id === 1 && /the latest in the reverb's loop/.test(ww.text) && /one-off wrong read of n/.test(ww.text), "W, the reverb's loop (id 1)");
+  ww = wWords(`${c14} W 0`);
+  ok(ww?.cuts === 0 && /reverb's or the delay's loop, and no lane count/.test(ww.text), "W 0 in build 14 names both loops and the clamps");
+  // the last-boot line's C1F (test build 14, firmware/ble/ble_diag.h): the second core's record at CPU0's crash
+  const last14 = "LAST FAILED STAGE 7 BLOCKS 227 LOAD 9 PEAK 16 NAN 0 CPU1 1 LOOPS 713 CRASH VEC 1 PC 1C67A04 RETS 1C67A6E DBG 0 EMU 0 UP 1964";
+  let lb = parseLast(`${last14} C1F 1/1 1964 1C6F6DE`);
+  ok(lb.crash.c1?.count === 1 && lb.crash.c1.cpu === 1 && lb.crash.c1.ms === 1964 && lb.crash.c1.pc === 0x1C6F6DE && lb.crash.clockMs === 1964,
+     "last-boot line: the second core's record at the crash");
+  ok(parseLast(last14).crash.c1 === undefined, "last-boot line without C1F (builds up to 13): no record");
+  rp = report("FIFO 00000000 00000000 00000000 00000000", `${c14} W 0`, "UP 21000 SAFE 1 STAGE 7 RST 44 GUARD 1", `${last14} C1F 1/1 1964 1C6F6DE`, "BT OFF");
+  ok(/the second core had faulted 1 time, the last taken by CPU1 at 1964 ms \(PC 01C6F6DE\): the same moment as this crash/.test(rp.text)
+     && /^ {11}KEY 0: none/m.test(rp.text), "the safe-mode report names the second core's record and the build-14 fields");
+  rp = report("FIFO 00000000 00000000 00000000 00000000", `${c14} W 0`, "UP 21000 SAFE 1 STAGE 7 RST 44 GUARD 1", `${last14} C1F 0/0 0 0`, "BT OFF");
+  ok(/the second core had not faulted/.test(rp.text), "a crash with the second core's record empty: said so");
 }
 b = parseBoot("UP 12345 SAFE 1 STAGE 7 RST 44 GUARD 1");
 ok(b.clockMs === 12345 && b.safe && b.stageName === "FIRST 6 S" && b.resetBy.join() === "WATCHDOG,SOFT" && b.failedBoots === 1, "boot line");

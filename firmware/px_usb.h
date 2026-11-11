@@ -205,6 +205,9 @@ static void px_audio_halt(void)                 /* before any flash write: nothi
     a_collect();
     gpio_direction_output(G_AMP_EN, 0);         /* amp off: no noise while the flash is busy */
 #if DSP_CPU1
+#if FM1_CPU1_ECHO
+    fm1_cpu1_held_t = fm1_ticks() | 1u;         /* (test build 14: a hold's late flag, fm1_cpu1.h fm1_cpu1_echo) */
+#endif
     fm1_cpu1_stop();
     a_c1 = 0;
 #endif

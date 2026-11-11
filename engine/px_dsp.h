@@ -313,8 +313,10 @@ void px_wet_swap(px_engine *e);
 int  px_wet_run(px_engine *e, uint32_t deadline, volatile const uint8_t *stop);
 #if PX_LOOP_GUARD   /* test build 13, the Bluetooth audio image only (px_dsp.c PX_LOOP_CAP): the reverb's loop cut at
                      * PX_MAX_BLOCK. [0] the cuts, [1] n as the loop reloaded it and [2] k, at the latest cut
-                     * (firmware/bt/bt_a2dp.c: the log's c1 line, W) */
-#define PX_LOOP_WILD_N 3
+                     * (firmware/bt/bt_a2dp.c: the log's c1 line, W). Test build 14: the delay's loop cut too, and
+                     * px_wet_run's lane count and buffer index clamped; [3] which, at the latest (PX_WILD_*) */
+#define PX_LOOP_WILD_N 4
+enum { PX_WILD_REVERB = 1, PX_WILD_DELAY = 2, PX_WILD_LANE_N = 3, PX_WILD_LANE_B = 4 };
 extern uint32_t px_loop_wild[PX_LOOP_WILD_N];
 #endif
 

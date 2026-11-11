@@ -78,6 +78,10 @@ export function parseLast(raw) {
   if (c >= 0) {
     const t = raw.slice(c);
     out.crash = { vec: number(t, "VEC", 16), pc: number(t, "PC", 16), rets: number(t, "RETS", 16), dbg: number(t, "DBG", 16), emu: number(t, "EMU", 16), clockMs: number(t, "UP") };
+    // the Bluetooth audio image from test build 14 (firmware/ble/ble_diag.h, openpocket.c op_c1x): the second core's fault record as
+    // it stood at that crash: its faults counted, the core that took the last (1 CPU1 itself, 0 CPU0), its ms since power-on, its PC
+    const m = / C1F (\d+)\/(\d+) (\d+) ([0-9A-F]+)\b/.exec(t);
+    if (m) out.crash.c1 = { count: +m[1], cpu: +m[2], ms: +m[3], pc: parseInt(m[4], 16) };
   }
   return out;
 }
@@ -88,7 +92,12 @@ function lastBootWords(reading) {
   const l = reading.lastBoot;
   // (the Bluetooth audio image's status lines, "BT ..." and its stall record, name its own folder; the BLE image's are "OFF" etc.)
   const dir = ["bt-audio", "stall-record"].includes(reading.ble?.state) ? "build-bt" : "build-ble";
-  if (l.crash) return `it crashed at PC ${hex(l.crash.pc)} (RETS ${hex(l.crash.rets)}, vector ${l.crash.vec.toString(16).toUpperCase()}, pedal clock ${l.crash.clockMs} ms; look the addresses up in firmware/${dir}/symbols.txt)`;
+  if (l.crash) {
+    const c1 = l.crash.c1;
+    const second = !c1 ? "" : c1.count ? `; the second core had faulted ${c1.count} time${c1.count > 1 ? "s" : ""}, the last taken by CPU${c1.cpu} at ${c1.ms} ms (PC ${hex(c1.pc)})${Math.abs(c1.ms - l.crash.clockMs) <= 10 ? ": the same moment as this crash" : ""}`
+      : "; the second core had not faulted";
+    return `it crashed at PC ${hex(l.crash.pc)} (RETS ${hex(l.crash.rets)}, vector ${l.crash.vec.toString(16).toUpperCase()}, pedal clock ${l.crash.clockMs} ms; look the addresses up in firmware/${dir}/symbols.txt)${second}`;
+  }
   return `it stopped at ${l.stageName}, reset by ${reading.boot.resetBy.join(" + ") || "nothing recorded"}`;
 }
 
@@ -178,22 +187,66 @@ export function fifoWords(line) {
 // count). The cut is taken only when k >= 64, and it records that k. In test build 13's compiled code (CI run 43039170246,
 // listings/px_dsp.s) the loop's end test is k < n, n reloaded from its stack word every sample (build 12's was k == n): a k that
 // gets past n ends the loop, uncounted, so a cut means n was read too large. The reading follows docs/BT-AUDIO-TEST.md, "Test
-// build 13" (the lanes' chunks are 16 frames, the chain's calls 64)
+// build 13" (the lanes' chunks are 16 frames, the chain's calls 64). Test build 14: "W cuts/id", the latest cut's loop
+// (engine/px_dsp.h PX_WILD_*: 1 the reverb's, 2 the delay's, both cut as above; 3 a lane's frame count read over 128 and 4 the
+// lanes' buffer index read other than 0 or 1, both held to their range by px_wet_run: there n is the value read, k the lane)
+export const W_LOOPS = { 1: "the reverb's loop", 2: "the delay's loop", 3: "a wet lane's frame count", 4: "the wet lanes' buffer index" };
 export function wWords(c1) {
-  const m = / W (\d+)((?: [0-9A-F]{8}){4})?(?= |$)/i.exec(c1 || "");
+  const m = / W (\d+)(?:\/(\d+))?((?: [0-9A-F]{8}){4})?(?= |$)/i.exec(c1 || "");
   if (!m) return null;
-  const cuts = +m[1];
-  if (!cuts) return { cuts, text: "W 0: no cut of the reverb's loop counted in this boot (a k that got past n ends the loop uncounted in this build, and an n written over with a value up to 64 still ends it late, uncounted)" };
-  if (!m[2]) return null;                              // a cut, but its words are missing: damaged
-  const [n, k, t, s] = m[2].trim().split(" ").map((x) => parseInt(x, 16) >>> 0);
-  const reading = k > 64 ? `k jumped forward while n was read too large (its stack word written or misread, or its register clobbered)${(k >>> 16) === 0x20 ? "; 0x0020xxxx is the misread signature" : ""}`
-    : k < 64 ? "a k below 64 cannot pass the cut's check: the check itself misfired once on that core (B), or k's register was clobbered"
-      : n === 16 ? "n was read too large once and was 16 again at the cut: a one-off wrong read of n on that core (B)"
-        : n === 64 ? "the chain's call (n 64), not a lane's chunk: it read its n too large once (B)"
-          : "n's stack word was overwritten (A): n is the writer's fingerprint";
+  const cuts = +m[1], id = m[2] === undefined ? null : +m[2];
+  if (!cuts) return { cuts, text: `W 0: no cut of ${/ P [0-9A-F]{2}\//.test(c1) ? "the reverb's or the delay's loop, and no lane count or buffer index out of range," : "the reverb's loop"} counted in this boot (a k that got past n ends the loop uncounted in this build, and an n written over with a value up to 64 still ends it late, uncounted)` };
+  if (!m[3]) return null;                              // a cut, but its words are missing: damaged
+  const [n, k, t, s] = m[3].trim().split(" ").map((x) => parseInt(x, 16) >>> 0);
+  const loop = id === null ? "the reverb's loop" : W_LOOPS[id] ?? `loop ${id} (unknown)`;
+  const reading = id === 3 ? `a wet lane's frame count was read as ${n} (128 at most) for lane ${k} (0 the delay, 1 the reverb): held to 128, a click at most; a wrong read (B) or the count's word written over (A)`
+    : id === 4 ? `the lanes' buffer index was read as ${n} (0 or 1): held to its range; a wrong read (B) or the index's byte written over (A)`
+      : k > 64 ? `k jumped forward while n was read too large (its stack word written or misread, or its register clobbered)${(k >>> 16) === 0x20 ? "; 0x0020xxxx is the misread signature" : ""}`
+        : k < 64 ? "a k below 64 cannot pass the cut's check: the check itself misfired once on that core (B), or k's register was clobbered"
+          : n === 16 ? "n was read too large once and was 16 again at the cut: a one-off wrong read of n on that core (B)"
+            : n === 64 ? "the chain's call (n 64), not a lane's chunk: it read its n too large once (B)"
+              : "n's stack word was overwritten (A): n is the writer's fingerprint";
   const at = s >>> 22 & 1 ? `the main loop first saw it at ${t} ms (the pedal clock wraps every 179 s): stage ${s >>> 28}, state ${s >>> 24 & 15}, DSP held ${s >>> 23 & 1}, IRQ 40 ${s & 0x3fffff} (a cut during the radio's start-up replay, stage 3, is seen only once the replay has returned)`
     : "first cut not yet latched by the main loop";
-  return { cuts, n, k, t, s, reading, text: `W ${cuts} cut${cuts > 1 ? "s" : ""}: n ${n} (0x${n.toString(16).toUpperCase()}), k ${k} (0x${k.toString(16).toUpperCase()}); ${reading}; ${at}` };
+  return { cuts, id, loop, n, k, t, s, reading, text: `W ${cuts} cut${cuts > 1 ? "s" : ""}: n ${n} (0x${n.toString(16).toUpperCase()}), k ${k} (0x${k.toString(16).toUpperCase()}), the latest in ${loop}; ${reading}; ${at}` };
+}
+
+// the c1 line's fields from test build 14 (firmware/bt/bt_a2dp.c bt_c1_line), named: KEY, the key held at power-on; P, the core
+// supplies read back (P3_ANA_CON6 / CON9); V, when Bluetooth first became VISIBLE and D, when the DSP came on (ms since power-on,
+// 0 = not yet); SE, the scan enables and the last one's time; E, CPU0's exceptions resumed as not its own (fm1_cpu1.h
+// fm1_cpu1_echo: the echo of CPU1's fault / the late flag of a hold), after one the PC CPU0 was at; CN, the canary after the Bluetooth heap (words found
+// changed, the first one's value); after a fault of the second core (F count/cpu), its record's 9 words and X, the debug unit's
+// ten words. null for an earlier build's c1 line (no P)
+export const KEYS = ["none: the DSP waited for Bluetooth (VISIBLE + 2 s, 8 s at most)", "CAB: the DSP at 1.5 s and the stock core supplies",
+  "DLY: the DSP at 1.5 s (test build 13's timing)", "REV: Bluetooth off"];
+const F_NAMES = ["DBG", "EMU", "PC", "RETS", "EMU1", "ms", "job handed", "job finished", "fn"];
+export function c1Words(c1) {
+  const m = / KEY (\d+) P ([0-9A-F]{2})\/([0-9A-F]{2}) V (\d+) D (\d+) SE (\d+)@(\d+) E (\d+)\/(\d+)(?: ([0-9A-F]{8}))? CN (\d+)(?: ([0-9A-F]{8}))? S ([0-9A-F]{8}) F (\d+)\/(\d+)\b/i.exec(c1 || "");
+  if (!m) return null;
+  const [key, con6, con9, v, d, se, seMs, echo, late, cn] = [+m[1], parseInt(m[2], 16), parseInt(m[3], 16), +m[4], +m[5], +m[6], +m[7], +m[8], +m[9], +m[11]];
+  const epc = m[10] ? parseInt(m[10], 16) >>> 0 : null, cnFirst = m[12] ? parseInt(m[12], 16) >>> 0 : null, faults = +m[14], cpu = +m[15];
+  const vdc14 = con6 & 7, sysvdd = con9 & 15, strong = (con9 >> 4) & 1;
+  const parts = [`KEY ${key}: ${KEYS[key] ?? "unknown"}`,
+    `P: VDC14 ${vdc14} (${(1.25 + 0.05 * vdc14).toFixed(2)} V), SYSVDD ${sysvdd} (${(0.93 + 0.03 * sysvdd).toFixed(2)} V)${strong ? " with its strong drive" : ""}${vdc14 === 7 && sysvdd === 15 ? ", the stock firmware's" : vdc14 === 3 && sysvdd === 11 ? ", the boot loader's" : ""}`,
+    `V ${v ? `${v} ms` : "never"}: Bluetooth VISIBLE`, `D ${d ? `${d} ms` : "not yet"}: the DSP on${v && d ? ` (${d - v >= 0 ? `${d - v} ms after VISIBLE` : `${v - d} ms before VISIBLE`})` : ""}`,
+    `SE ${se} scan enable${se === 1 ? "" : "s"}${se ? `, the last at ${seMs} ms` : ""}`,
+    `E ${echo}/${late}: CPU0's exceptions resumed, ${echo} echo${echo === 1 ? "" : "es"} of the second core's fault, ${late} late flag${late === 1 ? "" : "s"} of holding it${epc !== null ? ` (the latest with CPU0 at PC ${hex(epc)})` : ""}`,
+    `CN ${cn}: ${cn ? `the canary after the Bluetooth heap changed (${cn} word${cn > 1 ? "s" : ""}; the first read ${hex(cnFirst)})` : "the canary after the Bluetooth heap intact"}`];
+  let record = null, x = null;
+  if (faults) {
+    let after = c1.slice(m.index + m[0].length);
+    const wm = /^ W (\d+)(?:\/\d+)?/.exec(after);    // (W's 4 words only after a cut: then the record's)
+    if (wm) after = after.slice(wm[0].length).replace(+wm[1] ? /^(?: [0-9A-F]{8}){4}/i : /^$/, "");
+    const words = (after.match(/^((?: [0-9A-F]{8}){1,9})/i)?.[1] ?? "").trim().split(" ").filter(Boolean).map((w) => parseInt(w, 16) >>> 0);
+    record = Object.fromEntries(words.map((w, i) => [F_NAMES[i], w]));
+    const xm = / X((?: [0-9A-F]{1,8})+)/i.exec(after);
+    const cut = c1.length >= 223 && !c1.endsWith(" ");  // (the line's end may be a word cut short: dropped)
+    if (xm) x = xm[1].trim().split(" ").slice(0, cut ? -1 : 10).map((w) => parseInt(w, 16) >>> 0);
+    parts.push(`F ${faults}/${cpu}: the second core faulted ${faults} time${faults > 1 ? "s" : ""}, the last taken by CPU${cpu}${record.ms !== undefined ? ` at ${record.ms} ms` : ""}${record.PC !== undefined ? `, PC ${hex(record.PC)}` : ""}${record.DBG !== undefined ? `, DBG ${hex(record.DBG)}` : ""}`
+      + `${words.length < 9 ? ` (${9 - words.length} of its words cut off: the line holds 223 characters)` : ""}`
+      + `${x ? `; debug unit ${x.map((w) => w.toString(16).toUpperCase()).join(" ")}${x.length < 10 ? `${x.length ? " " : ""}(the rest cut off at 223 characters)` : ""}` : ""}`);
+  }
+  return { key, con6, con9, vdc14, sysvdd, strong, v, d, se, seMs, echo, late, epc, cn, cnFirst, faults, cpu, record, x, text: parts.join("; ") };
 }
 
 // the DIAG lines, by position, as a reading's fields. The Bluetooth audio image: hci, its HCI line; line 6 the first HCI messages
@@ -257,6 +310,8 @@ export function show(r, prev, say) {
   if (r.isr) say(`isr        ${r.isr}`);
   if (r.c1) {
     say(`c1         ${r.c1}`);
+    const f = c1Words(r.c1);
+    if (f) say(`           ${f.text}`);
     const w = wWords(r.c1);
     // (in safe mode the DSP stays off, and the crashed boot's W went with its RAM: W 0 says nothing about that boot)
     if (w) say(`           ${boot.safe && !w.cuts ? "W not measured: safe mode, the DSP is off this boot (the crashed boot's W was cleared by the restart)" : w.text}`);

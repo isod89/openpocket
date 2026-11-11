@@ -29,6 +29,10 @@
 #if DSP_CPU1
 #if OP_BT_AUDIO
 #define FM1_CPU1_RECORD 1  /* the second core's fault record in full (the Bluetooth audio image's c1 line, bt/bt_a2dp.c) */
+#define FM1_CPU1_ECHO 1    /* test build 14: CPU0's exceptions that are CPU1's fault echoed, or the late flag of holding it,
+                            * resumed (a few a boot) instead of a crash (fm1_cpu1.h fm1_cpu1_echo) */
+#define FM1_CPU1_OWN_RAM 1 /* test build 14: its mailbox in a section of its own, out of the radio's window with its stacks
+                            * (bt/app-bt.ld) */
 #endif
 #if OP_BLE_TEST
 #define FM1_CPU1_NOBAR 1   /* the stall watch's own crash bars no core (px_usb.h fm1_timer5_irq) */
@@ -283,9 +287,19 @@ void op_audio_irq(void) { }           /* internal DAC: not used by the Pocket X 
 /* readable crash screen: vector, PC, return address, bus error register — then reboot */
 static void hex8(char *b, uint32_t v){ static const char H[]="0123456789ABCDEF";
     for (int i=0;i<8;i++) b[i]=H[(v>>(28-4*i))&15u]; b[8]=0; }
+#if OP_BT_AUDIO && DSP_CPU1
+/* test build 14: the second core's fault record as it stood at CPU0's own crash (its count, which core took it, when, the
+ * PC), for the next boot's LAST START FAILED and the log's last-boot line: in test build 13 CPU0 crashed at the very ms CPU1
+ * faulted, and the record went with the RAM. crash: the fm1_crash.count it belongs to */
+struct { uint32_t crash, count, cpu, ms, pc; } op_c1x __attribute__((section(".noinit")));
+#endif
 static void fm1_fault(const fm1_crash_t *c)
 {
     char h[9];
+#if OP_BT_AUDIO && DSP_CPU1
+    op_c1x.crash = c->count; op_c1x.count = fm1_cpu1_fault.count; op_c1x.cpu = fm1_cpu1_fault.cpu;
+    op_c1x.ms = fm1_cpu1_fault.ms; op_c1x.pc = fm1_cpu1_fault.pc;
+#endif
     lcd_rect(0,0,240,240,RED);
     lcd_text(8,8,"CRASH",WHT,RED,2);
     lcd_text(8,40,"VEC",WHT,RED,1); hex8(h,c->vec);  lcd_text(64,40,h,WHT,RED,1);
@@ -821,6 +835,15 @@ static void app_main(void)
             b_str(l, "  LOOPS "); b_num(l, op_diag.loops);
             ft_box(0, LBF_Y(186), 240, l, &FT_SM, UI_DIM, UI_BG, 1);
 #if OP_BT_AUDIO             /* (test build 13's two register lines: the photo line one line further down, the screen's last) */
+#if DSP_CPU1
+            if (crashed && op_c1x.crash == fm1_crash.count) {   /* test build 14: the second core's record at CPU0's crash, in the
+                                                                  * photo line's place: "C1 F count/cpu ms PC pc" (fm1_fault) */
+                char *o = ble__put(l, "C1 F ");
+                o = bt__dec(o, op_c1x.count); *o++ = '/'; o = bt__dec(o, op_c1x.cpu); *o++ = ' ';
+                o = bt__dec(o, op_c1x.ms); o = ble__put(o, " MS PC "); o = bt__hex(o, op_c1x.pc, 8); *o = 0;
+                ft_box(0, 222, 240, l, &FT_SM, UI_ACC, UI_BG, 1);
+            } else
+#endif
             ft_box(0, 222, 240, "PHOTO THIS FOR A BUG REPORT", &FT_SM, UI_ACC, UI_BG, 1);
 #else
             ft_box(0, 212, 240, "PHOTO THIS FOR A BUG REPORT", &FT_SM, UI_ACC, UI_BG, 1);
@@ -833,6 +856,12 @@ static void app_main(void)
 #if OP_BLE_TEST
         ble_last = (ble_boot_t){ st != ST_OK || crashed, crashed, st, op_diag.blocks, op_diag.load, op_diag.peak, op_diag.nans, op_diag.c1,
                                  op_diag.loops, fm1_crash.vec, fm1_crash.pc, fm1_crash.rets, fm1_crash.dbg, fm1_crash.emu, fm1_crash.uptime_ms };
+#if OP_BT_AUDIO && DSP_CPU1
+        if (crashed && op_c1x.crash == fm1_crash.count) {   /* (test build 14: the second core's record at that crash) */
+            ble_last.c1x = 1; ble_last.c1n = op_c1x.count; ble_last.c1cpu = op_c1x.cpu;
+            ble_last.c1ms = op_c1x.ms; ble_last.c1pc = op_c1x.pc;
+        }
+#endif
 #endif
         op_diag.crash_seen = cc; op_diag.safe = (uint32_t)safe;
         op_diag.blocks = op_diag.load = op_diag.peak = op_diag.nans = op_diag.c1 = op_diag.loops = 0;
@@ -842,6 +871,18 @@ static void app_main(void)
     adc_pins_analog();
     input_baseline();
     keys_capture_idle();
+#if OP_BT_AUDIO
+    /* test build 14, CAB held at power-on: the stock firmware's core supplies (v30's four lines, bddb272: VDC14 1.40 -> 1.60 V,
+     * then SYSVDD 1.26 -> 1.38 V with its strong drive, a level per 100 us), before the audio; the 1.3 V regulator and VDDIO
+     * stay as found. With the DSP's timing of test build 13 (no hold, bt/bt_a2dp.c): the A/B against DLY for the supply
+     * margin (B'). The c1 line's P reads them back */
+    if (keys_held_at_boot == 1 && !safe) {
+        fm1_vdc14_raise(7u);
+        fm1_p33_or(FM1_P3_ANA_CON6, 0x08u);
+        fm1_p33_or(FM1_P3_ANA_CON9, 0x10u);
+        fm1_sysvdd_raise(15u);
+    }
+#endif
     op_stage(ST_PRESET, "PRESET...");
     load_preset(cur_preset);
 #if LED_PROBE
@@ -898,10 +939,11 @@ static void app_main(void)
 #if OP_BLE_TEST
     ble_os_init();                       /* the task table, before the main loop polls it (ble_os.c: it lives in NOINIT) */
 #if OP_BT_AUDIO
-    /* the Bluetooth audio image's one power-on key (the log's c1 line shows KEY, whichever was held). Test build 12's DLY key
-     * (the output in one slot, as build 11 sent it) is gone since build 13: its A/B settled the order of the callbacks, which
-     * v42's px_aorder.h now handles in every image (test build 14: in place of builds 12 and 13's two slots) */
+    /* the Bluetooth audio image's power-on keys (the log's c1 line shows KEY, whichever was held). Test build 14: none held, the
+     * DSP waits for Bluetooth's start-up (bt/bt_a2dp.c bt_dsp_may_start); DLY, the DSP at 1.5 s as in test build 13 (the
+     * 1.96 s window kept measurable); CAB, the same and the stock core supplies (above, after keys_capture_idle); REV: */
     if (keys_held_at_boot == 3) bt_off_by_key = 1;   /* REV held at power-on: this boot without Bluetooth (an A/B by ear) */
+    bt_canary_arm();                     /* (test build 14: the pattern after the Bluetooth heap, checked by ble_test_poll) */
 #endif
     if (!safe && !BT_OFF_BY_KEY)         /* after a failed boot Bluetooth stays off: the pedal runs, and can be re-flashed */
         ble_test_start();                /* radio on, controller and host up, advertising (the pedal keeps working) */
@@ -962,9 +1004,23 @@ static void app_main(void)
             if (ui_mode == M_TUNER) tuner_draw(tuner_estimate()); else diag_draw();
         }
 #endif
+#if OP_BT_AUDIO && !AUDIO_PROBE
+        /* test build 14: the DSP may start up to 8 s after power-on (the hold, below). The boot guard (two starts in a row that
+         * do not get this far: UBOOT, fm1_cstart) is cleared at 6 s as before, so the longer wait adds no way to UBOOT; the
+         * stage OK (else the next start is safe mode) waits for 4.5 s of DSP as before, so a pedal that resets under load
+         * still starts in safe mode next, and a crash there does too (its record) */
+        if (!boots_ok && now > 6000u) { boots_ok = 1; guard.pending = 0; guard.failed = 0; }
+        if (boots_ok == 1u && (safe || (bt_dsp_ms && now - bt_dsp_ms >= 4500u))) { boots_ok = 2; op_diag.stage = ST_OK; }
+#else
         if (!boots_ok && now > 6000u) {   /* 4.5 s of DSP first: a pedal that resets under load is caught */ boots_ok = 1; guard.pending = 0; guard.failed = 0; op_diag.stage = ST_OK; }
+#endif
 #if !AUDIO_PROBE
+#if OP_BT_AUDIO
+        if (a_hold && !safe && now > 1500u && bt_dsp_may_start(now)) { a_hold = 0; bt_dsp_ms = now; }   /* DSP on (test build 14:
+                                                                         * once Bluetooth is up, bt/bt_a2dp.c; D in the c1 line) */
+#else
         if (a_hold && !safe && now > 1500u) a_hold = 0;   /* DSP on */
+#endif
         {
             static uint32_t t_diag;
             op_diag.loops++;
