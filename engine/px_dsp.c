@@ -12,6 +12,18 @@
  * stacks), Celestion / Jensen / EV / JBL speaker curves, Roland/Boss/Ampeg/Electro-Harmonix manuals.
  */
 #include "px_dsp.h"
+/* test build 20 (the Bluetooth audio image, firmware/build.sh PX_TABLES_RAM): the tables the second core reads in every block in RAM
+ * instead of const in the flash: GL_F (px_tick, the glides, first thing in px_engine_part: test builds 14 and 17's second-core
+ * faults were invalid AXI reads by CPU1 right after its loops) and the NAM network's PXN_MC and pxn_sc0. The stock firmware keeps
+ * its whole per-sample path off the flash; px_dsp.o's .data is firmware/bt/app-bt.ld's .data_hi, in the RAM code window */
+#ifndef PX_TABLES_RAM
+#define PX_TABLES_RAM 0
+#endif
+#if PX_TABLES_RAM
+#define PX_RCONST
+#else
+#define PX_RCONST const
+#endif
 #include "px_nam.c"                                     /* v37: NAM A2-Lite (one translation unit: every build gets it) */
 /* v40: on the pedal the audio path runs from RAM, as the stock firmware's does: firmware/build.sh compiles this file with
  * -ffunction-sections and tools/ramcode.py moves the per-block functions (px_engine_part, the delay and reverb loops,
@@ -2100,7 +2112,7 @@ void px_engine_set(px_engine *e, const px_preset_t *p)
 /* the settings that glide: gains, mixes, depths, delay times (each a plain float used as it is in the processing; the
  * filters' coefficients change at once, as they always did: a small step in a filter does not click) */
 #define GLF_(f) (uint32_t)offsetof(px_engine, f)
-static const uint32_t GL_F[] = {
+static PX_RCONST uint32_t GL_F[] = {
     GLF_(cmp_make), GLF_(cmp_mix), GLF_(cmp_k),
     GLF_(oct_dry), GLF_(oct_s1), GLF_(oct_s2), GLF_(oct_up), GLF_(ps_dry), GLF_(ps_lvl[0]), GLF_(ps_lvl[1]),
     GLF_(sfx_mix), GLF_(sfx_c), GLF_(sfx_d),

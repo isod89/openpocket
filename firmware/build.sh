@@ -64,7 +64,7 @@ DSPDEF="-DPX_SR=44100.0f -DPX_OVERSAMPLE=4"
 # (test build 14: its RAM code window holds the engine's buffers, bt/app-bt.ld .bss_hi, and has no room for them)
 HOTRAM=1; [ -n "$OP_BT" ] && HOTRAM=0
 [ -n "$OP_BLE" ] && DSPDEF="$DSPDEF -DPXN_LEAN=1 -DPXN_HOT_RAM=$HOTRAM -DPX_RUNS=0"
-[ -n "$OP_BT" ] && DSPDEF="$DSPDEF -DPX_LOOP_GUARD=1"   # test build 13: the reverb's loop ends at PX_MAX_BLOCK, counted (engine/px_dsp.c)
+[ -n "$OP_BT" ] && DSPDEF="$DSPDEF -DPX_LOOP_GUARD=1 -DPX_TABLES_RAM=1"   # test build 13: the reverb's loop ends at PX_MAX_BLOCK, counted; test build 20: the second core's tables in RAM (engine/px_dsp.c)
 INC="-I$HERE/inc -I$HERE/../engine"
 $CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $BLEDEF -DOP_GUARD_STACK=$GUARD_STACK $INC \
     -I"$BSP/chip" -I"$BSP/boards/fm1" -include "$O/channel.h" -c "$HERE/openpocket.c" -o "$O/openpocket.o"
