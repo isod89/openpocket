@@ -874,6 +874,26 @@ relies on the same). Inside the LE interrupts the library now takes its interrup
 To check: a normal boot with the Chocolate away: the pedal starts, `CEN SCAN` and `R` rising in the LE line; then with the
 Chocolate on.
 
+### Test build 30's silent scanner, and test build 31's scanner alone
+
+Test build 30 started (the hang fixed) but its scanner heard nothing: `CEN SCAN R0`, and the LE interrupts were advertising's
+alone (98 and 90 in 16 s), with a Mac and an iPhone nearby. In the library's bitcode: beside advertising, a scanner starts
+suspended (`RF_ble.c le_hw_scanning`: more than one radio entity), and only the slot scheduler, from the LE event interrupt,
+resumes it, when a gap of its interval less its window (304 slots) lies ahead and the status register 0x28038's bit 1 is clear
+(`ble_slot_schedule`). Alone, a scanner is enabled at once. Also: a failed open (`ll_scan.c ll_scan_open`: no radio entity free,
+58) leaves the scanner half-open, and every later enable answers 12, "already open"; only an off clears it. (The scan
+parameters are not an HCI command here: the host sets them directly, `ll_scan_set_params`, while the scanner is closed. The
+host passes every advertising report on, whatever started the scan.)
+
+Test build 31 (`LE_SCAN_ALONE`, `bt/bt_le_midi.c`): with no phone linked, advertising pauses while the pedal scans, 4 s
+scanning, then 2 s advertising (`CEN PAUSE`), in turn, until the footswitch is linked; its connection is made alone too, and
+advertising comes back with its link. With a phone linked, its link and the scanner, as in build 30. A scanner silent for 2 s is
+turned off and on (no longer only asked again). New in the LE line, after `CEN`: `AH` while advertising is held, `RAW` the
+advertising reports that reach the pedal's callback (before any test), `SO` the scanner starts asked, and `HW`: the library's
+radio entities, `HW2 0:1/0 1:2/2 IE 03 BB 00` = two entities, slot 0 scanning (state 1, run flag 0: enabled at once), slot 1
+advertising (state 2, 2: resumed); states 1 scanning, 2 advertising, 3 connecting, 6 the footswitch's link, 7 a phone's; run
+flag 1 or 3 suspended; `IE` the entities' interrupt enables, `BB` the status register.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

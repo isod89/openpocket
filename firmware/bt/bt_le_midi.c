@@ -117,7 +117,22 @@ static uint16_t le_ccc[LE_LINKS];
 #define LE_CEN_INIT_MS 3000u      /* a connection not made in 3 s is cancelled, and the pedal scans again */
 #define LE_CEN_REQ_MS 5000u       /* an ATT request unanswered for 5 s, or pairing that encrypts nothing in 8 s: the link goes */
 #define LE_CEN_PAIR_MS 8000u
-enum { LE_CEN_OFF, LE_CEN_SCAN, LE_CEN_INIT, LE_CEN_LINK };
+enum { LE_CEN_OFF, LE_CEN_SCAN, LE_CEN_INIT, LE_CEN_LINK, LE_CEN_PAUSE };
+/* test build 31: the scanner alone. Beside advertising the library starts a scanner suspended (RF_ble.c le_hw_scanning: more
+ * than one entity) and only its slot scheduler, from the LE event interrupt, resumes it: when a gap of the scan interval
+ * less its window (304 slots) lies ahead and register 0x28038 bit 1 is clear (ble_slot_schedule). On the pedal (test build
+ * 30) the scanner never ran beside advertising: the LE interrupts were advertising's alone, no report in 16 s. So with no
+ * phone linked, advertising pauses while the pedal scans: alone, the scanner is enabled at once (le_hw_scanning: one
+ * entity). LE_ALONE_SCAN_MS scanning, then LE_ALONE_ADV_MS advertising (PAUSE), in turn, until the footswitch is linked
+ * (its connection is made alone too). With a phone linked, its link and the scanner, as in test build 30. 0: as 30 */
+#ifndef LE_SCAN_ALONE
+#define LE_SCAN_ALONE 1
+#endif
+#define LE_ALONE_SCAN_MS 4000u
+#define LE_ALONE_ADV_MS 2000u
+static uint8_t le_adv_held;                /* advertising held off while the scanner (or the connection to the footswitch) runs alone */
+static uint32_t le_raw, le_raw_kick, le_scan_opens;   /* (the log: advertising reports at the callback, before any test; the
+                                                        * report count at the last ask; scanner starts asked) */
 static uint8_t le_cen_off;                 /* openpocket.c: DLY held at power-on, no central role this boot */
 static uint8_t le_cen_st, le_cen_scan;     /* the step; scanning asked for */
 static uint8_t le_cen_hold;                /* pairing asked: the request waits for the link's encryption */
@@ -176,6 +191,7 @@ static void ed_bt_send(uint32_t link, const uint8_t *p, uint32_t n)
 static int le_adv_on(void);
 static void le_adv_more(void);
 static void le_scan_on(uint32_t on);
+static void le_cen_rest(uint32_t now);
 static void le_cen_poll(uint32_t now);
 /* the host's task, after each of its messages (btstack_task.c calls this hook; the library's is weak). Up to test build 26 an
  * empty one in bt_glue.c. Also, while a link is free, advertising is asked again every 2 s: asked while it runs it does nothing
@@ -191,7 +207,8 @@ void ble_profile_loop(void)
         le_wd_req = 0; le_wd_n++; le_wd_ms = ms_now();
         BT_CRUMB("le watchdog: advertising again");
         if (le_lk.adv) { (void)ble_user_cmd_prepare(LE_CMD_ADV_ENABLE, 1, 0); le_lk.adv = 0; }
-        if (le_cen_scan) { le_scan_on(0); if (le_cen_st == LE_CEN_SCAN) le_cen_st = LE_CEN_OFF; }   /* (le_cen_poll: on again) */
+        if (le_cen_scan) { le_scan_on(0); if (le_cen_st == LE_CEN_SCAN) le_cen_rest(ble_ms()); }   /* (le_cen_poll: on again;
+                                                                 * test build 31: after advertising's turn if it was held) */
         le_adv_more();
     }
     while (le_tx_at < le_tx_n && h && hci_le_get_acl_packet_num((uint16_t)h) < le_tx_inflight(le_lk.intv[le_tx_link])) {
@@ -201,7 +218,7 @@ void ble_profile_loop(void)
         le_tx_at = at;
         le_tx_pkts++;
     }
-    if (le_adv_ok && (le_lk.adv || le_links_want_adv(&le_lk)) && ble_ms() - le_adv_kick >= 2000u) {
+    if (le_adv_ok && !le_adv_held && (le_lk.adv || le_links_want_adv(&le_lk)) && ble_ms() - le_adv_kick >= 2000u) {
         le_adv_kick = ble_ms();
         if (le_lk.adv) (void)ble_user_cmd_prepare(LE_CMD_ADV_ENABLE, 1, 1);
         else if (!le_adv_on()) le_lk.adv = 1;
@@ -218,7 +235,7 @@ static void le_link_reset(uint32_t i)
 /* advertising, when a link is free and none is asked for (after a link is made, and after one ends) */
 static void le_adv_more(void)
 {
-    if (!le_links_want_adv(&le_lk)) return;
+    if (le_adv_held || !le_links_want_adv(&le_lk)) return;     /* (test build 31: not while the scanner runs alone) */
     le_adv_rc = (uint32_t)le_adv_on();
     if (!le_adv_rc) le_lk.adv = 1;
     le_adv_kick = ble_ms();
@@ -254,6 +271,13 @@ static int le_att_send(uint16_t con, const uint8_t *pdu, uint32_t n)
     if (l2cap_send_prepared_connectionless(con, 4, (uint16_t)n)) { l2cap_release_packet_buffer(); return -1; }
     return 0;
 }
+/* scanning again later (a scan turn over, a connection not made, the watchdog). Test build 31: advertising's turn first when
+ * it was held (PAUSE), so that a phone always finds the pedal between the scanner's turns */
+static void le_cen_rest(uint32_t now)
+{
+    if (le_adv_held) { le_adv_held = 0; le_cen_st = LE_CEN_PAUSE; le_cen_ms = now; le_adv_more(); }
+    else le_cen_st = LE_CEN_OFF;
+}
 static void le_cen_drop(uint16_t con)                          /* the footswitch's link goes: it is found again from scanning */
 {
     le_cen_fails++;
@@ -265,17 +289,31 @@ static void le_cen_drop(uint16_t con)                          /* the footswitch
 static void le_cen_poll(uint32_t now)
 {
     const int i = le_cen_slot();
+    const int alone = LE_SCAN_ALONE && !le_links_count(&le_lk, LE_ROLE_PERIPH);   /* (test build 31: no phone linked) */
     if (!le_lk.cen || !le_adv_ok) return;                      /* (the role off, or the stack not up yet) */
     if (le_cen_st == LE_CEN_OFF && le_links_want_scan(&le_lk)) {
+        if (alone && le_lk.adv) { (void)ble_user_cmd_prepare(LE_CMD_ADV_ENABLE, 1, 0); le_lk.adv = 0; }   /* (closed first) */
+        le_adv_held = (uint8_t)alone;
         le_scan_on(1);
+        le_scan_opens++;
         le_cen_st = LE_CEN_SCAN;
         le_cen_ms = le_cen_kick = now;
+        le_raw_kick = le_raw;
+    } else if (le_cen_st == LE_CEN_SCAN && le_adv_held && now - le_cen_ms >= LE_ALONE_SCAN_MS) {
+        le_scan_on(0);                                         /* (test build 31: advertising's turn) */
+        le_cen_rest(now);
     } else if (le_cen_st == LE_CEN_SCAN && now - le_cen_kick >= 2000u) {
-        le_cen_kick = now;                                     /* (asked again, as advertising: nothing if it runs) */
-        ble_user_cmd_prepare(LE_CMD_SCAN_ENABLE, 2, 1, 0);
+        /* asked again. Test build 31: off and on when nothing was heard since the last ask: a scanner the library left
+         * half-open (ll_scan.c ll_scan_open: its link allocated, then no radio entity free, 58; every later open answers 12,
+         * "already open") is cleared only by an off (ll_scan_close frees it). Up to 30: an enable alone, which did nothing */
+        le_cen_kick = now;
+        if (le_raw == le_raw_kick) { le_scan_on(0); le_scan_on(1); le_scan_opens++; }
+        le_raw_kick = le_raw;
+    } else if (le_cen_st == LE_CEN_PAUSE && now - le_cen_ms >= LE_ALONE_ADV_MS) {
+        le_cen_st = LE_CEN_OFF;                                /* (scanning again at the next pass) */
     } else if (le_cen_st == LE_CEN_INIT && now - le_cen_ms > LE_CEN_INIT_MS) {
         ble_user_cmd_prepare(LE_CMD_CREATE_CONN_CANCEL, 0);
-        le_cen_st = LE_CEN_OFF;                                /* (scanning again at the next pass) */
+        le_cen_rest(now);                                      /* (scanning again later) */
     } else if (le_cen_st == LE_CEN_LINK && i >= 0) {
         const uint16_t con = le_lk.conn[i];
         if (le_ac.req_n && !le_ac.busy && !le_cen_hold && !le_att_send(con, le_ac.req, le_ac.req_n)) {
@@ -384,6 +422,7 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
             le_adv_more();                                      /* (a link free: advertising, if it is not on yet) */
         }
     } else if (p[0] == LE_EV_ADV_REPORT) {
+        le_raw++;                                               /* (test build 31: every report, before any test) */
         le_cen_adv(p, size, ble_ms());                          /* (test build 28: the footswitch, while scanning) */
     } else if ((p[0] == LE_EV_ENCRYPTION_CHANGE && size >= 6u && !p[2] && p[5]) || (p[0] == LE_EV_KEY_REFRESH && size >= 5u && !p[2])) {
         const int i = le_links_find(&le_lk, (uint32_t)(p[3] | p[4] << 8) & 0x0FFFu);
@@ -406,12 +445,14 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
                     le_cen_st = LE_CEN_LINK;
                     le_cen_links++;
                     le_cen_hold = 0;
+                    le_adv_held = 0;                    /* (test build 31: advertising again, for a phone, beside this link) */
                     attc_start(&le_ac, known ? le_cen_val : 0u, known ? le_cen_ccc : 0u);
                 }
                 le_adv_more();                                  /* (test build 27: the other link stays open to a central) */
             }
         } else if ((p[2] == LE_SUB_CONNECTION_COMPLETE || p[2] == LE_SUB_ENHANCED_CONNECTION_COMPLETE) && p[3] && le_cen_st == LE_CEN_INIT) {
-            le_cen_st = LE_CEN_OFF;                             /* (the connection failed or was cancelled: scanning again) */
+            le_cen_rest(ble_ms());                              /* (the connection failed or was cancelled: scanning again
+                                                                 * later; test build 31: advertising's turn first if held) */
         }
     }
 }
@@ -468,6 +509,31 @@ static void bt_le_watch(uint32_t now)
     stack_run_loop_resume();                                   /* (the host's task: ble_profile_loop) */
 }
 
+/* test build 31: the LE baseband's radio entities as the library keeps them (RF_ble.c bb_hdl, struct ble_baseband_layer_handle;
+ * the offsets are its types', laid out by clang from its bitcode: the entities' ids, 8 x u16, at 0, the array of struct ble_hw
+ * (28 bytes each, its struct ble4_hw pointer first) at 16, their count at 32; in struct ble4_hw the state at 343 (1 scanning,
+ * 2 advertising, 3 initiating, 6 master link, 7 slave link) and its run flag at 344 (0 enabled at once, alone; 1 or 3
+ * suspended, le_hw_suspend; 2 resumed by the slot scheduler, le_hw_resume)). "HW2 0:2/0 1:1/1 IE 01 BB 00": two entities,
+ * slot 0 advertising, slot 1 a scanner suspended; the entities' interrupt enables (0x28030) and the status register 0x28038
+ * (bit 1 keeps the scheduler from resuming a scanner) as read now */
+extern uint8_t *bb_hdl;
+static char *le_hw_text(char *o)
+{
+    const uint8_t *const h = bb_hdl, *a;
+    uint32_t i;
+    o = ble__put(o, " HW");
+    if (!h) return ble__put(o, "-");
+    o = bt__dec(o, h[32]);
+    a = *(const uint8_t *const *)(const void *)(h + 16);
+    for (i = 0; a && i < 8u; i++) {
+        const uint16_t id = *(const uint16_t *)(const void *)(h + 2u * i);
+        const uint8_t *const e = *(const uint8_t *const *)(const void *)(a + 28u * i);
+        if (!id || !e) continue;
+        *o++ = ' '; o = bt__dec(o, i); *o++ = ':'; o = bt__dec(o, e[343]); *o++ = '/'; o = bt__dec(o, e[344]);
+    }
+    o = ble__put(o, " IE "); o = bt__hex(o, *(volatile uint32_t *)0x28030u & 0xFFu, 2);
+    o = ble__put(o, " BB "); return bt__hex(o, *(volatile uint32_t *)0x28038u & 0xFFu, 2);
+}
 /* test build 28: the last LE link's end, "D08@31500": its reason (08 supervision timeout, 13 the central ended it, 16 the pedal
  * did, 3E it never came up) and when (ms since power-on, as SE and RC) */
 static char *le_drop_text(char *o)
@@ -516,7 +582,7 @@ static char *bt_le_ed_text(char *o)
  * asked (PR), the ATT client's step and last error (CL), and the footswitch's address once known */
 void bt_le_line(char *out)
 {
-    static const char *const ST[4] = {"OFF", "SCAN", "INIT", "LINK"};
+    static const char *const ST[5] = {"OFF", "SCAN", "INIT", "LINK", "PAUSE"};
     char t[300], *o = t;
     uint32_t i;
     o = ble__put(o, "LE "); o = bt__dec(o, le_links_up(&le_lk));
@@ -535,7 +601,11 @@ void bt_le_line(char *out)
     o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
     if (le_wd_n) { o = ble__put(o, " WD"); o = bt__dec(o, le_wd_n); *o++ = '@'; o = bt__dec(o, le_wd_ms); }
     o = bt_le_ed_text(o);
-    o = ble__put(o, " CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st & 3u]);
+    o = ble__put(o, " CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st < 5u ? le_cen_st : 0u]);
+    if (le_adv_held) o = ble__put(o, " AH");                   /* (test build 31: advertising held, the scanner alone) */
+    o = ble__put(o, " RAW"); o = bt__dec(o, le_raw);
+    o = ble__put(o, " SO"); o = bt__dec(o, le_scan_opens);
+    o = le_hw_text(o);
     o = ble__put(o, " R"); o = bt__dec(o, le_cs.reports);
     o = ble__put(o, " M"); o = bt__dec(o, le_cs.matches);
     o = ble__put(o, " T"); o = bt__dec(o, le_cen_tries);
