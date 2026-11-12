@@ -156,6 +156,9 @@ $CC -O1 -Wall -Wno-unused-function -Wno-unused-variable -DOP_BT_AUDIO=1 -I tests
 # (test build 27: the two LE links, which handle is which link and when to advertise)
 $CC -O1 -Wall -Wno-unused-function -I firmware/bt -o build/test_bt_le_links tests/test_bt_le_links.c
 build/test_bt_le_links > build/le_links.log || { grep FAIL build/le_links.log; exit 1; }; tail -1 build/le_links.log
+# (test build 28: the pedal as a footswitch's central, the advertisement filter and the ATT client against a simulated GATT server)
+$CC -O1 -Wall -Wno-unused-function -I firmware/bt -o build/test_bt_le_central tests/test_bt_le_central.c
+build/test_bt_le_central > build/le_central.log || { grep FAIL build/le_central.log; exit 1; }; tail -1 build/le_central.log
 echo "== Chocolate Plus files (tools/chocolate/fcp.py)"
 python3 tests/test_fcp.py
 echo "== pedal skin input"

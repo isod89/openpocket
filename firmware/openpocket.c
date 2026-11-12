@@ -488,6 +488,10 @@ static int keys_decode(int32_t v)
 }
 #if OP_BT_AUDIO
 static int keys_held_at_boot;           /* the analog button held while the pedal started: 1 CAB, 2 DLY, 3 REV, 0 none */
+/* test build 28: the key that turns the central role off for a boot (no scanning for the footswitch, LE as in test build 27),
+ * and the one that leaves out the rest of the stock power setup (up to test build 27: DLY; 0: none, the setup always done) */
+#define BT_CEN_OFF_KEY 2                /* DLY */
+#define BT_PWR_KEY 0
 #endif
 static void keys_capture_idle(void)
 {
@@ -667,10 +671,11 @@ static void ir_changed(uint32_t s)   /* v38: a user IR was written or erased: th
 #if OP_BLE_TEST             /* the log channel (firmware/ble/ble_diag.h): only this image answers DIAG, the normal firmware does not change */
 #define ED_STATS 8u         /* PING also gives the Bluetooth heap's and tasks' lowest free bytes */
 #if OP_BT_AUDIO
-#define ED_DIAG_LINES 10u   /* (the Bluetooth audio image: the HCI conversation, the music's FIFO, the interrupts' times
+#define ED_DIAG_LINES 11u   /* (the Bluetooth audio image: the HCI conversation, the music's FIFO, the interrupts' times
                              * against the audio's, the second core, test build 19 its registers at a fault and its revivals,
-                             * bt/bt_a2dp.c; tools/log.mjs reads them by position) */
-#define ED_OUT_BYTES 2304u  /* (its ten lines of up to 223 characters: 10 x 225 and the reply's head; px_editor.h's is 1,024) */
+                             * bt/bt_a2dp.c; test build 28 the LE links, the editor and the central role, bt/bt_le_midi.c;
+                             * tools/log.mjs reads them by position) */
+#define ED_OUT_BYTES 2529u  /* (its eleven lines of up to 223 characters: 11 x 225 and the reply's head; px_editor.h's is 1,024) */
 #else
 #define ED_DIAG_LINES 5u
 #endif
@@ -728,6 +733,7 @@ static void ed_diag_line(uint32_t i, char *out)
     else if (i == 7u) bt_isr_line(out);
     else if (i == 8u) bt_c1_line(out);
     else if (i == 9u) bt_c1r_line(out);   /* (test build 19) */
+    else if (i == 10u) bt_le_line(out);   /* (test build 28: the LE links, the editor, the central role) */
 #endif
     else ble_trace_line(out);
 }
@@ -925,7 +931,8 @@ static void app_main(void)
      * supply moved onto its DC-DC and tuned, VDDIOM 4 (V22's isd_config.ini VDDIO=4), the radio's 1.2 V regulator on automatic
      * (on an FM-1 without them the radio heard far less). The second core idles in its RAM loop here, no audio yet. DLY held:
      * not done, as up to test build 17 (on a Pocket X the release's v30 slowed and crackled with the DC-DC: the A/B by ear) */
-    if (keys_held_at_boot != 2) bt_pwr_stock = (uint8_t)(1 + fm1_power_stock());
+    if (!BT_PWR_KEY || keys_held_at_boot != BT_PWR_KEY) bt_pwr_stock = (uint8_t)(1 + fm1_power_stock());   /* (test build 28:
+                                                                                           * no key leaves it out, BT_PWR_KEY) */
 #endif
     op_stage(ST_PRESET, "PRESET...");
     load_preset(cur_preset);
@@ -987,6 +994,7 @@ static void app_main(void)
      * DSP waits for Bluetooth's start-up (bt/bt_a2dp.c bt_dsp_may_start); DLY, the DSP at 1.5 s as in test build 13 (the
      * 1.96 s window kept measurable); CAB, the same and the stock core supplies (above, after keys_capture_idle); REV: */
     if (keys_held_at_boot == 3) bt_off_by_key = 1;   /* REV held at power-on: this boot without Bluetooth (an A/B by ear) */
+    if (keys_held_at_boot == BT_CEN_OFF_KEY) le_cen_off = 1;   /* test build 28, DLY: no central role (bt/bt_le_midi.c) */
     bt_canary_arm();                     /* (test build 14: the pattern after the Bluetooth heap, checked by ble_test_poll) */
 #endif
     if (!safe && !BT_OFF_BY_KEY)         /* after a failed boot Bluetooth stays off: the pedal runs, and can be re-flashed */

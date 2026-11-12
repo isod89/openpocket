@@ -139,7 +139,7 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
   cw = c1Words(`C1 0 G 4@1967 K 1976 KEY 2 P 03/0B V 1452 D 1503 SE 1@1453 E 1/0 01C67A04 CN 0 S 42400006 F 1/1 W 0${rec9} X 0 0 DE 7E 40 140 3FF 3FF 3FF 3FF`);
   ok(cw?.key === 2 && cw.faults === 1 && cw.cpu === 1 && cw.record.DBG === 0x40000 && cw.record.PC === 0x01C6F6DE && cw.record.ms === 1964
      && cw.record.fn === 0x01C5FD46 && cw.x?.length === 10 && cw.x[2] === 0xDE && cw.x[9] === 0x3FF
-     && /DLY: without the rest of the stock power setup/.test(cw.text) && /faulted 1 time, the last taken by CPU1 at 1964 ms, PC 01C6F6DE, DBG 00040000; debug unit 0 0 DE 7E/.test(cw.text),
+     && /DLY: no central role/.test(cw.text) && /faulted 1 time, the last taken by CPU1 at 1964 ms, PC 01C6F6DE, DBG 00040000; debug unit 0 0 DE 7E/.test(cw.text),
      `a fault after W 0: its 9 words and X, not taken for W's: ${cw?.text}`);
   cw = c1Words(`C1 0 G 4@1967 K 1976 KEY 2 P 03/0B V 1452 D 1503 SE 1@1453 E 0/0 CN 0 S 42400006 F 1/1 W 1/2 00000010 00000041 000007AE 42400006${rec9.slice(0, 58)}`);
   ok(cw?.record.DBG === 0x40000 && cw.record.ms === 1964 && Object.keys(cw.record).length === 6 && cw.x === null && /3 of its words cut off/.test(cw.text),

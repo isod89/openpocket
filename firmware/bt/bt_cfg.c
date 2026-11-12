@@ -44,7 +44,10 @@ const int config_bt_security_vulnerability = 0;
 const int sniff_support_reset_anchor_point = 0;
 const int config_btctler_single_carrier_en = 0;
 const int config_btctler_le_master_multilink = 0;
-const int config_btctler_le_roles = 6;                      /* test build 23: LE_ADV | LE_SLAVE (ble/ble_cfg.c): advertises, a central connects */
+const int config_btctler_le_roles = 31;                     /* test build 28: LE_MASTER | LE_SLAVE | LE_ADV | LE_SCAN | LE_INIT (1, 2, 4, 8, 16,
+                                                             * ble/ble_cfg.c): as before it advertises and a central connects; it also
+                                                             * scans for a footswitch and connects to it as its central (ll_scan.c,
+                                                             * ll_init.c, ll_master.c), unless DLY was held at power-on. Up to 27: 6 */
 const int config_btctler_le_hw_nums = 2;                   /* test build 27: two LE radio entities, so two links (the Chocolate and
                                                              * the web editor), or one link and advertising (bt/bt_le_links.h); up to
                                                              * 26: 1, one link (the footswitch, or a phone's MIDI app). The LE
