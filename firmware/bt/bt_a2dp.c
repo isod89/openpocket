@@ -137,10 +137,14 @@ static void bt_cmd(uint32_t bit) { bt_cmd_bits |= bit; os_sem_post(bt_cmd_sem); 
 #define BT_HOOK_TAKE 0      /* 1: -1 to the controller, which then frees the packet (neither the app's list nor the host). 0: the
                              * library's own path goes on as in test build 11 (the host gets it, unless HEAL below mends it) */
 #define BT_A2_HEAL 1        /* the receiving connection's two A2DP fields written back when found wrong (the FIFO line's heals) */
-#define BT_FQ_N 16u         /* packets: 232 ms of the iPhone's 5-frame packets */
+#define BT_FQ_N 32u         /* packets: 464 ms of the iPhone's 5-frame packets (test build 24: was 16, 232 ms, which a long
+                             * drawing of the screen under the NAM network's load overflowed: the FIFO line's drops) */
 #define BT_FQ_MAX 672u      /* the pedal's L2CAP MTU (l2cap.c l2cap_max_mtu, in this configuration): no packet is longer */
 typedef struct { uint16_t n; uint8_t frames, pad; uint8_t b[BT_FQ_MAX]; } bt_fq_t;
-static bt_fq_t *bt_fq;                                          /* (the Bluetooth heap, once: ble_test_start) */
+/* test build 24: in the pool's free end (21,632 bytes, only CPU0 touches it), no longer 10,816 bytes of the Bluetooth heap,
+ * which the BLE MIDI side (test build 23) now shares */
+static bt_fq_t bt_fq_mem[BT_FQ_N] __attribute__((aligned(4), section(".pool.tail.bt_fq")));
+static bt_fq_t *bt_fq;                                          /* (bt_fq_mem from ble_test_start on) */
 static uint32_t bt_fq_w, bt_fq_r, bt_fq_frames, bt_fq_held, bt_cur_left;
 static void bt_fq_reset(void)                                   /* (a session's end: what is queued is dropped) */
 {
@@ -422,8 +426,7 @@ void ble_test_start(void)
     __crc16_mutex_init();                                       /* else thread_create waits for ever in crc_get_32bit */
     bt_sbc_reset();
     bt_ring_init(&bt_ring, bt_ring_mem);
-    bt_fq = malloc(BT_FQ_N * sizeof *bt_fq);                    /* the phone's packets: 10,816 bytes of the Bluetooth heap, for good */
-    if (!bt_fq) BT_CRUMB("fifo: no memory");                    /* (then nothing is decoded) */
+    bt_fq = bt_fq_mem;                                          /* the phone's packets (test build 24: no longer from the heap) */
     os_sem_create(bt_cmd_sem, 0);
     __set_simple_pair_flag(1);                                  /* Secure Simple Pairing ... */
     __set_simple_pair_param(3, 0, 2);                           /* ... no display or keys, no OOB, 2 = HCI "no MITM, dedicated bonding": Just Works */
@@ -444,10 +447,22 @@ void ble_test_start(void)
  * copy of a packet the FIFO holds: it is given back undecoded, every pass, whatever the ring's room (it holds the radio's
  * receive pool) */
 static void bt_fq_done(void) { if (bt_fq_held) { bt_fq_r++; bt_fq_held = 0; bt_cur_left = 0; } }
+/* test build 24: the longest wait between two decodes while the music plays (ms), and how many waits were longer than the
+ * decoded ring (58 ms: each one an underrun, unless the FIFO's backlog was decoded meanwhile by bt_yield). The FIFO line's GAP */
+static uint32_t bt_dec_t, bt_gap_max, bt_gap_n, bt_yields;
 static void bt_decode(void)
 {
     uint32_t pass = 0;
     uint8_t *p = 0;
+    {
+        const uint32_t now = ble_ms();
+        if (bt_st == BT_PLAYING && bt_dec_t) {
+            const uint32_t g = now - bt_dec_t;
+            if (g > bt_gap_max) bt_gap_max = g;
+            if (g > 58u) bt_gap_n++;
+        }
+        bt_dec_t = now ? now : 1u;
+    }
     while (a2dp_media_try_get_packet(&p) > 0 && p) {
         a2dp_media_free_packet(p);
         bt_a2.dup++;
@@ -475,6 +490,29 @@ static void bt_decode(void)
         bt_frames_in++;
     }
     if (!bt_pn) bt_fq_done();
+}
+
+/* test build 24: the screen's long drawings (a page, a preset's change: hundreds of ms while the NAM network holds CPU0 most of
+ * the time) left the music undecoded: the 58 ms ring ran dry (UND) and the packets that came meanwhile overflowed the FIFO (its
+ * drops). The screen's two DMA loops (openpocket.c lcd_rect, lb_flush) call this between two buffers: 4 ms or more after the
+ * last decode, the FIFO's backlog (150 ms) is decoded into the ring and the rate steered, as the main loop does. Only that: the
+ * stack's tasks are not run from here, so no callback (a packet, an event, BLE MIDI) comes in the middle of a drawing */
+static void bt_yield(void)
+{
+    static uint8_t in;
+    uint32_t now;
+    if (in || bt_st < BT_LINKED || bt_st == BT_FAILED) return;
+    now = ble_ms();
+    if (now - bt_dec_t < 4u) return;
+    in = 1u;
+    bt_yields++;
+    bt_decode();
+    if (now - bt_t_steer >= 4u) {
+        bt_t_steer = now;
+        bt_ring_rate(&bt_ring, bt_sbc_info.rate);
+        bt_ring_steer(&bt_ring, bt_fq_samples(), BT_TARGET, BT_PREBUF);
+    }
+    in = 0u;
 }
 
 /* ---- the isr line's figures (bt_isr_line): the interrupts keep the longest and the sum of the current second, the main loop
@@ -805,6 +843,8 @@ void ble_midi_line(char *out)
     o = ble__put(o, " BUF "); o = bt__dec(o, ms);
     o = ble__put(o, "+"); o = bt__dec(o, bt_ring_fill(&bt_ring) * 10u / 441u); o = ble__put(o, " MS");
     o = ble__put(o, " UND "); o = bt__dec(o, bt_ring.stops);
+    o = ble__put(o, " GAP "); o = bt__dec(o, bt_gap_max); *o++ = '/'; o = bt__dec(o, bt_gap_n);   /* (test build 24) */
+    *o++ = '/'; o = bt__dec(o, bt_yields);
     o = ble__put(o, " RATE "); if (pm < 0) { *o++ = '-'; pm = -pm; } o = bt__dec(o, (uint32_t)pm / 100u); *o++ = '.';
     *o++ = (char)('0' + (pm / 10) % 10); *o++ = (char)('0' + pm % 10); *o++ = '%';
     o = ble__put(o, " DISC "); o = bt__dec(o, bt_disc);

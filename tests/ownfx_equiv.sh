@@ -8,7 +8,7 @@ set -e
 cd "$(dirname "$0")/.."
 CC="${CC:-cc}"
 B=build/ownfx; mkdir -p "$B"
-BT="-DPXN_LEAN=1 -DPXN_HOT_RAM=0 -DPX_RUNS=0 -DPX_LOOP_GUARD=1"
+BT="-DPXN_LEAN=1 -DPXN_HOT_RAM=0 -DPX_RUNS=0 -DPX_LOOP_GUARD=1 -DPX_DLY_SHORT=1"   # (test build 24: the 780 ms delay on both sides)
 for cfg in bt host; do
   F=""; [ "$cfg" = bt ] && F="$BT"
   $CC -O2 -w -fno-builtin -ffp-contract=off $F -Iengine -o "$B/off-$cfg" tests/engine/ownfx_equiv.c firmware/px_math.c -lm

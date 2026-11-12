@@ -165,11 +165,26 @@ typedef struct { float x[6], y[6]; } px_hb;           /* v38: a half-band filter
 #endif
 #endif
 #define PX_SYN_CB 1024                 /* SYN: ensemble / doubler / body reflections (23 ms) */
-#if PX_OWN_FX
-#define PX_DLY_N 44600                 /* the Bluetooth image: 456 ticks less, the room its own effects' state takes (the
-                                          longest delay stays 2 s: px_dsp.c rc_delay) */
+/* PX_DLY_SHORT (test build 24, the Bluetooth audio image: firmware/build.sh): the longest delay 780 ms, as M-VAVE's V21 cut its
+ * delays (Analog 1000 -> 781 ms, dTape 790...), the ring 18,176 ticks (36 KB) instead of 45,056 (88 KB): 53,760 bytes of the
+ * pool for the radio's RAM (BLE MIDI, the music's buffers). Both sides of tests/ownfx_equiv.sh build with it, and rc_delay cuts
+ * TIME at PX_DLY_MAX_TICKS on both, so PX_OWN_FX stays bit for bit with it too */
+#ifndef PX_DLY_SHORT
+#define PX_DLY_SHORT 0
+#endif
+#if PX_DLY_SHORT
+#define PX_DLY_RING 18176
+#define PX_DLY_MAX_TICKS 17199                         /* 780 ms at 22.05 kHz (TAPE's wow and flutter read up to 364 further) */
+#define PX_DLY_REV_MAX_TICKS 8600                      /* REVERSE: 390 ms. It reads a window as long as TIME back from where the head
+                                                   * was while the head writes the next one: 2 x TIME must fit the ring (17,720) */
 #else
-#define PX_DLY_N 45056                 /* v40: 2.04 s of delay at half rate (22.05 kHz, 16-bit: 88 KB), as the stock */
+#define PX_DLY_RING 45056                              /* v40: 2.04 s of delay at half rate (22.05 kHz, 16-bit: 88 KB), as the stock */
+#endif
+#if PX_OWN_FX
+#define PX_DLY_N (PX_DLY_RING - 456)   /* the Bluetooth image: 456 ticks less, the room its own effects' state takes (the
+                                          longest delay stays 2 s, or 780 ms with PX_DLY_SHORT: px_dsp.c rc_delay) */
+#else
+#define PX_DLY_N PX_DLY_RING
 #endif
 #define PX_RV_M 16384                  /* reverb memory: one 16-bit ring (32 KB) at half rate, laid out per type */
 #define PX_CABM 6                      /* cabinet detail: cone breakup modes (2-pole resonators) */

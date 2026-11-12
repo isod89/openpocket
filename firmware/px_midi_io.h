@@ -6,7 +6,7 @@
  * SysEx never takes this road: it goes to the update code (ota.c) and the editor (px_editor.h) only.
  * The including file provides px_midi.h, usb.c's rings, PRESET, cur_preset, load_preset, master_vol, ui_mode / ui_item /
  * ui_nitems (ui.h), st_midi, st_usb and st_commit (px_store.h), and ms_now; in the Bluetooth audio image (PX_OWN_FX) also
- * ui_pad_on (ui.h) and PX_PAD_PRESS (openpocket.c), for CC 64.
+ * ui_pad_on (ui.h) and PX_PAD_PRESS (openpocket.c), for CC 64; CC 116 is a tap of the delay's tempo.
  *
  * The ring must be emptied: usb.c leaves the host's USB packet unread (NAK) while the ring is nearly full, and the
  * editor's and installer's SysEx come in the same packets. Nothing drained it before this file.
@@ -38,6 +38,30 @@ static void px_midi_ble_write(const uint8_t *p, uint32_t n)
 }
 #endif
 
+#if PX_OWN_FX
+/* test build 24: tap tempo for the delay, from a controller's footswitch (the M-VAVE Chocolate over Bluetooth, or USB). CC 116
+ * at 64 and up is a tap (a footswitch's release, value 0, is not). Two taps 200 ms to 2 s apart set the delay's TIME to their
+ * interval, the nearest TIME step as MIDI clock does; from the third tap on, to the mean of the last three intervals. A pause
+ * of more than 2 s starts over. In this image TIME stops at 780 ms (REVERSE 390): a slower tap gives 780 */
+#define PXM_CC_TAP 116u
+static uint32_t tap_ms, tap_n, tap_iv[3];
+static void px_midi_tap(uint32_t ms, int *touched)
+{
+    const uint32_t d = ms - tap_ms;
+    uint32_t k, s = 0u, i;
+    int v;
+    if (!tap_n || d > 2000u) { tap_n = 1u; tap_ms = ms; return; }
+    if (d < 200u) return;                                       /* (a bounce, or a second message of one press) */
+    tap_ms = ms;
+    tap_iv[(tap_n - 1u) % 3u] = d;
+    tap_n++;
+    k = tap_n - 1u < 3u ? tap_n - 1u : 3u;
+    for (i = 0; i < k; i++) s += tap_iv[i];
+    v = px_dly_value_for_ms(PRESET.type[PX_B_DELAY], (float)s / (float)k);
+    if (PRESET.p[PX_B_DELAY][0] != v) { PRESET.p[PX_B_DELAY][0] = (uint8_t)v; *touched = 1; }
+}
+#endif
+
 /* one received event packet, from either road; *touched: the sound changed */
 static void px_midi_in(uint32_t pkt, uint32_t ms, int free_ui, int *touched)
 {
@@ -64,6 +88,8 @@ static void px_midi_in(uint32_t pkt, uint32_t ms, int free_ui, int *touched)
 #if PX_OWN_FX
     } else if (m.d1 == 64u) {                          /* CC 64 (a sustain pedal) at 64 and up: a SYN PAD catches the chord */
         if (m.d2 >= 64u && ui_pad_on()) PX_PAD_PRESS();
+    } else if (m.d1 == PXM_CC_TAP) {                   /* CC 116 at 64 and up: a tap of the delay's tempo (test build 24) */
+        if (m.d2 >= 64u && free_ui) px_midi_tap(ms, touched);
 #endif
     } else {
         uint32_t mv = master_vol;

@@ -67,7 +67,7 @@ $CC -O2 -Iengine -Ifirmware tests/engine/ir_test.c firmware/px_math.c -lm -o bui
 $CC -O2 -Iengine tests/engine/wet_test.c engine/px_dsp.c firmware/px_math.c -lm -o build/wet_test && build/wet_test | tail -1
 echo "== the Bluetooth audio image's engine (PX_OWN_FX: the same sound in less code)"
 sh tests/ownfx_equiv.sh
-FX="-DPX_OWN_FX=1 -DPXN_LEAN=1 -DPXN_HOT_RAM=0 -DPX_RUNS=0 -DPX_LOOP_GUARD=1"   # (firmware/build.sh's DSPDEF under OP_BT)
+FX="-DPX_OWN_FX=1 -DPXN_LEAN=1 -DPXN_HOT_RAM=0 -DPX_RUNS=0 -DPX_LOOP_GUARD=1 -DPX_DLY_SHORT=1"   # (firmware/build.sh's DSPDEF under OP_BT)
 $CC -O2 $FX -Iengine tests/engine/sweep2.c engine/px_dsp.c firmware/px_math.c -lm -o build/sweep_fx && build/sweep_fx | tail -1
 $CC -O2 $FX -Iengine tests/engine/pipe_test.c engine/px_dsp.c firmware/px_math.c -lm -o build/pipe_fx && build/pipe_fx | tail -1
 $CC -O2 $FX -Iengine tests/engine/long.c engine/px_dsp.c firmware/px_math.c -lm -o build/long_fx && build/long_fx "LOW OCTAVE" PAD | tail -1
@@ -110,8 +110,8 @@ for t in midisim midiio; do
   build/$t > build/$t.log || { grep FAIL build/$t.log; exit 1; }
   tail -1 build/$t.log
 done
-# (the Bluetooth audio image's: CC 64 catches a SYN PAD's chord)
-$CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -Iengine -Ifirmware -o build/midiio_fx tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm
+# (the Bluetooth audio image's: CC 64 catches a SYN PAD's chord, CC 116 taps the delay's tempo, TIME stops at 780 ms)
+$CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -DPX_DLY_SHORT=1 -Iengine -Ifirmware -o build/midiio_fx tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm
 build/midiio_fx > build/midiio_fx.log || { grep FAIL build/midiio_fx.log; exit 1; }
 tail -1 build/midiio_fx.log
 echo "== LED map and the lights driver (LED_PROBE build, issue #8)"

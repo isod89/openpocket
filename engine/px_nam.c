@@ -21,7 +21,10 @@ static const uint16_t pxn_d[PXN_NL] = {1, 3, 7, 17, 41, 101, 239, 1, 3, 7, 17, 4
 #define PXN_ONE (1 << PXN_QA)
 
 /* the block's work buffers: X rows (+ a row of slack: the dot routines read one word past a row) */
-static int32_t pxn_xs[(PXN_N + 1) * PXN_S];
+#ifndef PX_BT_POOL
+#define PX_BT_POOL(name)                                /* (px_dsp.c: the pool's free end in the Bluetooth audio image) */
+#endif
+static int32_t pxn_xs[(PXN_N + 1) * PXN_S] PX_BT_POOL(pxn_xs);
 static int32_t *pxn_x = pxn_xs;                         /* the X rows in use: pxn_xs, or for the vector unit's modes
                                                            the copy in the fast memory (pxn_set_fast) */
 static int32_t *pxn_xf, *pxn_wf;                        /* fast memory: X rows, then the weights (wa, head) for the unit */

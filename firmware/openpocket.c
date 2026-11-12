@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 23
+#define BT_TEST_BUILD 24
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -177,6 +177,12 @@ static void lcd_init(void)
 }
 /* DMA pixel buffers (2: fill one while the other is being sent) */
 #define LBUF_PX 1024u
+#if OP_BT_AUDIO
+static void bt_yield(void);     /* (bt/bt_a2dp.c, test build 24: the music's queue decoded while the screen draws) */
+#define LCD_YIELD() bt_yield()
+#else
+#define LCD_YIELD() ((void)0)
+#endif
 #if LCD_HW
 static uint8_t lbuf[2][LBUF_PX * 2u] __attribute__((aligned(4)));
 static uint32_t lb_i;
@@ -203,6 +209,7 @@ static void lcd_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t rg
             lspi_dma(b, n * 2u);
             px -= n;
             fm1_wdt_feed();
+            LCD_YIELD();
         }
         lspi_wait();
     }
@@ -236,6 +243,7 @@ static void lb_flush(void)
     if (!lb_n) return;
     lspi_dma(lbuf[lb_i], lb_n * 2u);    /* waits for the previous transfer (the other buffer), then starts this one */
     lb_i ^= 1u; lb_n = 0;
+    LCD_YIELD();                        /* (while this buffer goes out) */
 }
 static inline void lcd_px(uint16_t c)
 {

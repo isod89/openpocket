@@ -603,6 +603,25 @@ What to check:
 3. Around a catch with a heavy NAM preset: `PK` and late blocks.
 4. By ear: the octave on the low strings only, the pad holding a chord steady, no clicks at a catch or a crossing.
 
+## Test build 24: BLE MIDI, the delay at 780 ms, tap tempo
+
+- BLE MIDI beside the music, as test build 23 meant it (23 did not link: a stand-in for `le_controller_handler_for_ble5`
+  was missing).
+- The delay's ring is 18,176 ticks (`PX_DLY_SHORT`): TIME stops at 780 ms, REVERSE at 390 ms; the screen shows 780 for
+  any TIME of 63 or more. The 53,760 bytes this frees in the pool take the NAM model, its rows and the IR's spectrum
+  (`PX_BT_POOL`), about 24 KB out of the main RAM.
+- The music's packet queue holds 32 packets (464 ms, was 16) in the pool, no longer in the Bluetooth heap: its 10,816
+  bytes go back to the heap, which BLE now shares.
+- While the screen draws, the queued music is decoded every 4 ms (`bt_yield`, called from the screen's two DMA loops):
+  the long drawings under the NAM network's load used to leave the 58 ms ring dry (`UND`) and overflow the queue. The
+  FIFO line's `GAP max/n/y`: the longest wait between two decodes while playing (ms), the waits longer than 58 ms, the
+  decodes the screen asked for.
+- Tap tempo: MIDI CC 116 at 64 or more is a tap. Two taps 200 ms to 2 s apart set TIME to their interval, from the third
+  on to the mean of the last three; a pause of more than 2 s starts over (`firmware/px_midi_io.h`, `tests/midiio.c`).
+
+What to check: the Chocolate connects over Bluetooth and its footswitches act; the music with a heavy NAM preset while
+changing pages and presets: `UND`, `GAP` and the drops stay low.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

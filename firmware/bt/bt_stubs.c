@@ -205,6 +205,10 @@ BT_STUB_V(tws_unsniff_with_phone)
 BT_STUB(int, user_client_search_profile_start)
 /* btstack: att_send.c (test build 23: linked, BLE MIDI) */
 
+/* test build 23: the LE controller's BLE 5 command handler (hci_ll.c calls it for the LE 5 commands; its member is left out, as the
+ * BLE image stands it in: ble/ble_stubs.c) */
+BT_STUB(int, le_controller_handler_for_ble5)
+
 /* data of the members left out (zero; sizes as the library's own objects, 32-bit) */
 uint8_t PSM_L2CAP_OBEX[4] __attribute__((aligned(4)));
 uint8_t fast_search_data[4] __attribute__((aligned(4)));

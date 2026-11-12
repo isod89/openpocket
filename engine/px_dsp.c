@@ -28,6 +28,14 @@
 #define PX_RCONST const
 #define PX_RTAB(name)
 #endif
+/* test build 24 (PX_DLY_SHORT, the Bluetooth audio image): three buffers out of the 96 KB RAM into the pool's free end, which the
+ * shorter delay ring leaves (firmware/bt/app-bt.ld .pool.tail.*, zeroed by fm1_cstart as .bss): the NAM model, the NAM network's
+ * X rows, the IR's spectra, 23.9 KB for the radio's RAM. The pool is plain SRAM, outside the radio's window: both cores' */
+#if PX_DLY_SHORT && defined(__PI32V2__)
+#define PX_BT_POOL(name) __attribute__((section(".pool.tail." #name)))
+#else
+#define PX_BT_POOL(name)
+#endif
 #include "px_nam.c"                                     /* v37: NAM A2-Lite (one translation unit: every build gets it) */
 /* v40: on the pedal the audio path runs from RAM, as the stock firmware's does: firmware/build.sh compiles this file with
  * -ffunction-sections and tools/ramcode.py moves the per-block functions (px_engine_part, the delay and reverb loops,
@@ -616,8 +624,15 @@ static int harm_idx(int v) { int i = v * 10 / 101; return i < 0 ? 0 : (i > 9 ? 9
 /* TIME (v35): 20..1000 ms in steps of 12.25 ms up to 80, then to 2 s in steps of 50 ms; REVERSE: 250..1000 ms */
 static float dly_ms(int t, int v)
 {
+#if PX_DLY_SHORT   /* test build 24: TIME's top as the delay plays it (rc_delay), so the screen, MIDI clock and the tap say so too */
+    const float ms = t == PX_DLY_REVERSE ? 250.0f + (float)v * 7.5f
+                   : (v <= 80 ? 20.0f + (float)v * 12.25f : 1000.0f + (float)(v - 80) * 50.0f);
+    const float top = t == PX_DLY_REVERSE ? 390.0f : 780.0f;
+    return ms > top ? top : ms;
+#else
     if (t == PX_DLY_REVERSE) return 250.0f + (float)v * 7.5f;
     return v <= 80 ? 20.0f + (float)v * 12.25f : 1000.0f + (float)(v - 80) * 50.0f;
+#endif
 }
 static void put_int(char *b, int v, int plus)
 {
@@ -1274,7 +1289,7 @@ static int px_may_load = 1;                            /* v38: 0 in px_engine_kn
 /* the rings, all in one piece (83.4 KB): on the pedal in the POOL region beside the engine, so that the ordinary RAM
  * stays free (Bluetooth will need it) */
 #define PX_NAM_R0 ((PXN_RING_BYTES + 7u) / 8u * 2u)
-static pxn_model px_nam_m;
+static pxn_model px_nam_m PX_BT_POOL(px_nam_m);
 static int32_t px_nam_r0[PX_NAM_R0] PX_NAM_POOL __attribute__((aligned(8)));
 /* no user slots unless the firmware (firmware/px_models.h) or a simulator provides them */
 __attribute__((weak)) int px_nam_user(int slot, char *name12, float *level_db, float *w)
@@ -1601,7 +1616,7 @@ static void cab_make(float sr, const px_preset_t *p, cab_set *o)
 #define IR_F 128
 #define IR_P (PX_IR_LEN / IR_B)
 typedef char ir_scratch_check[PX_IR_LEN <= (IR_P / 2) * IR_F ? 1 : -1];   /* the IR and ir_load_h's scratch both fit in ir_X */
-static float ir_H[IR_P][IR_F];                         /* the partitions' spectra (packed: [0] DC, [1] Nyquist, re/im) */
+static float ir_H[IR_P][IR_F] PX_BT_POOL(ir_H);                         /* the partitions' spectra (packed: [0] DC, [1] Nyquist, re/im) */
 static float ir_X[IR_P][IR_F] PX_LO(ir_X);                       /* the last IR_P input blocks' spectra (a ring, newest at ir_pos) */
 static float ir_in[IR_F], ir_Y[IR_F];                  /* the last two input blocks; the sum of the products */
 static int ir_pos, ir_ok;
@@ -1913,6 +1928,10 @@ static void rc_delay(px_engine *e)
     if (len > (float)(PX_DLY_N - 500)) len = (float)(PX_DLY_N - 500);
 #else
     if (len > (float)(PX_DLY_N - 600)) len = (float)(PX_DLY_N - 600);
+#endif
+#if PX_DLY_SHORT   /* test build 24 (px_dsp.h): TIME's top 780 ms on both sides of the PX_OWN_FX comparison; REVERSE 390 ms */
+    if (len > (float)PX_DLY_MAX_TICKS) len = (float)PX_DLY_MAX_TICKS;
+    if (t == PX_DLY_REVERSE && len > (float)PX_DLY_REV_MAX_TICKS) len = (float)PX_DLY_REV_MAX_TICKS;
 #endif
     if (e->dly_len < 1.0f || e->dly_type != t) { e->dly_len = len; e->rev_cnt = 0; e->rev_start = e->dly_w; }
     e->dly_type = t;
@@ -2301,7 +2320,7 @@ static PX_RCONST uint32_t GL_F[] PX_RTAB(gl_f) = {
 typedef char px_gl_room[GL_N <= PX_GL_MAX ? 1 : -1];
 #if PX_OWN_FX   /* the effects' state fills the 912 bytes the delay ring gave up: every other field keeps its offset, the
                  * engine its size (the POOL has 40 bytes free in the Bluetooth image: firmware/bt/app-bt.ld) */
-typedef char px_ownfx_room[offsetof(px_engine, dly_w) - offsetof(px_engine, dly_buf) == 2u * 45056u ? 1 : -1];
+typedef char px_ownfx_room[offsetof(px_engine, dly_w) - offsetof(px_engine, dly_buf) == 2u * PX_DLY_RING ? 1 : -1];
 #endif
 #define GLP(e, i) ((float *)((char *)(e) + GL_F[i]))
 

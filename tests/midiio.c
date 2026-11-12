@@ -246,6 +246,31 @@ int main(void)
         midi_enqueue(cc(0, 64, 127), 6); px_midi_service();
         ok(on && off && pad_presses == 0, "CC 64 at 64 and up catches the PAD's chord (PAD on only), the sound unchanged");
     }
+    {   /* CC 116 taps the delay's tempo (test build 24): two taps set TIME to their interval, a release (0) is no tap, a bounce
+         * under 200 ms is ignored, the last three intervals are averaged, a pause of more than 2 s starts over */
+        reset();
+        tap_n = 0;
+        PRESET.type[PX_B_DELAY] = PX_DLY_DIGITAL;
+        midi_enqueue(cc(0, 116, 127), 1000); midi_enqueue(cc(0, 116, 0), 1100); midi_enqueue(cc(0, 116, 127), 1500);
+        px_midi_service();
+        int two = PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 500.0f);
+        midi_enqueue(cc(0, 116, 127), 1550); px_midi_service();
+        int bounce = PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 500.0f);
+        midi_enqueue(cc(0, 116, 127), 1900); midi_enqueue(cc(0, 116, 127), 2350); px_midi_service();
+        int avg = PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 450.0f);   /* (500 + 400 + 450) / 3 */
+        int was = PRESET.p[PX_B_DELAY][0];
+        midi_enqueue(cc(0, 116, 127), 5000); px_midi_service();
+        int pause = PRESET.p[PX_B_DELAY][0] == was;
+        midi_enqueue(cc(0, 116, 127), 5600); px_midi_service();
+        int restart = PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 600.0f);
+        ok(two && bounce && avg && pause && restart,
+           "CC 116 taps the delay's TIME (release and bounce ignored, three intervals averaged, a pause starts over)");
+#if PX_DLY_SHORT
+        midi_enqueue(cc(0, 116, 127), 9000); midi_enqueue(cc(0, 116, 127), 10000); px_midi_service();
+        ok(PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 780.0f) && PRESET.p[PX_B_DELAY][0] < 64,
+           "a tap slower than 780 ms gives the shortened ring's top, 780 ms (TIME 63)");
+#endif
+    }
 #endif
     printf("\n%s\n", failed ? "MIDI glue tests FAILED" : "all MIDI glue tests passed");
     return failed ? 1 : 0;
