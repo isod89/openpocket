@@ -236,9 +236,9 @@ export function wWords(c1) {
 // fm1_cpu1_echo: the echo of CPU1's fault / the late flag of a hold), after one the PC CPU0 was at; CN, the canary after the Bluetooth heap (words found
 // changed, the first one's value); after a fault of the second core (F count/cpu), its record's 9 words and X, the debug unit's
 // ten words. null for an earlier build's c1 line (no P)
-export const KEYS = ["none: two cores, nothing of the second core's in the radio's memory, the stock power setup from power-on as M-VAVE's V22, the last phone called back, the second core started again after a fault, its per-block tables in RAM, LOW OCTAVE and SYN PAD, BLE MIDI beside the music, the music's queue doubled and decoded while the screen draws, the delay up to 780 ms, tap tempo on CC 116, the expression pedal on CC 117, the radio served while a save shows SAVED, the web editor over Bluetooth MIDI on a second LE link beside the footswitch (test build 27; 26 without the editor over Bluetooth, one LE link; 25 stopped the music 0.7 s at a save; 24 without the pedal; 23: the queue half, the delay 2 s; 22 without BLE MIDI)",
+export const KEYS = ["none: two cores, nothing of the second core's in the radio's memory, the stock power setup from power-on as M-VAVE's V22, the last phone called back, the second core started again after a fault, its per-block tables in RAM, LOW OCTAVE and SYN PAD, BLE MIDI beside the music, the music's queue doubled and decoded while the screen draws, the delay up to 780 ms, tap tempo on CC 116, the expression pedal on CC 117, the radio served while a save shows SAVED, the web editor over Bluetooth MIDI on a second LE link beside the footswitch, the pedal as the central of a footswitch that is only a peripheral (the regular Chocolate) (test build 28; 27 without the central role; 26 without the editor over Bluetooth, one LE link; 25 stopped the music 0.7 s at a save; 24 without the pedal; 23: the queue half, the delay 2 s; 22 without BLE MIDI)",
   "CAB: one core, the second held (test builds 16-27; 15: the boot loader's supplies; 14: the stock ones)",
-  "DLY: without the rest of the stock power setup (the 1.3 V DC-DC, VDDIOM, the radio's regulator), as test build 17 (test builds 18-27; 16-17: the radio's interrupts below the audio)", "REV: Bluetooth off"];
+  "DLY: no central role: no scanning for the footswitch, LE as in test build 27 (test build 28; 18-27: without the rest of the stock power setup; 16-17: the radio's interrupts below the audio)", "REV: Bluetooth off"];
 const F_NAMES = ["DBG", "EMU", "PC", "RETS", "EMU1", "ms", "job handed", "job finished", "fn"];
 export function c1Words(c1) {
   const m = / KEY (\d+) P ([0-9A-F]{2})\/([0-9A-F]{2}) V (\d+) D (\d+) SE (\d+)@(\d+) E (\d+)\/(\d+)(?: ([0-9A-F]{8}))? CN (\d+)(?: ([0-9A-F]{8}))? S ([0-9A-F]{8}) F (\d+)\/(\d+)\b/i.exec(c1 || "");
@@ -274,11 +274,11 @@ export function c1Words(c1) {
 // test build 13: "FIFO ..."); isr, from test build 11: the interrupts' times against the audio's, and the DSP; c1, from test build
 // 12: the second core and its fault record, from test build 13 also W, the reverb loop's cuts
 // (test build 19: c1r, the tenth line, "C1R RV n@ms ...": the second core's revivals and its last fault's registers)
-export function diagFields([boot, last, ble, link, trace, hci, l6, isr, c1, c1r]) {
+export function diagFields([boot, last, ble, link, trace, hci, l6, isr, c1, c1r, le]) {
   const a2dp = l6 && l6.startsWith("A2") ? l6 : undefined, fifo = l6 && l6.startsWith("FIFO") ? l6 : undefined;
   const hci0 = l6 && !a2dp && !fifo ? l6 : undefined;
   return { boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0, a2dp, fifo, isr, c1,
-           c1r: c1r && c1r.startsWith("C1R") ? c1r : undefined };
+           c1r: c1r && c1r.startsWith("C1R") ? c1r : undefined, le: le && le.startsWith("LE ") ? le : undefined };   // (le: test build 28)
 }
 // the c1 regs line in words (test build 19, firmware/bt/bt_a2dp.c bt_c1r_line)
 export function c1rWords(c1r) {
@@ -327,6 +327,7 @@ export function show(r, prev, say) {
   say(`last boot  ${l.failed ? `FAILED: ${lastBootWords(r)}; blocks ${l.blocks}, load ${l.load}%, peak ${l.peak}%, NaN ${l.nans}, CPU1 ${l.cpu1}, loops ${l.loops}` : "finished normally"}`);
   say(`bluetooth  ${ble.raw}`);
   if (r.link) say(`link       ${r.link}`);
+  if (r.le) say(`le         ${r.le}`);   // (test build 28: the LE links, the editor, the central role for the footswitch)
   if (r.trace) say(`trace      ${r.trace}`);
   if (r.hci) say(`hci        ${r.hci}`);
   if (r.hci0) say(`hci0       ${r.hci0}`);

@@ -26,6 +26,7 @@ btctrler.a	ll_keys.c.o	btctrler/ll_keys.c.bc
 btctrler.a	ll_resolve_list.c.o	btctrler/ll_resolve_list.c.bc
 btctrler.a	ll_scan.c.o	btctrler/ll_scan.c.bc
 btctrler.a	ll_slave.c.o	btctrler/ll_slave.c.bc
+btctrler.a	ll_master.c.o	btctrler/ll_master.c.bc
 btctrler.a	ll_vendor.c.o	btctrler/ll_vendor.c.bc
 btctrler.a	ll_white_list.c.o	btctrler/ll_white_list.c.bc
 btctrler.a	misc_hw.c.o	btctrler/misc_hw.c.bc

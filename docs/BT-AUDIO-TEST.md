@@ -27,7 +27,7 @@ It is a test image, its own build target (`make bt`). The normal firmware and th
   release's engine is unchanged.
 - **In since test build 24:** Bluetooth MIDI (BLE MIDI) beside the music, for a Chocolate (below, "Test build 24"); since
   test build 27 the web editor over Bluetooth too, on a second LE link beside the Chocolate's (below, "Test build 27: the web
-  editor over Bluetooth").
+  editor over Bluetooth"); since test build 28 the regular Chocolate too, the pedal as its central (below, "Test build 28").
 - **Not in:** stereo, play/pause from the pedal (AVRCP), a level setting on the pedal.
 
 ## Build
@@ -750,6 +750,76 @@ SysEx dropped (too long, unfinished, or come while one waited).
 7. The USB cable back: the log's MIDI line (`LE`, `I`, `ED`, `X`, `SX`), and the music's (`UND`, `GAP`).
 8. The same from an iPhone with MIDIWeb (the music from that iPhone too: three links), and from Chrome on Android.
 
+## Test build 28: the pedal as the Chocolate's central
+
+The regular M-VAVE Chocolate (not the Plus) is only a Bluetooth peripheral: phones and computers connect to it, it connects to
+nothing, so up to test build 27 it could not reach the pedal. M-VAVE's own firmware connects to it as its **central**, and so
+does this build: while no footswitch is connected, the pedal listens for it (it scans), connects to it, finds its MIDI
+characteristic and subscribes to its notifications; its footswitches then act as the Chocolate Plus's do (Control and Program
+Changes, tap tempo, the expression pedal), through the same MIDI reader. The editor over Bluetooth (test build 27) works beside
+it, and so does the phone's music.
+
+### Use
+
+1. Switch the pedal on, then the Chocolate (or the other way round). Within a few seconds the pedal connects to it and its
+   footswitches act. Nothing to pair by hand: if the Chocolate asks for pairing, the pedal asks for Just Works pairing by
+   itself (that path is untried: the log's `PR` counts it).
+2. The first Chocolate the pedal links after power-on is the only one it takes until the next power-off (another player's
+   Chocolate on stage is never taken). Its address is in the log's LE line (`@...`).
+3. Keep the Chocolate away from a phone's app while the pedal looks for it: a Chocolate already connected to a phone does not
+   advertise, so the pedal cannot find it.
+4. **DLY held at power-on: no central role** for that boot: no scanning, the LE side exactly as test build 27 (two phones or a
+   Chocolate Plus). It is the stage fallback if the scanning ever disturbs the music. (DLY used to leave out the rest of the
+   stock power setup, a diagnostic of test builds 18 to 27; the stock setup is now always done.)
+
+### How it works
+
+- **Which one is the Chocolate.** It is the advertiser that shows the BLE MIDI service UUID and a name containing `FOOTCTRL`
+  (the regular Chocolate's Bluetooth name in its quick guide and in players' reports) or `CHOCOLATE` (another of its manuals),
+  without case, in its advertising data or its scan response, advertises as connectable and is heard at -80 dBm or more
+  (`firmware/bt/bt_le_central.h`, `LE_CEN_NAMES`, `LE_CEN_RSSI`). Once one has been linked and subscribed, only its address.
+- **Scanning** (active, for the scan responses' names) runs only while the footswitch's link is down: 10 ms every 200 ms, 5 % of
+  the radio's time. With it found, the pedal stops scanning and connects (the library's initiator, which itself listens 5 ms in
+  every 15 while the classic link is on), asking a connection interval of 30 ms at most, no latency, a 2 s supervision timeout
+  (a flash write's pause does not end the link). A connection not made in 3 s is cancelled and the scanning goes on.
+- **The client** is the pedal's own, not the library's GATT client (not linked): the ATT packets with an odd opcode, the
+  responses and notifications, reach it through `att_dispatch_register_client`, and its requests go out as the server's
+  notifications do. It reads the primary services until the BLE MIDI one, its characteristics until the MIDI one, its
+  descriptors after the value until the client configuration, then writes it on (notifications). With the same Chocolate again
+  it goes straight to that write, with the handles found before. An answer that asks for security makes it pair (Just Works)
+  and ask again once the link is encrypted; an unanswered request (5 s), or pairing that encrypts nothing (8 s), ends the link
+  and the scanning starts again.
+- **The links.** Two LE links, typed: one for the footswitch (the pedal is its central), one for a phone or computer (the
+  editor). The two radio entities give: advertising and scanning (nothing connected), the footswitch's link and advertising, a
+  phone's link and scanning, or both links. So with the central role on, only one phone's LE link at a time (a second phone,
+  or a Chocolate Plus beside the editor, needs DLY at power-on).
+- **The library.** The controller's master link is `ll_master.c`, from the same pinned `btctrler.a` as the rest of
+  `third_party/jieli-ble` (its two handlers were empty stand-ins up to test build 27); everything it calls was already in the
+  image, apart from a Wi-Fi detection report (stood in) and two log switches. The roles: `LE_MASTER | LE_SLAVE | LE_ADV |
+  LE_SCAN | LE_INIT` (`bt_cfg.c`). The scanner, the initiator and the multi-link scheduler were linked already.
+- **Memory.** No more links than test build 27, so no more of the Bluetooth heap for them; the scanner's own link state (20
+  bytes) while it scans; the client and the filter about 0.2 KB of main RAM; `ll_master.c`'s code in the flash.
+
+### In the log
+
+The DIAG's eleventh line (`node tools/op.mjs log`: the `le` row) holds the whole LE side: `LE 2 L3 W134 P1 A4/0 C24 P12 IRQ
+812/97 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6`. After the links' counts and advertising, each link
+up as its role (`C` the footswitch's, the pedal its central; `P` a phone's) and interval; the editor's words (test build 27);
+then the central role: `CEN` and its step (`SCAN`, `INIT` connecting, `LINK`; `KEY` when DLY was held), `R` advertising
+reports read, `M` the footswitch's matched, `T` connections asked, `K` links made, `S` subscriptions, `F` failures (a link
+dropped by the client), `MIDI` its notifications; `PR` pairings asked, `CL` the client's step and last ATT error, and `@` the
+footswitch's address once known.
+
+### What to check
+
+1. The music playing from the phone, the Chocolate on: within a few seconds its footswitches act. The log: `CEN LINK`, `S1`,
+   `MIDI` rising with each press. `CEN SCAN` with `R` rising and `M0` means no advertiser passed the filter: the Chocolate's
+   name is then neither of the two (a scanner app on a phone, such as nRF Connect, shows its name and services).
+2. The Chocolate off and on again: it comes back by itself (`K`, `S` up by one).
+3. The editor connected over Bluetooth meanwhile (test build 27): both work.
+4. The music with the Chocolate away (scanning): `UND`, `GAP` as in test build 27.
+5. DLY held at power-on: `CEN KEY`, and the LE side as test build 27.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate
@@ -794,6 +864,13 @@ SysEx dropped (too long, unfinished, or come while one waited).
     other: both whole); `tests/test_editor.mjs` with `EDSIM_BLE=1` against `tests/edsim.c -DED_BT_LINKS=2u` (the Chocolate's
     writes between the editor's, INFO from a second central answered on its own link only, one link lost while the editor on
     the other is still pushed).
+  - Test build 28, the central role: `tests/test_bt_le_central.c` (the ATT client against a simulated footswitch's GATT
+    server answering at the default MTU, in several layouts: the MIDI service last or first, descriptors before its CCC, a
+    vendor characteristic before it, no MIDI service, no CCC, encryption asked, a stale cached handle; and the advertisement
+    filter: the UUID and the name in separate reports, case, RSSI, not connectable, another BLE MIDI device, the known address,
+    malformed data, the table's turnover); `tests/test_bt_le_links.c` (the typed links: advertising and scanning wanted
+    as the entities allow, the DLY key's test build 27 behaviour). The member check of `ll_master.c` (nm against the image's
+    members and firmware): no symbol left unresolved that build 27 resolved.
   - Each of about twenty deliberate faults (no timestamp before F7, a clock ending the SysEx, a waiting frame overwritten, a
     reply sent over USB or to the other link, a push or a frame not waiting for the buffer, one SysEx reader for both links,
     a link's end stopping the other's editor, an event counted twice, advertising with both links up...) fails at least one

@@ -16,9 +16,15 @@
  * Test build 27: the web editor over BLE MIDI too (px_editor.h ED_BT): its SysEx comes in the MIDI writes (px_midi_io.h), its
  * replies go back as notifications of the MIDI characteristic (below, ed_bt_send and ble_profile_loop). And two LE links at once
  * (bt_le_links.h, bt_cfg.c): the Chocolate on one, the editor on the other, beside the phone's music; the pedal advertises
- * while a link is free. The MIDI of either link reaches the pedal; the editor's replies go to the link that asked. */
+ * while a link is free. The MIDI of either link reaches the pedal; the editor's replies go to the link that asked.
+ * Test build 28: the pedal as the central of a footswitch that is only a peripheral (the regular M-VAVE Chocolate): while its
+ * link is down the pedal scans, at 5 % of the radio's time, for the BLE MIDI UUID and the name (bt_le_central.h), connects to
+ * it, finds its MIDI characteristic with an ATT client of its own and subscribes; its notifications go to the same MIDI
+ * reader. The controller's master link is ll_master.c's (third_party/jieli-ble, test build 28). DLY held at power-on: no
+ * central role, LE as in test build 27 (le_cen_off, openpocket.c). */
 #include "ble_adv.h"                                     /* (ble/: the advertising data, the scan response with the name) */
 #include "bt_le_links.h"                                 /* (test build 27: which link a handle is, when to advertise) */
+#include "bt_le_central.h"                               /* (test build 28: which advertisement is the footswitch's, the ATT client) */
 
 extern void le_device_db_init(void);
 extern void sm_init(void);
@@ -41,8 +47,21 @@ extern int le_controller_set_mac(const uint8_t *mac);
 extern int att_server_notify(uint16_t con, uint16_t handle, uint8_t *value, uint16_t len);   /* 0 sent, 87 no room now */
 extern uint8_t hci_le_get_acl_packet_num(uint16_t con);   /* the link's packets with the controller, not yet acknowledged */
 extern void stack_run_loop_resume(void);                  /* a message to the host's task (type 255): it runs its loop hooks */
+/* test build 28, the central role (att_dispatch.c, l2cap.c, sm.c: members already linked) */
+extern void att_dispatch_register_client(void (*cb)(uint8_t, uint16_t, uint8_t *, uint16_t));   /* every odd ATT opcode */
+extern int att_dispatch_client_can_send_now(uint16_t con);
+extern int l2cap_reserve_packet_buffer(void);             /* 1: reserved now */
+extern uint8_t *l2cap_get_outgoing_buffer(void);          /* (after the HCI and L2CAP heads) */
+extern int l2cap_send_prepared_connectionless(uint16_t con, uint16_t cid, uint16_t len);   /* 0 sent; else the buffer stays ours */
+extern void l2cap_release_packet_buffer(void);
+extern uint8_t sm_api_request_pairing(uint16_t con);
 
-enum { LE_CMD_ADV_ENABLE = 1, LE_CMD_ADV_PARAM, LE_CMD_ADV_DATA, LE_CMD_RSP_DATA };
+enum { LE_CMD_ADV_ENABLE = 1, LE_CMD_ADV_PARAM, LE_CMD_ADV_DATA, LE_CMD_RSP_DATA, LE_CMD_DISCONNECT = 5 };
+/* test build 28: the host's commands for the central role (btstack_main.c __ble_thread_loop_handler): scan parameters (type,
+ * interval, window), scan enable (enable, filter duplicates), create connection (a packed {interval max, latency, timeout,
+ * address type, address}; ll_hci_create_conn: interval min 7.5 ms, and with the classic stack on it scans 5 ms every 15 ms) */
+enum { LE_CMD_SCAN_PARAM = 13, LE_CMD_CREATE_CONN = 15, LE_CMD_CREATE_CONN_CANCEL = 16, LE_CMD_SCAN_ENABLE = 22 };
+enum { LE_EV_ENCRYPTION_CHANGE = 0x08, LE_EV_KEY_REFRESH = 0x30, LE_EV_ADV_REPORT = 0xE2 };   /* (0xE2: the host's GAP report) */
 enum { LE_HCI_EVENT_PACKET = 4, LE_EV_DISCONNECTION_COMPLETE = 0x05, LE_EV_META = 0x3E, LE_SUB_CONNECTION_COMPLETE = 0x01,
        LE_SUB_CONNECTION_UPDATE_COMPLETE = 0x03, LE_SUB_ENHANCED_CONNECTION_COMPLETE = 0x0A, LE_SM_JUST_WORKS_REQUEST = 0xD0 };
 enum { LE_IO_NO_INPUT_NO_OUTPUT = 3, LE_AUTHREQ_BONDING = 1 };
@@ -74,6 +93,26 @@ typedef char le_links_check[LE_LINKS == ED_BT_LINKS ? 1 : -1];   /* (px_editor.h
  * buffer), so it is kept here, for the central's reads and the log; the replies do not wait for it: a central that asks the
  * editor something over BLE MIDI listens (one bonded earlier may not write it again) */
 static uint16_t le_ccc[LE_LINKS];
+
+/* ---- test build 28: the central role's state (bt_le_central.h: the advertisement filter and the ATT client) */
+#define LE_SCAN_INTERVAL 320u     /* 200 ms (0.625 ms units) */
+#define LE_SCAN_WINDOW 16u        /* 10 ms of it: 5 % of the radio's time, and only while the footswitch's link is down */
+#define LE_CEN_INTERVAL 24u       /* the footswitch's link: 30 ms at most (1.25 ms units), latency 0 */
+#define LE_CEN_TIMEOUT 200u       /* its supervision timeout, 2 s (10 ms units): a flash write's pause does not end it */
+#define LE_CEN_INIT_MS 3000u      /* a connection not made in 3 s is cancelled, and the pedal scans again */
+#define LE_CEN_REQ_MS 5000u       /* an ATT request unanswered for 5 s, or pairing that encrypts nothing in 8 s: the link goes */
+#define LE_CEN_PAIR_MS 8000u
+enum { LE_CEN_OFF, LE_CEN_SCAN, LE_CEN_INIT, LE_CEN_LINK };
+static uint8_t le_cen_off;                 /* openpocket.c: DLY held at power-on, no central role this boot */
+static uint8_t le_cen_st, le_cen_scan;     /* the step; scanning asked for */
+static uint8_t le_cen_hold;                /* pairing asked: the request waits for the link's encryption */
+static uint32_t le_cen_ms, le_cen_kick;    /* when the step (or the request out) began; scanning asked again, every 2 s */
+static uint16_t le_cen_val, le_cen_ccc;    /* the known footswitch's MIDI value and CCC handles (0: find them) */
+static uint32_t le_cen_tries, le_cen_links, le_cen_subs, le_cen_fails, le_cen_midi, le_cen_pairs;
+static le_cen_scan_t le_cs;
+static attc_t le_ac;
+static struct __attribute__((packed)) { uint16_t intv, lat, tmo; uint8_t type, addr[6]; } le_cen_param;   /* (read later by the
+                                                                 * host's thread: static) */
 
 /* ---- test build 27: the web editor's replies (px_editor.h ED_BT), as BLE MIDI notifications of the MIDI characteristic.
  * ed_bt_send copies a reply into le_tx; the host's task sends it a packet at a time from ble_profile_loop, which it calls after
@@ -120,6 +159,7 @@ static void ed_bt_send(uint32_t link, const uint8_t *p, uint32_t n)
     stack_run_loop_resume();                                   /* the host's task sends it */
 }
 static int le_adv_on(void);
+static void le_cen_poll(uint32_t now);
 /* the host's task, after each of its messages (btstack_task.c calls this hook; the library's is weak). Up to test build 26 an
  * empty one in bt_glue.c. Also, while a link is free, advertising is asked again every 2 s: asked while it runs it does nothing
  * (ll_adv.c ll_adv_open: already open), and it starts it again if an enable after a link's end found no free entity yet */
@@ -134,11 +174,12 @@ void ble_profile_loop(void)
         le_tx_at = at;
         le_tx_pkts++;
     }
-    if (le_adv_ok && le_links_up(&le_lk) < LE_LINKS && ble_ms() - le_adv_kick >= 2000u) {
+    if (le_adv_ok && (le_lk.adv || le_links_want_adv(&le_lk)) && ble_ms() - le_adv_kick >= 2000u) {
         le_adv_kick = ble_ms();
         if (le_lk.adv) (void)ble_user_cmd_prepare(LE_CMD_ADV_ENABLE, 1, 1);
         else if (!le_adv_on()) le_lk.adv = 1;
     }
+    le_cen_poll(ble_ms());                                     /* (test build 28: the central role) */
 }
 /* link i came or went: nothing of the last one's on it is kept or sent (px_editor.h ed_bt_lost: its frame, its pushes) */
 static void le_link_reset(uint32_t i)
@@ -163,6 +204,90 @@ static int le_adv_on(void)
     ble_user_cmd_prepare(LE_CMD_RSP_DATA, 2, (int)sizeof ble_scan_rsp, ble_scan_rsp);
     le_adv_n++;
     return ble_user_cmd_prepare(LE_CMD_ADV_ENABLE, 1, 1);
+}
+
+/* ---- test build 28: the central role, all in the host's task (its events, ble_profile_loop) */
+static void le_scan_on(uint32_t on)                            /* active scanning (for the scan responses' names), or off */
+{
+    if (on && !le_cen_scan) ble_user_cmd_prepare(LE_CMD_SCAN_PARAM, 3, 1, LE_SCAN_INTERVAL, LE_SCAN_WINDOW);
+    if (on || le_cen_scan) ble_user_cmd_prepare(LE_CMD_SCAN_ENABLE, 2, (int)on, 0);
+    le_cen_scan = (uint8_t)on;
+}
+static int le_cen_slot(void)                                   /* the footswitch's link, or -1 */
+{
+    uint32_t i;
+    for (i = 0; i < LE_LINKS; i++) if (le_lk.conn[i] && le_lk.role[i] == LE_ROLE_CENTRAL) return (int)i;
+    return -1;
+}
+/* one ATT request to the footswitch, as the ATT server sends its notifications (att_server.c att_server_notify) */
+static int le_att_send(uint16_t con, const uint8_t *pdu, uint32_t n)
+{
+    if (!att_dispatch_client_can_send_now(con) || !l2cap_reserve_packet_buffer()) return -1;
+    memcpy(l2cap_get_outgoing_buffer(), pdu, n);
+    if (l2cap_send_prepared_connectionless(con, 4, (uint16_t)n)) { l2cap_release_packet_buffer(); return -1; }
+    return 0;
+}
+static void le_cen_drop(uint16_t con)                          /* the footswitch's link goes: it is found again from scanning */
+{
+    le_cen_fails++;
+    le_ac.st = ATTC_FAIL; le_ac.req_n = 0; le_ac.busy = 0; le_cen_hold = 0;
+    ble_user_cmd_prepare(LE_CMD_DISCONNECT, 1, (int)con);
+}
+/* every pass of the host's task: scanning while the footswitch's link is down; a connection not made in time cancelled;
+ * the ATT client's request out, its time limit */
+static void le_cen_poll(uint32_t now)
+{
+    const int i = le_cen_slot();
+    if (!le_lk.cen || !le_adv_ok) return;                      /* (the role off, or the stack not up yet) */
+    if (le_cen_st == LE_CEN_OFF && le_links_want_scan(&le_lk)) {
+        le_scan_on(1);
+        le_cen_st = LE_CEN_SCAN;
+        le_cen_ms = le_cen_kick = now;
+    } else if (le_cen_st == LE_CEN_SCAN && now - le_cen_kick >= 2000u) {
+        le_cen_kick = now;                                     /* (asked again, as advertising: nothing if it runs) */
+        ble_user_cmd_prepare(LE_CMD_SCAN_ENABLE, 2, 1, 0);
+    } else if (le_cen_st == LE_CEN_INIT && now - le_cen_ms > LE_CEN_INIT_MS) {
+        ble_user_cmd_prepare(LE_CMD_CREATE_CONN_CANCEL, 0);
+        le_cen_st = LE_CEN_OFF;                                /* (scanning again at the next pass) */
+    } else if (le_cen_st == LE_CEN_LINK && i >= 0) {
+        const uint16_t con = le_lk.conn[i];
+        if (le_ac.req_n && !le_ac.busy && !le_cen_hold && !le_att_send(con, le_ac.req, le_ac.req_n)) {
+            le_ac.req_n = 0; le_ac.busy = 1; le_cen_ms = now;
+        }
+        if ((le_ac.busy && now - le_cen_ms > LE_CEN_REQ_MS) || (le_cen_hold && now - le_cen_ms > LE_CEN_PAIR_MS)) {
+            if (le_ac.st == ATTC_SUB) le_cen_val = le_cen_ccc = 0;   /* (a footswitch that changed: find its handles again) */
+            le_cen_drop(con);
+        }
+    }
+}
+/* an advertising report: the footswitch, while scanning, is connected to */
+static void le_cen_adv(const uint8_t *p, uint32_t n, uint32_t now)
+{
+    if (le_cen_st != LE_CEN_SCAN || !le_cen_report(&le_cs, p, n, now, &le_cen_param.type, le_cen_param.addr)) return;
+    le_scan_on(0);
+    le_cen_param.intv = LE_CEN_INTERVAL; le_cen_param.lat = 0; le_cen_param.tmo = LE_CEN_TIMEOUT;
+    ble_user_cmd_prepare(LE_CMD_CREATE_CONN, 1, &le_cen_param);
+    le_cen_st = LE_CEN_INIT;
+    le_cen_ms = now;
+    le_cen_tries++;
+}
+/* the ATT packets with an odd opcode (att_dispatch.c): the footswitch's responses and notifications */
+static void le_att_client(uint8_t type, uint16_t con, uint8_t *p, uint16_t n)
+{
+    const int i = le_links_find(&le_lk, con);
+    uint32_t r;
+    if (type != 8u || i < 0 || le_lk.role[i] != LE_ROLE_CENTRAL) return;   /* (a phone's link: nothing for the client) */
+    r = attc_rx(&le_ac, p, n);
+    if (r == ATTC_R_MIDI) { le_cen_midi++; px_midi_ble_write_link((uint32_t)i, p + 3, (uint32_t)n - 3u); }
+    else if (r == ATTC_R_PAIR) { le_cen_pairs++; le_cen_hold = 1; le_cen_ms = ble_ms(); (void)sm_api_request_pairing(con); }
+    else if (r == ATTC_R_READY) {                              /* subscribed: this footswitch is the one, until power-off */
+        le_cen_subs++;
+        le_cs.known = 1; le_cs.type = le_cen_param.type; memcpy(le_cs.addr, le_cen_param.addr, 6);
+        le_cen_val = le_ac.val; le_cen_ccc = le_ac.ccc;
+    } else if (r == ATTC_R_FAIL) {
+        le_cen_val = le_cen_ccc = 0;
+        le_cen_drop(con);
+    }
 }
 
 static uint16_t le_att_read(uint16_t con, uint16_t handle, uint16_t offset, uint8_t *buf, uint16_t size)
@@ -209,8 +334,14 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
         if (i >= 0) {
             le_drop = p[5];
             le_link_reset((uint32_t)i);                         /* (test build 27: the editor's reply and frame on that link) */
+            if (le_lk.role[i] == LE_ROLE_CENTRAL) { le_cen_st = LE_CEN_OFF; le_cen_hold = 0; le_ac.busy = 0; le_ac.req_n = 0; }
             le_adv_more();                                      /* (a link free: advertising, if it is not on yet) */
         }
+    } else if (p[0] == LE_EV_ADV_REPORT) {
+        le_cen_adv(p, size, ble_ms());                          /* (test build 28: the footswitch, while scanning) */
+    } else if ((p[0] == LE_EV_ENCRYPTION_CHANGE && size >= 6u && !p[2] && p[5]) || (p[0] == LE_EV_KEY_REFRESH && size >= 5u && !p[2])) {
+        const int i = le_links_find(&le_lk, (uint32_t)(p[3] | p[4] << 8) & 0x0FFFu);
+        if (i >= 0 && le_lk.role[i] == LE_ROLE_CENTRAL) le_cen_hold = 0;   /* (paired: the request goes again) */
     } else if (p[0] == LE_EV_META) {
         const uint8_t *q = 0;
         const uint32_t h = (uint32_t)(p[4] | p[5] << 8) & 0x0FFFu;
@@ -219,11 +350,22 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
         else if (p[2] == LE_SUB_CONNECTION_UPDATE_COMPLETE && !p[3]) q = p + 6;
         if (q && p[2] == LE_SUB_CONNECTION_UPDATE_COMPLETE) le_links_update(&le_lk, h, (uint32_t)(q[0] | q[1] << 8));
         else if (q) {                                           /* a link made (once, whatever the callbacks it reaches) */
-            const int i = le_links_made(&le_lk, h, (uint32_t)(q[0] | q[1] << 8));
+            const uint32_t role = p[6] ? LE_ROLE_PERIPH : LE_ROLE_CENTRAL;   /* (the pedal's role: 1 slave, 0 master) */
+            const int i = le_links_made(&le_lk, h, (uint32_t)(q[0] | q[1] << 8), role);
             if (i >= 0) {
                 le_link_reset((uint32_t)i);
+                if (role == LE_ROLE_CENTRAL) {                  /* (test build 28: the footswitch, connected to: its client) */
+                    const int known = le_cs.known && !memcmp(le_cs.addr, p + 8, 6);
+                    le_scan_on(0);                      /* (a connection that came after its cancel, while scanning again) */
+                    le_cen_st = LE_CEN_LINK;
+                    le_cen_links++;
+                    le_cen_hold = 0;
+                    attc_start(&le_ac, known ? le_cen_val : 0u, known ? le_cen_ccc : 0u);
+                }
                 le_adv_more();                                  /* (test build 27: the other link stays open to a central) */
             }
+        } else if ((p[2] == LE_SUB_CONNECTION_COMPLETE || p[2] == LE_SUB_ENHANCED_CONNECTION_COMPLETE) && p[3] && le_cen_st == LE_CEN_INIT) {
+            le_cen_st = LE_CEN_OFF;                             /* (the connection failed or was cancelled: scanning again) */
         }
     }
 }
@@ -249,6 +391,7 @@ void ble_profile_init(void)
     att_server_register_packet_handler(le_on_event);
     hci_event_callback_set(le_on_event);
     le_l2cap_register_packet_handler(le_on_event);
+    att_dispatch_register_client(le_att_client);               /* (test build 28: the footswitch's responses and notifications) */
 }
 
 /* on the stack's INIT_OK (bt_a2dp.c), once: this pedal's LE address, then advertising */
@@ -261,6 +404,7 @@ static void bt_le_advertise(void)
     le_mac[5] = 0x06;                                           /* (the most significant octet: 0x02 is the classic address's) */
     le_controller_set_mac(le_mac);
     BT_CRUMB("le advertise");
+    le_lk.cen = !le_cen_off;                                    /* (test build 28: the central role, unless DLY was held) */
     le_adv_more();
 }
 
@@ -281,15 +425,49 @@ static char *bt_le_text(char *o)
     o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
     return o;
 }
-/* test build 27, at the MIDI line's end (bt_a2dp.c ble_midi_line), once the editor has used Bluetooth: "ED 12/340 N1/0" = its
- * frames answered over Bluetooth / notifications sent, each link's client configuration (1: notifications on), then X and the
- * replies dropped, SX and the SysEx dropped, when there are any */
+/* test build 27: the editor's words, "ED 12/340 N1/0" = its frames answered over Bluetooth / notifications sent, each link's
+ * client configuration (1: notifications on), then X and the replies dropped, SX and the SysEx dropped, when there are any */
 static char *bt_le_ed_text(char *o)
 {
-    if (!ed_bt_frames && !ed_bt_rx[0].got && !ed_bt_rx[1].got && !ed_bt_rx[0].drop && !ed_bt_rx[1].drop && !le_tx_lost) return o;
     o = ble__put(o, " ED "); o = bt__dec(o, ed_bt_frames); *o++ = '/'; o = bt__dec(o, le_tx_pkts);
     o = ble__put(o, " N"); o = bt__dec(o, le_ccc[0]); *o++ = '/'; o = bt__dec(o, le_ccc[1]);
     if (le_tx_lost) { o = ble__put(o, " X"); o = bt__dec(o, le_tx_lost); }
     if (ed_bt_rx[0].drop + ed_bt_rx[1].drop) { o = ble__put(o, " SX"); o = bt__dec(o, ed_bt_rx[0].drop + ed_bt_rx[1].drop); }
     return o;
+}
+/* test build 28: the DIAG's eleventh line, the LE side in full:
+ *   "LE 2 L3 W134 P1 A4/0 C24 P12 IRQ 812/97 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6"
+ * the links up and made, MIDI writes, Just Works pairings, advertising asked / its last answer, each link up as its role (C: the
+ * pedal is its central, the footswitch; P: a phone or computer is) and interval (1.25 ms), the LE baseband's interrupts; the
+ * editor's words; then the central role: OFF (DLY held at power-on: "CEN KEY"), SCAN, INIT (connecting), LINK, the advertising
+ * reports read, the footswitch's matched, connections asked, links made, subscriptions, failures, MIDI notifications, pairings
+ * asked (PR), the ATT client's step and last error (CL), and the footswitch's address once known */
+void bt_le_line(char *out)
+{
+    static const char *const ST[4] = {"OFF", "SCAN", "INIT", "LINK"};
+    char t[300], *o = t;
+    uint32_t i;
+    o = ble__put(o, "LE "); o = bt__dec(o, le_links_up(&le_lk));
+    o = ble__put(o, " L"); o = bt__dec(o, le_lk.made);
+    o = ble__put(o, " W"); o = bt__dec(o, le_writes);
+    o = ble__put(o, " P"); o = bt__dec(o, le_pairs);
+    o = ble__put(o, " A"); o = bt__dec(o, le_adv_n); *o++ = '/'; o = bt__dec(o, le_adv_rc);
+    for (i = 0; i < LE_LINKS; i++) if (le_lk.conn[i]) { *o++ = ' '; *o++ = le_lk.role[i] == LE_ROLE_CENTRAL ? 'C' : 'P'; o = bt__dec(o, le_lk.intv[i]); }
+    if (le_drop) { o = ble__put(o, " D"); o = ble__hex(o, le_drop); }
+    o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
+    o = bt_le_ed_text(o);
+    o = ble__put(o, " CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st & 3u]);
+    o = ble__put(o, " R"); o = bt__dec(o, le_cs.reports);
+    o = ble__put(o, " M"); o = bt__dec(o, le_cs.matches);
+    o = ble__put(o, " T"); o = bt__dec(o, le_cen_tries);
+    o = ble__put(o, " K"); o = bt__dec(o, le_cen_links);
+    o = ble__put(o, " S"); o = bt__dec(o, le_cen_subs);
+    o = ble__put(o, " F"); o = bt__dec(o, le_cen_fails);
+    o = ble__put(o, " MIDI "); o = bt__dec(o, le_cen_midi);
+    if (le_cen_pairs) { o = ble__put(o, " PR"); o = bt__dec(o, le_cen_pairs); }
+    if (le_cen_st == LE_CEN_LINK || le_ac.err) { o = ble__put(o, " CL"); o = bt__dec(o, le_ac.st); *o++ = '/'; o = ble__hex(o, le_ac.err); }
+    if (le_cs.known) { o = ble__put(o, " @"); for (i = 6; i--;) o = bt__hex(o, le_cs.addr[i], 2); }
+    *o = 0;
+    for (i = 0; i < 223u && t[i]; i++) out[i] = t[i];
+    out[i] = 0;
 }

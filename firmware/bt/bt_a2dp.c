@@ -45,7 +45,6 @@ extern uint8_t connect_last_device_from_vm(void);
 /* test build 23: BLE MIDI beside the music (bt/bt_le_midi.c, included after this file) */
 static void bt_le_advertise(void);
 static char *bt_le_text(char *o);
-static char *bt_le_ed_text(char *o);                            /* (test build 27: the web editor's words, last) */
 
 /* the SDK's numbers (include_lib/btstack/avctp_user.h, include_lib/utils/event/bt_event.h, Apache-2.0) */
 enum { USER_CTRL_WRITE_SCAN_ENABLE = 13, USER_CTRL_WRITE_CONN_ENABLE = 15 };
@@ -829,8 +828,8 @@ void ble_midi_line(char *out)
                                                                  * bytes, which the LE words could pass) */
         bt_tasks_line(bt_line_t);
         while (*e) e++;
-        if (e - bt_line_t < 170) e = bt_le_text(e);             /* (test build 23: the BLE MIDI side) */
-        e = bt_le_ed_text(e);
+        if (e - bt_line_t < 170) e = bt_le_text(e);             /* (test build 23: the BLE MIDI side; test build 28: in full on
+                                                                 * the LE line, bt_le_midi.c bt_le_line) */
         *e = 0;
         bt_line_out(out, bt_line_t);
         return;
@@ -858,7 +857,6 @@ void ble_midi_line(char *out)
     o = ble__put(o, " FQ "); o = bt__dec(o, bt_fq_w - bt_fq_r);
     o = bt_le_text(o);                                          /* (test build 23: the BLE MIDI side) */
     o = bt_stacks_text(o);
-    o = bt_le_ed_text(o);                                       /* (test build 27: the web editor, last: cut first) */
     *o = 0;
     bt_line_out(out, bt_line_t);
 }
