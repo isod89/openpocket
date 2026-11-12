@@ -210,7 +210,7 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
   }
   {
     // test build 28's eleventh line, the LE side; up to build 27 there is none, and a line that is not it is not taken
-    const le = "LE 2 L3 W134 P1 A4/0 C24 P12 IRQ 812/97 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6";
+    const le = "LE 2 L3 W134 P1 A4/0 C24 P12 U2 24/0/200 D08@31500 IRQ 812/97 WD1@36000 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6";
     const lines = (l11) => ["UP 30000 SAFE 0 STAGE 8 RST 1 GUARD 0", "LAST OK", "BT VIS IRQ 40:1234 41:567 EV 4 RDY SCAN 1", "LINK", "EV",
       "HCI", "FIFO 00000000 00000000 00000000 00000000", "ISR", `${c1} W 0`, "C1R 0", ...(l11 === undefined ? [] : [l11])];
     const out = [], r = { time: "", level: "full", info, ...diagFields(lines(le)) };

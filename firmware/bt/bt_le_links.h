@@ -80,3 +80,15 @@ static int le_links_want_adv(const le_links_t *s)
 }
 /* test build 28: scanning for the footswitch is wanted: the central role is on and its link is not up */
 static int le_links_want_scan(const le_links_t *s) { return s->cen && !le_links_count(s, LE_ROLE_CENTRAL); }
+
+/* test build 28: the LE side's watchdog (bt_le_midi.c bt_le_watch, from the main loop). irqs is the LE baseband's interrupts
+ * counted so far, on_air whether something should be on air (advertising, scanning or a link). 1 when they have not moved for
+ * limit ms while something should be: then again after each further limit ms of silence */
+typedef struct { uint32_t seen, ms; } le_watch_t;
+static int le_watch_due(le_watch_t *w, uint32_t irqs, uint32_t now, int on_air, uint32_t limit)
+{
+    if (irqs != w->seen || !on_air) { w->seen = irqs; w->ms = now; return 0; }
+    if (now - w->ms < limit) return 0;
+    w->ms = now;
+    return 1;
+}

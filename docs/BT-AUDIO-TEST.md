@@ -124,7 +124,7 @@ trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
 | `HEAP` | the Bluetooth heap's lowest free bytes |
 | `STUB` | calls of the stand-ins (functions this image leaves out) and the last one's name (the trace line lists them in order) |
 | `Q40` | seconds since IRQ 40 last rose. While a phone is searching it stays near 0; a large number means the scans have stopped |
-| `KICK` | times the pedal asked for its scans again because IRQ 40 had been silent for 5 s while visible (test build 4) |
+| `KICK` | times the pedal asked for its scans again because IRQ 40 had been silent for 5 s while visible (test build 4); since test build 28 30 s while an LE link is up, and `@` the last one's time (ms since power-on) |
 | `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations. While a phone is linked, `RX` must rise: the phone's packets wait there (test builds 1 to 5 never used it, see below) |
 
 (Test build 11 also had `RNG a/b`, the random source the pairing's keys come from: it worked, and build 12 drops it.)
@@ -802,13 +802,17 @@ it, and so does the phone's music.
 
 ### In the log
 
-The DIAG's eleventh line (`node tools/op.mjs log`: the `le` row) holds the whole LE side: `LE 2 L3 W134 P1 A4/0 C24 P12 IRQ
-812/97 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6`. After the links' counts and advertising, each link
-up as its role (`C` the footswitch's, the pedal its central; `P` a phone's) and interval; the editor's words (test build 27);
-then the central role: `CEN` and its step (`SCAN`, `INIT` connecting, `LINK`; `KEY` when DLY was held), `R` advertising
-reports read, `M` the footswitch's matched, `T` connections asked, `K` links made, `S` subscriptions, `F` failures (a link
-dropped by the client), `MIDI` its notifications; `PR` pairings asked, `CL` the client's step and last ATT error, and `@` the
-footswitch's address once known.
+The DIAG's eleventh line (`node tools/op.mjs log`: the `le` row) holds the whole LE side: `LE 2 L3 W134 P1 A4/0 C24 P12 U2
+24/0/200 D08@31500 IRQ 812/97 WD1@36000 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6`. After the links'
+counts and advertising, each link up as its role (`C` the footswitch's, the pedal its central; `P` a phone's) and interval
+(1.25 ms); when there are any, `U` the connection updates (count, then the last one's interval, latency and supervision timeout
+in 10 ms), `PHY` the PHY updates (count, the last transmit/receive PHY), `DL` the data length changes (count, the last transmit
+octets), `D` the last LE link's end (its reason in hex: `08` supervision timeout, `13` the other side ended it, `16` the pedal
+did; `@` ms since power-on, as `SE` and `RC`); the LE interrupts; `WD` the watchdog's restarts (below) and the last one's time;
+the editor's words (test build 27); then the central role: `CEN` and its step (`SCAN`, `INIT` connecting, `LINK`; `KEY` when
+DLY was held), `R` advertising reports read, `M` the footswitch's matched, `T` connections asked, `K` links made, `S`
+subscriptions, `F` failures (a link dropped by the client), `MIDI` its notifications; `PR` pairings asked, `CL` the client's
+step and last ATT error, and `@` the footswitch's address once known.
 
 ### What to check
 
@@ -819,6 +823,32 @@ footswitch's address once known.
 3. The editor connected over Bluetooth meanwhile (test build 27): both work.
 4. The music with the Chocolate away (scanning): `UND`, `GAP` as in test build 27.
 5. DLY held at power-on: `CEN KEY`, and the LE side as test build 27.
+
+### Test build 27's LE link drop
+
+On the pedal, test build 27's editor link from an iPhone (MIDIWeb, no music) ended by supervision timeout (`D8`) about 20 s
+in, as the catalogue read ended, and the LE side then stayed silent until power-off: the LE interrupts and the controller's own
+thread stood still, and advertising, asked again (`A2/0`), never came back on air. The cause is not known yet. Build 28 adds:
+
+- **A watchdog** (`bt_le_watch`, from the main loop): while something should be on air (advertising, scanning or a link) and
+  neither LE interrupt has moved for 4 s (advertising alone moves them every 500 ms), it turns advertising and scanning off and
+  on again, which closes their radio entities and opens new ones, scheduled afresh. `WD` counts it. Asking again without
+  turning off first (build 27) does nothing: the controller answers "already open".
+- **The classic scans' kick waits 30 s** instead of 5 while an LE link is up: the radio can serve an LE link for seconds on end
+  (the catalogue read), and the drop came in a boot with two kicks (which came first is not known). `KICK` now has its time.
+- **The link layer's procedures in the log** (`U`, `PHY`, `DL`, above) and the drop's time (`D08@...`), to see what the phone
+  did before a drop.
+
+What was checked in the library (its bitcode): a lost link's radio entity is freed (`le_hw_close`: its anchors cleared, a
+suspended advertiser or scanner resumed); the Wi-Fi detection hooks on that path (`ll_wifi_detect_ext`,
+`ll_update_ch_done_wfdet_callback`) return nothing, so their stand-ins change nothing; an LE link's end does not reach the
+classic side's disconnection handling (`hci_vendor.c` sends it to the LE handlers only). The LE scheduler (`ble_slot_schedule`)
+skips its pass when an interrupt arrives while a pass from the controller's task holds its lock: a lost pass is one way every
+LE event could stop at once, not proven.
+
+To check: the editor's catalogue read over Bluetooth from an iPhone, then 2 minutes idle: no `D08`; if it comes, the `U`
+words before it and whether `WD` brought the pedal back (it shows in the phone's Bluetooth MIDI list again within a few
+seconds, `A` rises, the LE interrupts move).
 
 ## Checked on a computer
 

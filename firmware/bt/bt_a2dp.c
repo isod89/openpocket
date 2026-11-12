@@ -45,6 +45,8 @@ extern uint8_t connect_last_device_from_vm(void);
 /* test build 23: BLE MIDI beside the music (bt/bt_le_midi.c, included after this file) */
 static void bt_le_advertise(void);
 static char *bt_le_text(char *o);
+static uint32_t bt_le_up(void);                                 /* (test build 28: LE links up; the LE side's watchdog) */
+static void bt_le_watch(uint32_t now);
 
 /* the SDK's numbers (include_lib/btstack/avctp_user.h, include_lib/utils/event/bt_event.h, Apache-2.0) */
 enum { USER_CTRL_WRITE_SCAN_ENABLE = 13, USER_CTRL_WRITE_CONN_ENABLE = 15 };
@@ -85,7 +87,9 @@ static uint32_t bt_t_start, bt_t_init;
  * (openpocket.c), the last scan enable (bt_app_task: the first at start-up, the others after a link's end or a KICK) */
 static uint32_t bt_t_vis, bt_dsp_ms, bt_scan_ms;
 #define BT_QUIET_MS 5000u
-static uint32_t bt_q40_n, bt_q40_t, bt_kicks;                  /* the baseband interrupt's last count and when it changed */
+#define BT_QUIET_LE_MS 30000u                                   /* (test build 28: with an LE link up) */
+static uint32_t bt_q40_n, bt_q40_t, bt_kicks, bt_kick_ms;      /* the baseband interrupt's last count and when it changed; the
+                                                                 * kicks, the last one's time (ms_now) */
 extern uint8_t acl_tx_pool[], acl_tx_pool_end[], acl_rx_pool[], acl_rx_pool_end[];   /* app-bt.ld */
 
 /* ---- the HCI conversation, recorded where it passes (the log's hci line). The integrated controller and host talk through
@@ -618,13 +622,16 @@ void ble_test_poll(void)
         }
     }
     if (bt_cnt_irq_br != bt_q40_n) { bt_q40_n = bt_cnt_irq_br; bt_q40_t = now; }
-    else if (bt_st == BT_VISIBLE && now - bt_q40_t > BT_QUIET_MS) {
+    else if (bt_st == BT_VISIBLE && now - bt_q40_t > (bt_le_up() ? BT_QUIET_LE_MS : BT_QUIET_MS)) {
         /* visible, no link, and the baseband's interrupt has been silent for 5 s: the scans have stopped (test build 3 after a
-         * failed pairing). Ask for them again (the link scheduler arms its alarm anew); KICK counts it */
-        bt_q40_t = now; bt_kicks++;
+         * failed pairing). Ask for them again (the link scheduler arms its alarm anew); KICK counts it. Test build 28: with an LE
+         * link up the radio may serve it for seconds on end (the editor's catalogue read, about 20 s), so 30 s of silence: test
+         * build 27's editor link ended by supervision timeout in a boot with two kicks, which came first is not known */
+        bt_q40_t = now; bt_kicks++; bt_kick_ms = ms_now();
         BT_CRUMB("kick: scan again");
         bt_cmd(1u);
     }
+    bt_le_watch(now);                                           /* (test build 28: the LE side's watchdog, bt_le_midi.c) */
     if (bt_st >= BT_LINKED && bt_st != BT_FAILED) {
         bt_decode();
         if (now - bt_t_steer >= 4u) {                           /* (the encoded backlog: the FIFO's, test build 12; up to test
@@ -771,6 +778,7 @@ void ble_test_line(char *out)
     if (bt_stub_last) { *o++ = ' '; o = bt__lim(o, bt_stub_last, o + 40); }
     o = ble__put(o, " Q40 "); o = bt__dec(o, (ble_ms() - bt_q40_t) / 1000u);
     o = ble__put(o, " KICK "); o = bt__dec(o, bt_kicks);
+    if (bt_kicks) { *o++ = '@'; o = bt__dec(o, bt_kick_ms); }  /* (test build 28: the last one's time, ms since power-on) */
     o = bt_pool_text(o, " TX ", acl_tx_pool, acl_tx_pool_end);
     o = bt_pool_text(o, " RX ", acl_rx_pool, acl_rx_pool_end);
     *o = 0;

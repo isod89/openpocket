@@ -63,7 +63,8 @@ enum { LE_CMD_ADV_ENABLE = 1, LE_CMD_ADV_PARAM, LE_CMD_ADV_DATA, LE_CMD_RSP_DATA
 enum { LE_CMD_SCAN_PARAM = 13, LE_CMD_CREATE_CONN = 15, LE_CMD_CREATE_CONN_CANCEL = 16, LE_CMD_SCAN_ENABLE = 22 };
 enum { LE_EV_ENCRYPTION_CHANGE = 0x08, LE_EV_KEY_REFRESH = 0x30, LE_EV_ADV_REPORT = 0xE2 };   /* (0xE2: the host's GAP report) */
 enum { LE_HCI_EVENT_PACKET = 4, LE_EV_DISCONNECTION_COMPLETE = 0x05, LE_EV_META = 0x3E, LE_SUB_CONNECTION_COMPLETE = 0x01,
-       LE_SUB_CONNECTION_UPDATE_COMPLETE = 0x03, LE_SUB_ENHANCED_CONNECTION_COMPLETE = 0x0A, LE_SM_JUST_WORKS_REQUEST = 0xD0 };
+       LE_SUB_CONNECTION_UPDATE_COMPLETE = 0x03, LE_SUB_DATA_LENGTH_CHANGE = 0x07, LE_SUB_ENHANCED_CONNECTION_COMPLETE = 0x0A,
+       LE_SUB_PHY_UPDATE_COMPLETE = 0x0C, LE_SM_JUST_WORKS_REQUEST = 0xD0 };
 enum { LE_IO_NO_INPUT_NO_OUTPUT = 3, LE_AUTHREQ_BONDING = 1 };
 enum { LE_H_GAP_NAME = 0x0003, LE_H_MIDI = 0x0007, LE_H_MIDI_CCC = 0x0008 };
 enum { LE_ADV_INTERVAL = 0x0320 };                             /* 800 x 0.625 ms = 500 ms, the stock firmware's (STOCK-FIRMWARE.md 19.4) */
@@ -87,6 +88,20 @@ static uint32_t le_writes, le_pairs, le_drop, le_adv_rc, le_adv_n;
 static uint8_t le_adv_ok;                                      /* advertising asked for at least once */
 static uint8_t le_mac[6];
 static uint32_t le_adv_kick;                                   /* (ble_profile_loop: advertising asked again, every 2 s) */
+/* test build 28: the LE side's events and health, for the log. In test build 27 an iPhone's editor link ended by supervision
+ * timeout (0x08) about 20 s in, as the catalogue read ended, and the LE side then stayed silent until power-off: no LE interrupt,
+ * the controller's own thread idle, advertising asked again but never on air. (RF_ble.c le_hw_close frees a lost link's entity
+ * and resumes a suspended advertiser; ll_adv_open answers an enable with "already open", so asking again changes nothing) */
+static uint32_t le_drop_ms;                                    /* when the last LE link ended (ms_now) */
+static uint32_t le_upd_n, le_phy_n, le_dl_n;                   /* connection updates, PHY updates, data length changes */
+static uint16_t le_upd_intv, le_upd_lat, le_upd_tmo, le_dl_tx;   /* the last update's interval (1.25 ms), latency, timeout (10 ms);
+                                                                 * the last data length change's transmit octets */
+static uint8_t le_phy_tx, le_phy_rx;                           /* the last PHY update's (1: 1M, 2: 2M, 3: coded) */
+static uint32_t le_msg_n, le_ev_msg;                           /* (the host's messages, ble_profile_loop; the last event's) */
+static uint8_t le_ev_last[2];
+static le_watch_t le_wd;                                       /* (bt_le_links.h le_watch_due) */
+static volatile uint8_t le_wd_req;                             /* (the main loop's watchdog asks ble_profile_loop to act) */
+static uint32_t le_wd_n, le_wd_ms;                             /* the watchdog's restarts, the last one's time (ms_now) */
 typedef char le_links_check[LE_LINKS == ED_BT_LINKS ? 1 : -1];   /* (px_editor.h keeps a frame for each link) */
 /* test build 27: the MIDI characteristic's client configuration as each link's central wrote it (bit 0: notifications). The
  * library keeps it only after an att_send_init this image never makes (att_send.c: att_set_ccc_config does nothing without its
@@ -159,6 +174,8 @@ static void ed_bt_send(uint32_t link, const uint8_t *p, uint32_t n)
     stack_run_loop_resume();                                   /* the host's task sends it */
 }
 static int le_adv_on(void);
+static void le_adv_more(void);
+static void le_scan_on(uint32_t on);
 static void le_cen_poll(uint32_t now);
 /* the host's task, after each of its messages (btstack_task.c calls this hook; the library's is weak). Up to test build 26 an
  * empty one in bt_glue.c. Also, while a link is free, advertising is asked again every 2 s: asked while it runs it does nothing
@@ -167,6 +184,16 @@ void ble_profile_loop(void)
 {
     uint8_t pkt[LE_TX_PKT];
     const uint32_t h = le_lk.conn[le_tx_link];
+    le_msg_n++;                                                /* (le_ev_again: the next events are another message's) */
+    if (le_wd_req) {                                           /* test build 28: the LE side silent (bt_le_watch): advertising and
+                                                                 * scanning off and on again, new radio entities scheduled afresh
+                                                                 * (RF_ble.c le_hw_close, le_hw_open, le_hw_advertising) */
+        le_wd_req = 0; le_wd_n++; le_wd_ms = ms_now();
+        BT_CRUMB("le watchdog: advertising again");
+        if (le_lk.adv) { (void)ble_user_cmd_prepare(LE_CMD_ADV_ENABLE, 1, 0); le_lk.adv = 0; }
+        if (le_cen_scan) { le_scan_on(0); if (le_cen_st == LE_CEN_SCAN) le_cen_st = LE_CEN_OFF; }   /* (le_cen_poll: on again) */
+        le_adv_more();
+    }
     while (le_tx_at < le_tx_n && h && hci_le_get_acl_packet_num((uint16_t)h) < le_tx_inflight(le_lk.intv[le_tx_link])) {
         uint32_t at = le_tx_at;
         const uint32_t k = px_blem_pack(le_tx, le_tx_n, &at, ble_ms(), pkt, LE_TX_PKT);
@@ -324,15 +351,34 @@ static int le_att_write(uint16_t con, uint16_t handle, uint16_t mode, uint16_t o
     return 0;
 }
 
+/* test build 28: the same event at another of the callbacks it reaches (the host gives some events to all three, in one of its
+ * messages; ble_profile_loop runs after each message) */
+static int le_ev_again(const uint8_t *p)
+{
+    if (le_ev_msg == le_msg_n && le_ev_last[0] == p[0] && le_ev_last[1] == p[2]) return 1;
+    le_ev_msg = le_msg_n; le_ev_last[0] = p[0]; le_ev_last[1] = p[2];
+    return 0;
+}
 /* the host's events: the LE link's (the classic link's reach bt_a2dp.c through update_bt_current_status) */
 static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
 {
-    (void)chan; (void)size;
+    (void)chan;
     if (type != LE_HCI_EVENT_PACKET) return;
+    if (p[0] == LE_EV_META && size >= 3u && !le_ev_again(p)) {  /* test build 28: the link layer's procedures, for the log */
+        if (p[2] == LE_SUB_CONNECTION_UPDATE_COMPLETE && size >= 12u && !p[3]) {
+            le_upd_n++;
+            le_upd_intv = (uint16_t)(p[6] | p[7] << 8); le_upd_lat = (uint16_t)(p[8] | p[9] << 8); le_upd_tmo = (uint16_t)(p[10] | p[11] << 8);
+        } else if (p[2] == LE_SUB_DATA_LENGTH_CHANGE && size >= 7u) {
+            le_dl_n++; le_dl_tx = (uint16_t)(p[5] | p[6] << 8);
+        } else if (p[2] == LE_SUB_PHY_UPDATE_COMPLETE && size >= 8u && !p[3]) {
+            le_phy_n++; le_phy_tx = p[6]; le_phy_rx = p[7];
+        }
+    }
     if (p[0] == LE_EV_DISCONNECTION_COMPLETE) {                 /* (a classic disconnection, or the same event again: not ours) */
         const int i = le_links_ended(&le_lk, (uint32_t)(p[3] | p[4] << 8) & 0x0FFFu);
         if (i >= 0) {
             le_drop = p[5];
+            le_drop_ms = ms_now();                              /* (test build 28: the log's D08@31500) */
             le_link_reset((uint32_t)i);                         /* (test build 27: the editor's reply and frame on that link) */
             if (le_lk.role[i] == LE_ROLE_CENTRAL) { le_cen_st = LE_CEN_OFF; le_cen_hold = 0; le_ac.busy = 0; le_ac.req_n = 0; }
             le_adv_more();                                      /* (a link free: advertising, if it is not on yet) */
@@ -408,6 +454,27 @@ static void bt_le_advertise(void)
     le_adv_more();
 }
 
+/* test build 28: an LE link up (bt_a2dp.c: the classic scans' kick then waits longer) */
+static uint32_t bt_le_up(void) { return le_links_up(&le_lk); }
+/* test build 28: the LE side's watchdog, from the main loop (ble_test_poll: the host's task may have nothing to do then).
+ * Something should be on air (advertising, scanning or a link) and neither LE interrupt has moved for LE_WD_MS (advertising
+ * alone moves them every 500 ms): ble_profile_loop turns advertising and scanning off and on again. WD in the LE line */
+#define LE_WD_MS 4000u
+static void bt_le_watch(uint32_t now)
+{
+    const int on_air = le_adv_ok && (le_lk.adv || le_cen_scan || le_links_up(&le_lk));
+    if (!le_watch_due(&le_wd, ble_cnt_irq_ev + ble_cnt_irq_rx, now, on_air, LE_WD_MS)) return;
+    le_wd_req = 1;
+    stack_run_loop_resume();                                   /* (the host's task: ble_profile_loop) */
+}
+
+/* test build 28: the last LE link's end, "D08@31500": its reason (08 supervision timeout, 13 the central ended it, 16 the pedal
+ * did, 3E it never came up) and when (ms since power-on, as SE and RC) */
+static char *le_drop_text(char *o)
+{
+    if (!le_drop) return o;
+    o = ble__put(o, " D"); o = bt__hex(o, le_drop, 2); *o++ = '@'; return bt__dec(o, le_drop_ms);
+}
 /* the log's words for the LE side, appended to the classic lines (bt_a2dp.c): "LE 2 L3 W134 P1 A4/0 I12/24 IRQ 812/97" =
  * the links up (test build 27: up to two), links made so far, MIDI writes, Just Works pairings, advertising asked n times / its
  * last return, the links' intervals (1.25 ms units), the LE baseband's two interrupts (45 event, 29 receive; ble/ble_isr.S
@@ -421,8 +488,9 @@ static char *bt_le_text(char *o)
     o = ble__put(o, " P"); o = bt__dec(o, le_pairs);
     o = ble__put(o, " A"); o = bt__dec(o, le_adv_n); *o++ = '/'; o = bt__dec(o, le_adv_rc);
     for (i = 0; i < LE_LINKS; i++) if (le_lk.conn[i]) { o = ble__put(o, k++ ? "/" : " I"); o = bt__dec(o, le_lk.intv[i]); }
-    if (le_drop) { o = ble__put(o, " D"); o = ble__hex(o, le_drop); }
+    o = le_drop_text(o);
     o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
+    if (le_wd_n) { o = ble__put(o, " WD"); o = bt__dec(o, le_wd_n); }
     return o;
 }
 /* test build 27: the editor's words, "ED 12/340 N1/0" = its frames answered over Bluetooth / notifications sent, each link's
@@ -436,9 +504,13 @@ static char *bt_le_ed_text(char *o)
     return o;
 }
 /* test build 28: the DIAG's eleventh line, the LE side in full:
- *   "LE 2 L3 W134 P1 A4/0 C24 P12 IRQ 812/97 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6"
+ *   "LE 2 L3 W134 P1 A4/0 C24 P12 U2 24/0/200 D08@31500 IRQ 812/97 WD1@36000 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41
+ *    @A1B2C3D4E5F6"
  * the links up and made, MIDI writes, Just Works pairings, advertising asked / its last answer, each link up as its role (C: the
- * pedal is its central, the footswitch; P: a phone or computer is) and interval (1.25 ms), the LE baseband's interrupts; the
+ * pedal is its central, the footswitch; P: a phone or computer is) and interval (1.25 ms); when there are any, the connection
+ * updates (U: count, the last one's interval, latency and supervision timeout, 10 ms), PHY updates (PHY: count, the last one's
+ * transmit/receive PHY) and data length changes (DL: count, the last transmit octets), and the last link's end (D: reason and
+ * ms since power-on); the LE baseband's interrupts, the watchdog's restarts (WD, bt_le_watch: count, the last one's time); the
  * editor's words; then the central role: OFF (DLY held at power-on: "CEN KEY"), SCAN, INIT (connecting), LINK, the advertising
  * reports read, the footswitch's matched, connections asked, links made, subscriptions, failures, MIDI notifications, pairings
  * asked (PR), the ATT client's step and last error (CL), and the footswitch's address once known */
@@ -453,8 +525,15 @@ void bt_le_line(char *out)
     o = ble__put(o, " P"); o = bt__dec(o, le_pairs);
     o = ble__put(o, " A"); o = bt__dec(o, le_adv_n); *o++ = '/'; o = bt__dec(o, le_adv_rc);
     for (i = 0; i < LE_LINKS; i++) if (le_lk.conn[i]) { *o++ = ' '; *o++ = le_lk.role[i] == LE_ROLE_CENTRAL ? 'C' : 'P'; o = bt__dec(o, le_lk.intv[i]); }
-    if (le_drop) { o = ble__put(o, " D"); o = ble__hex(o, le_drop); }
+    if (le_upd_n) {                                             /* connection updates: count, the last one's interval/latency/timeout */
+        o = ble__put(o, " U"); o = bt__dec(o, le_upd_n); *o++ = ' ';
+        o = bt__dec(o, le_upd_intv); *o++ = '/'; o = bt__dec(o, le_upd_lat); *o++ = '/'; o = bt__dec(o, le_upd_tmo);
+    }
+    if (le_phy_n) { o = ble__put(o, " PHY"); o = bt__dec(o, le_phy_n); *o++ = ' '; o = bt__dec(o, le_phy_tx); *o++ = '/'; o = bt__dec(o, le_phy_rx); }
+    if (le_dl_n) { o = ble__put(o, " DL"); o = bt__dec(o, le_dl_n); *o++ = ' '; o = bt__dec(o, le_dl_tx); }
+    o = le_drop_text(o);
     o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
+    if (le_wd_n) { o = ble__put(o, " WD"); o = bt__dec(o, le_wd_n); *o++ = '@'; o = bt__dec(o, le_wd_ms); }
     o = bt_le_ed_text(o);
     o = ble__put(o, " CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st & 3u]);
     o = ble__put(o, " R"); o = bt__dec(o, le_cs.reports);

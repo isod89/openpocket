@@ -70,6 +70,27 @@ int main(void)
        "central role: then the footswitch: one link of each role");
     s.cen = 0;
     ok(ended(&s, 0x63, 1) == 1 && asked == 3 && !le_links_want_scan(&s), "role off (DLY): a free link is advertised for, nothing scanned, as test build 27");
+
+    /* test build 28: the LE side's watchdog */
+    {
+        le_watch_t w = {0, 0};
+        uint32_t t, n = 0;
+        ok(!le_watch_due(&w, 10, 1000, 1, 4000) && w.seen == 10 && w.ms == 1000, "watchdog: the interrupts moved: noted, nothing to do");
+        ok(!le_watch_due(&w, 10, 4999, 1, 4000), "watchdog: silent for 3999 ms: not yet");
+        ok(le_watch_due(&w, 10, 5000, 1, 4000), "watchdog: silent for 4 s while advertising: acts");
+        ok(!le_watch_due(&w, 10, 5001, 1, 4000) && !le_watch_due(&w, 10, 8999, 1, 4000) && le_watch_due(&w, 10, 9000, 1, 4000),
+           "watchdog: still silent: once more after another 4 s, not on every pass");
+        ok(!le_watch_due(&w, 11, 9500, 1, 4000) && !le_watch_due(&w, 11, 13499, 1, 4000) && le_watch_due(&w, 11, 13500, 1, 4000),
+           "watchdog: the interrupts moved once: 4 s counted from then");
+        for (t = 13500; t <= 60000; t += 10) n += (uint32_t)le_watch_due(&w, 11, t, 0, 4000);
+        ok(n == 0 && !le_watch_due(&w, 11, 60000 + 3999, 1, 4000) && le_watch_due(&w, 11, 60000 + 4000, 1, 4000),
+           "watchdog: nothing on air (Bluetooth off, before start-up): never; on air again, the silence counts from then");
+        w.seen = 5; w.ms = 0xFFFFFF00u;
+        ok(!le_watch_due(&w, 5, 0x00000100u, 1, 4000) && le_watch_due(&w, 5, 0xFFFFFF00u + 4000u, 1, 4000), "watchdog: across the clock's wrap");
+        n = 0;
+        for (t = 0; t < 20000; t += 20) n += (uint32_t)le_watch_due(&w, t / 500u, 0x10000u + t, 1, 4000);   /* (advertising: every 500 ms) */
+        ok(n == 0, "watchdog: advertising's interrupts every 500 ms: never");
+    }
     printf("\n%s\n", failed ? "LE link tests FAILED" : "all LE link tests passed");
     return failed ? 1 : 0;
 }
