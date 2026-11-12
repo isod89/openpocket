@@ -44,7 +44,10 @@ const int config_bt_security_vulnerability = 0;
 const int sniff_support_reset_anchor_point = 0;
 const int config_btctler_single_carrier_en = 0;
 const int config_btctler_le_master_multilink = 0;
-const int config_btctler_le_roles = 31;                     /* test build 28: LE_MASTER | LE_SLAVE | LE_ADV | LE_SCAN | LE_INIT (1, 2, 4, 8, 16,
+#define BT_LE_ROLES 6       /* test build 29: build 28's 31 hung the start-up before VISIBLE (a watchdog reset, no stall record):
+                             * back to 27's, LE_SLAVE | LE_ADV, to split the roles from the rest of 28 on the pedal. The same value
+                             * twice: openpocket.c reads the macro, tools/jlfold.py the literal below (it evaluates numbers only) */
+const int config_btctler_le_roles = 6;                      /* test build 28: 31, LE_MASTER | LE_SLAVE | LE_ADV | LE_SCAN | LE_INIT (1, 2, 4, 8, 16,
                                                              * ble/ble_cfg.c): as before it advertises and a central connects; it also
                                                              * scans for a footswitch and connects to it as its central (ll_scan.c,
                                                              * ll_init.c, ll_master.c), unless DLY was held at power-on. Up to 27: 6 */

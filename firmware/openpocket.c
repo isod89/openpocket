@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 28
+#define BT_TEST_BUILD 29
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -995,6 +995,9 @@ static void app_main(void)
      * 1.96 s window kept measurable); CAB, the same and the stock core supplies (above, after keys_capture_idle); REV: */
     if (keys_held_at_boot == 3) bt_off_by_key = 1;   /* REV held at power-on: this boot without Bluetooth (an A/B by ear) */
     if (keys_held_at_boot == BT_CEN_OFF_KEY) le_cen_off = 1;   /* test build 28, DLY: no central role (bt/bt_le_midi.c) */
+#if BT_LE_ROLES != 31
+    le_cen_off = 1;                     /* (test build 29: the LE roles of 27, so no central role at all: bt/bt_cfg.c BT_LE_ROLES) */
+#endif
     bt_canary_arm();                     /* (test build 14: the pattern after the Bluetooth heap, checked by ble_test_poll) */
 #endif
     if (!safe && !BT_OFF_BY_KEY)         /* after a failed boot Bluetooth stays off: the pedal runs, and can be re-flashed */
