@@ -1006,6 +1006,21 @@ footswitch's link) and the initiator's. Test build 36 had asked the phone for 15
 - **`config_btctler_le_acl_total_nums` 8** (2,387 bytes; 882 more from the Bluetooth heap).
 - **The editor 2 packets out at most** (`le_tx_inflight`): a little slower to read the pedal over Bluetooth, never a full pool.
 
+### Test build 38: the library's timers on time
+
+Test build 37 on the pedal: no crash with the editor used hard, the music clean, but the Chocolate's link still ended by
+supervision timeout about every 1.5 minutes, even with no phone linked and a 6 s timeout, and it was heard again only seldom
+(`NM5` in about 11 minutes). The LE controller's multi-link scheduler (`config_btctler_le_slave_multilink` 1:
+multilink_schedule.c, from the LE event interrupt) arms usr and sys timeouts for its advertising and connection-update
+windows; up to 37 they ran from `ble_poll`, a main-loop pass late (tens of ms with the DSP's load), and their adds were not
+safe in an interrupt.
+
+- **The Bluetooth session's ff8c60a**: the timers' adds and deletes save and put back the interrupt state; an interrupt never
+  calls `ble_ms()`; the usr timeouts have their own table, run every millisecond by the 10 kHz tick (`BT_USR_IN_TICK` 1), and a
+  due one waits a millisecond when the baseband's lock is taken (`TB`, 0 expected).
+- **The HCI line's words**: `TS used/peak` and `TU used/peak` the two tables, `TF` adds refused, `TI` adds from an interrupt,
+  `TR` usr timeouts run, `TB` the waits.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate
