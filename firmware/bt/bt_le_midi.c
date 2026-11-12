@@ -49,6 +49,7 @@ extern uint8_t hci_le_get_acl_packet_num(uint16_t con);   /* the link's packets 
 extern void stack_run_loop_resume(void);                  /* a message to the host's task (type 255): it runs its loop hooks */
 /* test build 28, the central role (att_dispatch.c, l2cap.c, sm.c: members already linked) */
 extern void att_dispatch_register_client(void (*cb)(uint8_t, uint16_t, uint8_t *, uint16_t));   /* every odd ATT opcode */
+extern void att_dispatch_register_server(void (*cb)(uint8_t, uint16_t, uint8_t *, uint16_t));   /* (test build 33: the spy) */
 extern int att_dispatch_client_can_send_now(uint16_t con);
 extern int l2cap_reserve_packet_buffer(void);             /* 1: reserved now */
 extern uint8_t *l2cap_get_outgoing_buffer(void);          /* (after the HCI and L2CAP heads) */
@@ -347,6 +348,40 @@ static void le_cen_adv(const uint8_t *p, uint32_t n, uint32_t now)
  * second word (struct att_info_t: client, server, flags, ...) */
 extern uint8_t att_global_info[];
 typedef void (*le_att_handler_t)(uint8_t type, uint16_t con, uint8_t *p, uint16_t n);
+/* test build 33: the GATT server's ATT traffic, for the log (an iPhone ended its link every few seconds in test builds 30 and 31,
+ * with DLY too). The server's own handler (att_server.c att_packet_handler, registered by att_server_init) is put behind this one
+ * (att_dispatch_register_server again). A request in (ATT data, an even opcode) is counted and its opcode kept. The server
+ * writes its answer into l2cap's outgoing buffer and sends it at once (att_handle_request, l2cap_send_prepared_connectionless),
+ * in the call that brings the request or in the later can-send-now one: so a mark (0xFF, no ATT opcode) put there before each
+ * call and found overwritten after it means the call answered. The answer's opcode is counted; an Error Response (0x01)'s
+ * request opcode, handle and code are kept; the last four request > answer pairs; the client's MTU and the server's */
+static le_att_handler_t le_att_srv;                            /* the server's own handler */
+static uint32_t le_att_req, le_att_ans, le_att_err;            /* requests in, answers out, error responses */
+static uint8_t le_att_q, le_att_e[5];                          /* the last request's opcode; the last error: its 5 bytes */
+static uint8_t le_att_pair[4][2];                              /* the last four (request, answer) opcodes */
+static uint32_t le_att_pair_n;
+static uint16_t le_att_mtu_c, le_att_mtu_s;                    /* the client's MTU (its Exchange MTU Request), the server's */
+static void le_att_server_spy(uint8_t type, uint16_t con, uint8_t *p, uint16_t n)
+{
+    uint8_t *out = 0;
+    if (type == 8u && n >= 1u && !(p[0] & 1u)) {
+        le_att_req++; le_att_q = p[0];
+        if (p[0] == 0x02u && n >= 3u) le_att_mtu_c = (uint16_t)(p[1] | p[2] << 8);
+    }
+    if (l2cap_reserve_packet_buffer()) {                       /* (marked only while free: a packet still on its way out is
+                                                                 * never touched; else this call's answer goes uncounted) */
+        out = l2cap_get_outgoing_buffer();
+        if (out) out[0] = 0xFFu;
+        l2cap_release_packet_buffer();
+    }
+    if (le_att_srv) le_att_srv(type, con, p, n);
+    if (!out || out[0] == 0xFFu) return;
+    le_att_ans++;
+    le_att_pair[le_att_pair_n % 4u][0] = le_att_q; le_att_pair[le_att_pair_n % 4u][1] = out[0];
+    le_att_pair_n++;
+    if (out[0] == 0x01u) { le_att_err++; memcpy(le_att_e, out, 5); }
+    else if (out[0] == 0x03u) le_att_mtu_s = (uint16_t)(out[1] | out[2] << 8);
+}
 static void le_att_client(uint8_t type, uint16_t con, uint8_t *p, uint16_t n)
 {
     const int i = le_links_find(&le_lk, con);
@@ -498,6 +533,8 @@ void ble_profile_init(void)
     sm_set_request_security(0);
     sm_event_callback_set(le_on_sm);
     att_server_init(le_profile, le_att_read, le_att_write);
+    le_att_srv = *(const le_att_handler_t *)(const void *)(att_global_info + 4);   /* (test build 33: the server's handler, */
+    if (le_att_srv) att_dispatch_register_server(le_att_server_spy);              /* behind the spy) */
     att_server_register_packet_handler(le_on_event);
     hci_event_callback_set(le_on_event);
     le_l2cap_register_packet_handler(le_on_event);
@@ -650,10 +687,27 @@ void bt_le_line(char *out)
     if (le_enc_n) { o = ble__put(o, " EN"); o = bt__dec(o, le_enc_n); *o++ = '/'; o = bt__hex(o, le_enc_st, 2); }
     if (le_ltk_n) { o = ble__put(o, " LTK"); o = bt__dec(o, le_ltk_n); }
     if (le_att_fwd) { o = ble__put(o, " AF"); o = bt__dec(o, le_att_fwd); }
+    if (le_att_req || le_att_ans) {                            /* test build 33: the GATT server (le_att_server_spy): "AT 14/13
+                                                                 * E1 08:0007/0A M185/23 10>11 08>09 08>01 0A>0B" = requests in /
+                                                                 * answers out, the error responses (count, the request's opcode:
+                                                                 * handle / code), the client's MTU / the server's, the last four
+                                                                 * request > answer opcodes, oldest first */
+        uint32_t k;
+        o = ble__put(o, " AT"); o = bt__dec(o, le_att_req); *o++ = '/'; o = bt__dec(o, le_att_ans);
+        if (le_att_err) {
+            o = ble__put(o, " E"); o = bt__dec(o, le_att_err); *o++ = ' '; o = bt__hex(o, le_att_e[1], 2); *o++ = ':';
+            o = bt__hex(o, le_att_e[3], 2); o = bt__hex(o, le_att_e[2], 2); *o++ = '/'; o = bt__hex(o, le_att_e[4], 2);
+        }
+        if (le_att_mtu_c) { o = ble__put(o, " M"); o = bt__dec(o, le_att_mtu_c); *o++ = '/'; o = bt__dec(o, le_att_mtu_s); }
+        for (k = le_att_pair_n > 4u ? le_att_pair_n - 4u : 0u; k < le_att_pair_n; k++) {
+            *o++ = ' '; o = bt__hex(o, le_att_pair[k % 4u][0], 2); *o++ = '>'; o = bt__hex(o, le_att_pair[k % 4u][1], 2);
+        }
+    }
     o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
     if (le_wd_n) { o = ble__put(o, " WD"); o = bt__dec(o, le_wd_n); *o++ = '@'; o = bt__dec(o, le_wd_ms); }
     o = bt_le_ed_text(o);
     o = ble__put(o, " CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st < 5u ? le_cen_st : 0u]);
+    if (!le_lk.cen) { o = le_hw_text(o); *o = 0; goto done; }  /* (test build 33: the role off, its counters are all 0) */
     if (le_adv_held) o = ble__put(o, " AH");                   /* (test build 31: advertising held, the scanner alone) */
     o = ble__put(o, " RH"); o = bt__dec(o, bt_le_rep_host);    /* (test build 31: reports posted to the host, bt_a2dp.c) */
     o = ble__put(o, " RAW"); o = bt__dec(o, le_raw);
@@ -670,6 +724,7 @@ void bt_le_line(char *out)
     if (le_cen_st == LE_CEN_LINK || le_ac.err) { o = ble__put(o, " CL"); o = bt__dec(o, le_ac.st); *o++ = '/'; o = ble__hex(o, le_ac.err); }
     if (le_cs.known) { o = ble__put(o, " @"); for (i = 6; i--;) o = bt__hex(o, le_cs.addr[i], 2); }
     *o = 0;
+done:
     for (i = 0; i < 223u && t[i]; i++) out[i] = t[i];
     out[i] = 0;
 }

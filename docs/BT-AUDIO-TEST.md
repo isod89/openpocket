@@ -905,6 +905,12 @@ now ends with the link's life in ms (`D13@49866/2950`); `EN n/ss` counts a phone
 keys in RAM only: after a restart, a phone that paired before must forget the pedal (iPhone: Settings > Bluetooth, the `i` next
 to `OpenPocket`, Forget This Device) if `EN` shows `06`.
 
+Test build 33 adds the GATT server's side of a phone's link (`le_att_server_spy`, put in front of the library's own server
+handler): `AT 14/13 E1 08:0007/0A M185/23 10>11 08>09 08>01 0A>0B` = the ATT requests that reached the server / the answers it
+sent, the error responses (count, then the last one's request opcode, handle and error code), the phone's MTU / the pedal's
+(Exchange MTU), and the last four request > answer opcodes, oldest first (`10>11` read by group type answered, `08>01` read by
+type answered with an error, `0A>0B` a read). With the central role off the LE line ends after `CEN KEY` and the `HW` word.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate
