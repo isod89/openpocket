@@ -208,6 +208,16 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
     const t = out.join("\n");
     ok(/^isr {8}ISR 40:12/m.test(t) && /^ {11}pairing records: the library read 21 and wrote 2; 1 saved to the flash/m.test(t), "the report names the isr line's VM");
   }
+  {
+    // test build 28's eleventh line, the LE side; up to build 27 there is none, and a line that is not it is not taken
+    const le = "LE 2 L3 W134 P1 A4/0 C24 P12 IRQ 812/97 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6";
+    const lines = (l11) => ["UP 30000 SAFE 0 STAGE 8 RST 1 GUARD 0", "LAST OK", "BT VIS IRQ 40:1234 41:567 EV 4 RDY SCAN 1", "LINK", "EV",
+      "HCI", "FIFO 00000000 00000000 00000000 00000000", "ISR", `${c1} W 0`, "C1R 0", ...(l11 === undefined ? [] : [l11])];
+    const out = [], r = { time: "", level: "full", info, ...diagFields(lines(le)) };
+    show(r, null, (x) => out.push(x));
+    ok(r.le === le && out.some((x) => x === `le         ${le}`), "build 28's LE line: kept and shown as the le row");
+    ok(diagFields(lines()).le === undefined && diagFields(lines("TRACE 1 2 3")).le === undefined, "no LE line (up to build 27), or another line there: no le row");
+  }
 }
 b = parseBoot("UP 12345 SAFE 1 STAGE 7 RST 44 GUARD 1");
 ok(b.clockMs === 12345 && b.safe && b.stageName === "FIRST 6 S" && b.resetBy.join() === "WATCHDOG,SOFT" && b.failedBoots === 1, "boot line");
