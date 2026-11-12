@@ -21,8 +21,12 @@
 #endif
 #if PX_TABLES_RAM
 #define PX_RCONST
+/* test build 21: and in a .data section by name, or the compiler, seeing them never written, makes them constants again and
+ * puts them back in the flash (test build 20: GL_F and PXN_MC were still at 0x0203xxxx, only pxn_sc0 had moved) */
+#define PX_RTAB(name) __attribute__((section(".data.px_tab." #name)))
 #else
 #define PX_RCONST const
+#define PX_RTAB(name)
 #endif
 #include "px_nam.c"                                     /* v37: NAM A2-Lite (one translation unit: every build gets it) */
 /* v40: on the pedal the audio path runs from RAM, as the stock firmware's does: firmware/build.sh compiles this file with
@@ -2112,7 +2116,7 @@ void px_engine_set(px_engine *e, const px_preset_t *p)
 /* the settings that glide: gains, mixes, depths, delay times (each a plain float used as it is in the processing; the
  * filters' coefficients change at once, as they always did: a small step in a filter does not click) */
 #define GLF_(f) (uint32_t)offsetof(px_engine, f)
-static PX_RCONST uint32_t GL_F[] = {
+static PX_RCONST uint32_t GL_F[] PX_RTAB(gl_f) = {
     GLF_(cmp_make), GLF_(cmp_mix), GLF_(cmp_k),
     GLF_(oct_dry), GLF_(oct_s1), GLF_(oct_s2), GLF_(oct_up), GLF_(ps_dry), GLF_(ps_lvl[0]), GLF_(ps_lvl[1]),
     GLF_(sfx_mix), GLF_(sfx_c), GLF_(sfx_d),
