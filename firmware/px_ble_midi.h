@@ -8,7 +8,11 @@
  *   with neither timestamp nor status. Timestamps are ignored: the Chocolate Plus sends the same two bytes on every write.
  *
  * SysEx and the system common messages have no meaning here: they are skipped. SysEx can run over several writes, so that
- * is the one thing kept between packets. */
+ * is the one thing kept between packets.
+ *
+ * Below px_blem_parse, the Bluetooth audio image's web editor (px_editor.h ED_BT): px_blem_sysex keeps the SysEx of the same
+ * writes, across writes, in a second pass that leaves px_blem_parse and the messages it gives untouched; px_blem_pack cuts a
+ * reply into the packets the pedal sends back as notifications. */
 #pragma once
 #include <stdint.h>
 
@@ -53,4 +57,70 @@ static uint32_t px_blem_parse(px_blem_t *s, const uint8_t *p, uint32_t n, uint32
         i += need;
     }
     return got;
+}
+
+/* ---- the web editor's SysEx over BLE MIDI (the Bluetooth audio image, px_editor.h ED_BT) ----
+ * Read as Android's BluetoothMidiService and Apple's CoreMIDI write it: after the header, a byte with bit 7 set is a timestamp
+ * unless the byte before it was one, and then it is a status. A SysEx's data has no timestamps and runs on into the next writes,
+ * which begin with their header alone (a timestamp there is read as one, and skipped); its end, F7, comes after a timestamp of its
+ * own; real-time messages, each after a timestamp, may sit inside it; any other status ends it unfinished. */
+#ifndef PX_BLEM_SX_MAX
+#define PX_BLEM_SX_MAX 160u   /* the longest SysEx kept, between F0 and F7 (the editor's longest requests are 134 bytes) */
+#endif
+typedef struct {
+    uint8_t buf[PX_BLEM_SX_MAX];  /* the bytes between F0 and F7 */
+    uint32_t n;                   /* how many */
+    uint8_t in, keep, ready;      /* inside a SysEx; keeping it; a whole one waits in buf for its reader (who clears ready) */
+    uint32_t got, drop;           /* whole ones kept; dropped: too long, ended unfinished, or come while one waited */
+} px_blem_sx_t;
+
+/* one write: its SysEx bytes, kept across writes */
+static void px_blem_sysex(px_blem_sx_t *s, const uint8_t *p, uint32_t n)
+{
+    uint32_t i, ts = 0;                                    /* ts: the byte before was a timestamp */
+    if (n < 2u || !(p[0] & 0x80u)) return;                 /* no header: not a BLE MIDI packet */
+    for (i = 1; i < n; i++) {
+        const uint32_t b = p[i];
+        if (!(b & 0x80u)) {                                /* data: a SysEx's, or another message's (not kept) */
+            ts = 0;
+            if (s->keep) {
+                if (s->n < PX_BLEM_SX_MAX) s->buf[s->n++] = (uint8_t)b;
+                else { s->keep = 0; s->drop++; }           /* too long: not the editor's */
+            }
+            continue;
+        }
+        if (!ts) { ts = 1; continue; }                     /* a timestamp: a status follows */
+        ts = 0;
+        if (b >= 0xF8u) continue;                          /* real time: a SysEx goes on after it */
+        if (b == 0xF7u) {                                  /* the end */
+            if (s->keep) { s->ready = 1; s->got++; }
+            s->in = s->keep = 0;
+            continue;
+        }
+        if (s->keep) s->drop++;                            /* another status: the SysEx ends unfinished */
+        s->in = b == 0xF0u;
+        s->keep = s->in && !s->ready;                      /* (one at a time: a SysEx come while one waits is dropped) */
+        if (s->in && s->ready) s->drop++;
+        if (s->keep) s->n = 0;
+    }
+}
+
+/* the next packet of the message(s) m[0..n), F0 .. F7 with 7-bit bytes between, from m[*at] on, in at most max bytes (3 or
+ * more): the header, then the bytes, each status (F0, F7) after a timestamp of its own and the data without, as the writes
+ * px_blem_sysex reads. Returns the packet's length, 0 when nothing is left; *at moves past what it holds. ms: the time, whose
+ * 13 low bits are the packet's timestamp (the header holds the upper 6, each timestamp byte the lower 7) */
+static uint32_t px_blem_pack(const uint8_t *m, uint32_t n, uint32_t *at, uint32_t ms, uint8_t *out, uint32_t max)
+{
+    uint32_t i = *at, k = 0;
+    if (i >= n || max < 3u) return 0;
+    out[k++] = (uint8_t)(0x80u | (ms >> 7 & 0x3Fu));
+    while (i < n) {
+        if (m[i] & 0x80u) {                                /* a status: with its timestamp, in the same packet */
+            if (k + 2u > max) break;
+            out[k++] = (uint8_t)(0x80u | (ms & 0x7Fu));
+        } else if (k + 1u > max) break;
+        out[k++] = m[i++];
+    }
+    *at = i;
+    return k;
 }

@@ -5,7 +5,8 @@ phone as **`OpenPocket`**, pairs with no PIN, and the phone's music plays **mixe
 
 It is a test image, its own build target (`make bt`). The normal firmware and the installer's packages are unchanged.
 
-> **Status: test build 14.** Builds 1 to 10 ran on a pedal: the radio starts, a phone sees the pedal and links, but no phone
+> **Status: test build 27** (the web editor over Bluetooth, below). Up to test build 14: builds 1 to 10 ran on a pedal: the
+> radio starts, a phone sees the pedal and links, but no phone
 > could pair, and the guitar crackled. Build 11 paired an iPhone (below, "Test build 11"), but no music came out, and the guitar
 > still crackled with Bluetooth on. Build 12 takes the phone's packets where the controller first shows them, sends the output
 > in two slots against the crackles, and records the second core's fault (below, "Test build 12"); on some power-ons it
@@ -24,8 +25,9 @@ It is a test image, its own build target (`make bt`). The normal firmware and th
 - **Its own effects** ([OWN-FX.md](OWN-FX.md)): LOW OCTAVE, a 6th PITCH model (an octave under the low strings only), and
   SYN PAD, a 12th SYN model (a chord caught on the left footswitch and held under you). Only this image has them; the
   release's engine is unchanged.
-- **Not in:** Bluetooth MIDI (the BLE image's: there is not the room for both), stereo, play/pause from the pedal (AVRCP),
-  a level setting on the pedal.
+- **In since test build 24:** Bluetooth MIDI (BLE MIDI) beside the music, for a Chocolate (below, "Test build 24"); since
+  test build 27 the web editor over the same link (below, "Test build 27: the web editor over Bluetooth").
+- **Not in:** stereo, play/pause from the pedal (AVRCP), a level setting on the pedal.
 
 ## Build
 
@@ -651,6 +653,84 @@ ring ran dry (`UND`), its queue overflowed (dropped 4) and the radio's receive p
 wait now serves the radio as the main loop does (`ui.h` `UI_IDLE`, `ble_test_poll`). The flash write itself still holds the
 audio, the guitar's too, for a moment: save between songs. The crash screen no longer runs the music's decoder while it draws.
 
+## Test build 27: the web editor over Bluetooth
+
+The web editor ([`editor.html`](https://isod89.github.io/openpocket/editor.html), or `http://localhost:8765/editor.html`
+after `make serve-bt`) now also reaches the pedal over Bluetooth MIDI, the link the Chocolate uses: from a Mac, from Chrome on
+Android, or from a Web MIDI browser on an iPhone or iPad (MIDIWeb). Nothing changes on the page: the computer or the phone
+shows the pedal as a MIDI port named `OpenPocket`, and the editor finds it there as it finds the USB one. USB works as before,
+also with both open: each request is answered the way it came.
+
+**One Bluetooth MIDI link at a time.** The pedal takes one Bluetooth LE link, as before: the editor or the Chocolate, not
+both. Switch the Chocolate off before connecting the editor; once the editor lets the pedal go, the pedal advertises again
+and the Chocolate connects by itself. The phone's music (the classic Bluetooth link) goes on while the editor is connected.
+
+### Connect
+
+- **Mac.** Unplug the pedal's USB cable (a charger is fine), so that the editor finds the Bluetooth port and not the USB one.
+  Open **Audio MIDI Setup** (Applications > Utilities), **Window > Show MIDI Studio**, then the Bluetooth button in its
+  toolbar (**Configure Bluetooth**): `OpenPocket` is listed, **Connect**. Then open the editor in Chrome and press
+  **Connect**. When done, **Disconnect** in the same window, so that the Chocolate can connect again.
+- **Android.** Open the editor in Chrome and press **Connect**. Chrome sees a Bluetooth MIDI device only once Android has
+  connected it: if the editor does not find the pedal, connect `OpenPocket` with a BLE MIDI app (for example "MIDI BLE
+  Connect"), leave it connected, and press **Connect** again.
+- **iPhone, iPad.** Safari has no Web MIDI: use a Web MIDI browser such as MIDIWeb. Open the editor's address there, connect
+  `OpenPocket` from its Bluetooth MIDI panel, then press **Connect** on the page.
+
+The first time a browser connects to this firmware, the editor reads its catalogue (the blocks, their models and the values'
+texts): about 150 requests and 1,800 notifications, about 20 s over Bluetooth (a moment over USB). The browser keeps it, so the
+next connections start at once; a browser that already used the editor over USB with this build has it already.
+
+### What works, and how fast
+
+Everything the editor does over USB: presets, live editing, the changes made on the pedal shown on the page, saving, backups,
+NAM models and cabinet IRs. Bluetooth is slower than USB, about 2.5 KB/s from the pedal: a knob follows at once, a list or a
+model takes longer (a NAM model goes in 67 pieces: some seconds). A save (a preset, a model, an IR) holds the audio during the
+flash write, as a save on the pedal does (test build 26: save between songs), and the radio waits too: if the link drops there,
+the editor says the pedal is lost; connect again.
+
+Over USB only: installing firmware (the installer), the rescue (UBOOT) key, and the log channel (`node tools/op.mjs log`: its
+DIAG reply is too long for Bluetooth and is dropped). Nothing but the editor's frames is taken from Bluetooth.
+
+### How it works
+
+- The pedal reads the editor's SysEx in the MIDI characteristic's writes, across writes (BLE MIDI cuts it, with a header and
+  timestamps): `firmware/px_ble_midi.h` `px_blem_sysex`, in a pass of its own beside the Chocolate's reader, whose messages are
+  as before. One frame at a time, up to 160 bytes.
+- The reply goes into the LE side's own buffer of 1 KB (`firmware/bt/bt_le_midi.c`), so the USB editor's buffer is free at
+  once. The host's task sends it as notifications of the MIDI characteristic from its `ble_profile_loop` hook, in packets of 20
+  bytes (one link-layer packet each, whatever MTU the central asked for), each acknowledgement of the controller bringing the
+  next. Only a few wait unacknowledged in the controller: about 2 for each 15 ms of the link's interval (1 at 7.5 ms, 2 at
+  15 ms, 4 from 30 ms), so the editor takes the same small share of the radio whatever interval the central chose, and the
+  music keeps the rest. A reply that sends nothing for 3 s is dropped (the editor asks again).
+- A push (a change made on the pedal) waits for the last reply to be out, and a request from Bluetooth for the last push.
+- A new LE link, or the end of one, drops what was left of the last one's (a reply, a frame, the pushes).
+- Memory: 1,024 bytes for the replies and 160 for the frame being read, in the main RAM, and a few words.
+
+**Why one link.** The RAM would take a second one: about 1.9 KB more of the Bluetooth heap (1,240 bytes for the host's second
+connection, `btstack_memory.c`, and 664 for the controller's, `RF_ble.c`, against about 13 KB left at its lowest), and about
+0.2 KB of main RAM for a second reader. But the pedal would have to go on advertising while the Chocolate is connected, which
+takes radio time from the music all the time, not only while the editor is open, and the library's two-link scheduling beside
+the music has never run on this pedal. So the editor and the Chocolate take turns, and the Chocolate's side stays as it was.
+
+### In the log
+
+Once the editor has used the link, the MIDI line's LE words (`node tools/op.mjs log` over USB: plug the cable back after the
+test, the counts stay until power-off) end with `ED 12/340 N1`: the frames answered over Bluetooth / the notifications sent,
+and the central's client configuration (`N1`: notifications on; `N0` with notifications sent means the central never wrote
+it, as one bonded before may not, and the replies went anyway). Then, when there are any, `X` and the replies dropped (no link,
+too long, or 3 s without progress) and `SX` and the SysEx dropped (too long, unfinished, or come while one waited).
+
+### What to check
+
+1. The Chocolate off, the music playing from the phone. From the Mac (USB unplugged): connect `OpenPocket` in Audio MIDI
+   Setup, open the editor, **Connect**. The catalogue loads (about 20 s the first time), then the presets.
+2. A knob in the editor: the pedal follows at once. A knob on the pedal: the page follows. The music meanwhile: no skips.
+3. A preset saved from the editor (the music skips once, as a save on the pedal).
+4. **Disconnect** in Audio MIDI Setup, then the Chocolate on: it connects and its footswitches act, as before.
+5. The USB cable back: the log's MIDI line (`ED`, `X`, `SX`).
+6. The same from an iPhone with MIDIWeb, and from Chrome on Android.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate
@@ -675,6 +755,25 @@ audio, the guitar's too, for a moment: save between songs. The crash screen no l
   program the answer of one range per area. The model catches each of a dozen deliberate faults in the store (no read-back,
   no guard of the newest copy, no second reading before an erase, a save sooner than 1 s, one sequence number a round...).
 - `tests/test_bt_sources.mjs`: the vendor objects are as published and listed, the licences are there.
+- The web editor over Bluetooth (test build 27):
+  - `tests/midisim.c`: the editor's SysEx kept across BLE MIDI writes as CoreMIDI and Android cut it (a timestamp before
+    each status, a clock inside, a timestamp byte that reads as F7 or F0, a write that goes on after a timestamp of its own),
+    and dropped when another status cuts it, when longer than 160 bytes, or when one comes while one waits (the waiting one
+    left as it was); the Chocolate's reader gives the same messages from the same writes. The replies cut into notifications:
+    3,000 replies of 2 to 1,100 bytes at packet sizes of 3 to 514, each packet within its size and with its header, back
+    byte for byte through a reference reader (Android's BluetoothPacketDecoder's rule) and through `px_blem_sysex`, and never
+    a message for the Chocolate's reader.
+  - `tests/midiio.c` with the image's flags: a write's SysEx goes to the editor, its Program Change to the pedal as before;
+    the Chocolate's Control Change gives the editor nothing.
+  - `tests/test_editor.mjs` with `EDSIM_BLE=1` against `tests/edsim.c -DED_BT=1`: the whole editor test (the catalogue,
+    editing, pushes, saves, slots, NAM models, IRs, a power cycle) over BLE MIDI writes and notifications, two a pass as the
+    pedal sends them; a link lost (nothing more pushed) and a new one; a USB request meanwhile answered over USB; a push and a
+    reply crossing (each waits for the other, nothing lost). About 660 frames, 3,900 writes, 5,000 notifications.
+  - Each of a dozen deliberate faults (no timestamp before F7, a clock ending the SysEx, a waiting frame overwritten, a reply
+    sent over USB, a push or a frame not waiting for the buffer...) fails at least one of these tests.
+  - The release image and the BLE image compile to the same code as before (their LLVM IR, compared); the Bluetooth audio
+    image calls three more library functions, all in members it already links (`att_server_notify`,
+    `hci_le_get_acl_packet_num`, `stack_run_loop_resume`).
 - `tests/test_log.mjs`: the FIFO line and `W` named, and the nine lines classified and reported, as the log tool prints them.
 - Test build 13's cut, by hand (it is not in `tests/run_tests.sh`): the engine tests built with `-DPX_LOOP_GUARD=1` print the
   same as without it and leave `W` at 0; `rv_block` called with an n above 64 stops at k 64 in each of its four loops, records n

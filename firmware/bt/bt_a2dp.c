@@ -45,6 +45,7 @@ extern uint8_t connect_last_device_from_vm(void);
 /* test build 23: BLE MIDI beside the music (bt/bt_le_midi.c, included after this file) */
 static void bt_le_advertise(void);
 static char *bt_le_text(char *o);
+static char *bt_le_ed_text(char *o);                            /* (test build 27: the web editor's words, last) */
 
 /* the SDK's numbers (include_lib/btstack/avctp_user.h, include_lib/utils/event/bt_event.h, Apache-2.0) */
 enum { USER_CTRL_WRITE_SCAN_ENABLE = 13, USER_CTRL_WRITE_CONN_ENABLE = 15 };
@@ -112,7 +113,8 @@ static void bt_taskq_spy(const char *task, int type, int argc, const int *argv)
     bt_msg_n++;
     if (host && type == 0x400002) bt_msg_acl++;                 /* btstack: an ACL packet */
     else if (host && type == 0x400001 && argc > 0 && (argv[0] & 0xFF) == 0x13) bt_msg_ncp++;
-    else {
+    else if (!(host && type == 0xFF)) {                         /* (test build 27: the web editor's wake-ups of the host's task,
+                                                                 * stack_run_loop_resume, are not kept) */
         k = bt_msg_kept;
         bt_msg_last[k % BT_MSG_LAST] = m;
         bt_msg_kept = k + 1u;
@@ -822,10 +824,15 @@ void ble_midi_line(char *out)
     char *o = bt_line_t;
     if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_state(out); return; }
     if (bt_st < BT_LINKED) {                                    /* (the link's figures are all 0 until a phone is linked) */
-        char *e = out;
-        bt_tasks_line(out);
+        char *e = bt_line_t;                                    /* (test build 27: built in bt_line_t and cut at 223 characters
+                                                                 * as the other lines; up to test build 26 in out itself, 224
+                                                                 * bytes, which the LE words could pass) */
+        bt_tasks_line(bt_line_t);
         while (*e) e++;
-        if (e - out < 170) { e = bt_le_text(e); *e = 0; }      /* (test build 23: the BLE MIDI side) */
+        if (e - bt_line_t < 170) e = bt_le_text(e);             /* (test build 23: the BLE MIDI side) */
+        e = bt_le_ed_text(e);
+        *e = 0;
+        bt_line_out(out, bt_line_t);
         return;
     }
     const uint32_t ms = bt_fq_samples() * 10u / 441u;
@@ -851,6 +858,7 @@ void ble_midi_line(char *out)
     o = ble__put(o, " FQ "); o = bt__dec(o, bt_fq_w - bt_fq_r);
     o = bt_le_text(o);                                          /* (test build 23: the BLE MIDI side) */
     o = bt_stacks_text(o);
+    o = bt_le_ed_text(o);                                       /* (test build 27: the web editor, last: cut first) */
     *o = 0;
     bt_line_out(out, bt_line_t);
 }

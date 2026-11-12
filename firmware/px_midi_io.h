@@ -27,7 +27,9 @@ static void midi_persist(void)                  /* the page's HOME: save the set
 
 #if OP_BLE_TEST
 /* what a Bluetooth write leaves here (px_midi_ble_write) goes through the same px_midi_in as USB. The writer is the Bluetooth
- * stack's task, which runs from the main loop (ble_poll), so nothing here races: a full ring only drops what does not fit. */
+ * stack's task, which runs from the main loop (ble_poll), so nothing here races: a full ring only drops what does not fit.
+ * With ED_BT (the Bluetooth audio image) the write's SysEx also goes to the web editor (px_editor.h ed_bt_write), which
+ * the including file has included before this one. */
 #include "px_ble_midi.h"
 #define BLE_MQ 32u
 static uint32_t ble_in_q[BLE_MQ], ble_in_w, ble_in_r;
@@ -36,6 +38,9 @@ static void px_midi_ble_write(const uint8_t *p, uint32_t n)
 {
     uint32_t pkt[BLE_MQ], got = px_blem_parse(&ble_parse, p, n, pkt, BLE_MQ), i;
     for (i = 0; i < got && ble_in_w - ble_in_r < BLE_MQ; i++) ble_in_q[ble_in_w++ % BLE_MQ] = pkt[i];
+#if ED_BT
+    ed_bt_write(p, n);   /* the Bluetooth audio image: the same write's SysEx, for the web editor (px_editor.h) */
+#endif
 }
 #endif
 

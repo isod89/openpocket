@@ -2,6 +2,8 @@
 // OpenPocket — end-to-end test of the web editor's protocol (docs/pxedit.js) against a simulated pedal (tests/edsim.c)
 // that runs the pedal's real editor code (firmware/px_editor.h), preset store (px_store.h) and engine catalogue.
 //   cc -O1 -o build/edsim tests/edsim.c engine/px_dsp.c -lm && node tests/test_editor.mjs
+// Over Bluetooth MIDI (the Bluetooth audio image's editor, test build 27):
+//   cc -O1 -DED_BT=1 -o build/edsim_bt tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm && EDSIM_BLE=1 node tests/test_editor.mjs
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,15 +14,50 @@ import { parseNam, levelTrim, packModel, readDi, a2Run, KERNELS, DILATIONS, NW }
 import { parseWav, prepareIr, packIr, irName, resample, IR_LEN } from "../docs/pxir.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SIM = process.env.EDSIM || join(ROOT, "build", "edsim");
+// EDSIM_BLE=1: the same tests over BLE MIDI, as the Bluetooth audio image (test build 27) talks to the editor, against
+// build/edsim_bt (tests/edsim.c -DED_BT=1). The editor's SysEx is cut into writes as a central cuts them (CoreMIDI, Android:
+// the header, a timestamp before each status byte, the data without), at the write sizes centrals use and some smaller ones;
+// the pedal's notifications are read as Android's BluetoothPacketDecoder reads them, each checked: a header first, 20 bytes
+// at most.
+const BLE = !!process.env.EDSIM_BLE;
+const SIM = process.env.EDSIM || join(ROOT, "build", BLE ? "edsim_bt" : "edsim");
 const TMP = mkdtempSync(join(tmpdir(), "opedit-"));
 globalThis.localStorage = { getItem: () => null, setItem: () => {} };
 let failed = 0;
 const ok = (c, what) => { console.log(`${what.padEnd(72)} ${c ? "ok" : "FAIL"}`); if (!c) failed++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// BLE MIDI: a message -> writes of at most `max` bytes, as a central makes them
+function bleWrites(msg, max) {
+  const t = Date.now() & 0x1FFF, hdr = 0x80 | t >> 7, ts = 0x80 | (t & 0x7F), out = [];
+  let p = [hdr];
+  for (const b of msg) {
+    if (p.length + (b & 0x80 ? 2 : 1) > max) { out.push(p); p = [hdr]; }
+    if (b & 0x80) p.push(ts);
+    p.push(b);
+  }
+  if (p.length > 1) out.push(p);
+  return out;
+}
+// and a notification -> its bytes, timestamps out (after the header, a byte with bit 7 set is a timestamp unless the byte
+// before was one); the SysEx kept across notifications and handed on whole
+function bleRead(st, p, deliver) {
+  if (!p.length || p.length > 20 || (p[0] & 0xC0) !== 0x80) st.bad++;
+  let ts = false;
+  for (let i = 1; i < p.length; i++) {
+    const b = p[i];
+    if ((b & 0x80) && !ts) { ts = true; continue; }
+    ts = false;
+    if (b === 0xF0) st.sx = [b];
+    else if (st.sx) { st.sx.push(b); if (b === 0xF7) { deliver(Uint8Array.from(st.sx)); st.sx = null; } }
+    else st.bad++;                                  // (the pedal sends nothing but the editor's SysEx over Bluetooth)
+  }
+}
+
 function sim(args) {
   const child = spawn(SIM, args, { stdio: ["pipe", "pipe", "inherit"] });
+  const ble = BLE ? { sizes: [20, 182, 3, 514, 7, 244], k: 0, sx: null, bad: 0, notes: 0, writes: 0, after: null } : null;
+  const usb = [];                                    // (BLE: what came back the USB way)
   const access = { inputs: new Map(), outputs: new Map() };
   const lines = [];
   let port = null, buf = "", readyFn;
@@ -33,11 +70,19 @@ function sim(args) {
       if (ln.startsWith("#port ")) {
         const name = ln.slice(6);
         const input = { name, state: "connected", onmidimessage: null, open: async () => {} };
-        const output = { name, state: "connected", open: async () => {}, send: (b) => child.stdin.write(Buffer.from(b).toString("hex") + "\n") };
+        const output = { name, state: "connected", open: async () => {}, send: (b) => {
+          if (!ble) { child.stdin.write(Buffer.from(b).toString("hex") + "\n"); return; }
+          for (const w of bleWrites(b, ble.sizes[ble.k++ % ble.sizes.length])) { ble.writes++; child.stdin.write(`b${Buffer.from(w).toString("hex")}\n`); }
+          if (ble.after) { child.stdin.write(`${ble.after}\n`); ble.after = null; }   // (a line right after this request's writes)
+        } };
         port = { input, output };
         access.inputs.set(name, input); access.outputs.set(name, output);
         readyFn();
       } else if (ln.startsWith("#")) lines.push(ln);
+      else if (ble && ln.startsWith("b")) {
+        ble.notes++;
+        bleRead(ble, Buffer.from(ln.slice(1), "hex"), (data) => { if (port && port.input.onmidimessage) port.input.onmidimessage({ data }); });
+      } else if (ble && ln) usb.push(ln);
       else if (port && port.input.onmidimessage && ln) port.input.onmidimessage({ data: Uint8Array.from(Buffer.from(ln, "hex")) });
     }
   });
@@ -46,8 +91,24 @@ function sim(args) {
     access, ready, lines,
     pedal: (l) => child.stdin.write(`#pedal ${l}\n`),
     dump: async () => { lines.length = 0; child.stdin.write("#dump\n"); for (let i = 0; i < 50 && !lines.length; i++) await sleep(10); return lines[0] || ""; },
+    ble, usb,
+    usbSend: (b) => child.stdin.write(Buffer.from(b).toString("hex") + "\n"),
+    bt: async (l = "") => {                     // "#bt": [frames answered, notifications, replies lost, SysEx dropped]
+      lines.length = 0; child.stdin.write(`#bt${l ? ` ${l}` : ""}\n`);
+      if (l) return null;
+      for (let i = 0; i < 50 && !lines.length; i++) await sleep(10);
+      return (lines[0] || "").split(" ").slice(1).map(Number);
+    },
     end: () => { child.stdin.end(); return done; },
   };
+}
+
+// over BLE MIDI: every frame was answered, nothing dropped either way, every notification well formed
+async function bleCheck(s) {
+  if (!BLE) return;
+  const [frames, notes, lost, drop] = await s.bt();
+  ok(frames > 0 && notes === s.ble.notes && !lost && !drop && !s.ble.bad,
+     `BLE: ${frames} frames in ${s.ble.writes} writes, ${notes} notifications back, none lost or malformed`);
 }
 
 // ---- 1. connect, catalogue, current sound ----
@@ -100,6 +161,40 @@ ok(pushes.length === 0, "WATCH: the editor's own change is not echoed back");
 s.pedal("preset 7");
 for (let i = 0; i < 40 && !pushes.length; i++) await sleep(10);
 ok(pushes.length >= 1 && pushes.at(-1).slot === 7, "WATCH: a footswitch (slot 8) is pushed");
+if (BLE) {                                     // the LE link goes: the pushes stop; a new one, and the editor goes on
+  await s.bt("drop");
+  pushes.length = 0;
+  s.pedal(`set ${amp} 2 44`);
+  await sleep(150);
+  const quiet = pushes.length === 0;
+  await s.bt("link");
+  await ed.watch(true);
+  s.pedal(`set ${amp} 2 45`);
+  for (let i = 0; i < 40 && !pushes.length; i++) await sleep(10);
+  ok(quiet && pushes.length >= 1 && pushes.at(-1).preset.p[amp][2] === 45, "BLE: the link gone, nothing is pushed; a new link, and WATCH again");
+  s.usb.length = 0;                            // USB and Bluetooth at once: each frame is answered the way it came
+  s.usbSend([0xF0, 0x7D, 0x4F, 0x50, 1, 0xF7]);
+  const st2 = await ed.state();
+  for (let i = 0; i < 40 && !s.usb.length; i++) await sleep(10);
+  const u = s.usb.length ? Buffer.from(s.usb[0], "hex") : null;
+  ok(u && u[4] === 1 && s.usb.length === 1 && st2.slot === 7, "BLE: a USB INFO meanwhile is answered over USB, the editor's STATE over Bluetooth");
+  // a push and a reply cross: a knob turned on the pedal right after a request (its line comes after the request's writes)
+  // while the long reply goes out; then a request right after a knob, while the push goes out. Each waits for the other's
+  // notifications (two a pass), nothing is lost. (60 ms first: the pedal pushes at most every 40 ms)
+  pushes.length = 0;
+  await sleep(60);
+  s.ble.k = 0; s.ble.after = `#pedal set ${amp} 2 46`;          // (k 0: each request in one write of 20 bytes)
+  const l1 = await ed.list();
+  for (let i = 0; i < 40 && !pushes.length; i++) await sleep(10);
+  await sleep(60);
+  s.ble.k = 0;
+  s.pedal(`set ${amp} 2 47`);
+  const pg = await ed.ping();
+  for (let i = 0; i < 40 && !pushes.some((x) => x.preset.p[amp][2] === 47); i++) await sleep(10);
+  const [, , lost] = await s.bt();
+  ok(l1.length === 52 && pg && pushes.some((x) => x.preset.p[amp][2] === 46) && pushes.some((x) => x.preset.p[amp][2] === 47) && lost === 0,
+     "BLE: a push and a reply cross: each waits for the other, nothing lost");
+}
 
 // ---- 4. saving, slots ----
 await ed.select(2);
@@ -143,6 +238,7 @@ ok(oldDly.preset.p[dl][0] === 40 && oldDly.warn.length === 1 && newDly.preset.p[
   const u1 = await ed.usbAudio(true);
   ok(ed.hasUsbAudio && !u0.on && u0.rc === 0 && u1.on && u1.rc === 0, "USB audio: off by default; switched on");
 }
+await bleCheck(s);
 await s.end();
 
 // ---- 6. after a power cycle: the store is read back from the flash ----
@@ -250,6 +346,7 @@ list = await ed.list();
 ok(list[20].name === "STAGED A" && list[21].name === "STAGED B" && list[20].saved && !list[4].saved, "power cycle: the saved slots are still there");
 st = await ed.state();
 ok(st.slot === 4, "power cycle: the pedal starts on the last slot SAVEd (imports do not move it)");
+await bleCheck(s);
 await s.end();
 
 console.log(failed ? `\n${failed} FAILED` : "\nall editor tests passed");

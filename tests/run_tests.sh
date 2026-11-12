@@ -16,7 +16,9 @@
 #  - USER IR (v38): the partitioned FFT convolution against the direct FIR, slots, names
 #  - wet lanes (v39): the delay through its lane as inline bit for bit, the reverb's tail lag frames later, the pipeline
 #  - NAM: engine/px_nam.c against tools/nam_a2.py with every factory model (needs numpy)
-#  - MIDI: the musical-MIDI code (firmware/px_midi.h) on a PC: decoder, CC map, messages sent, settings byte, clock
+#  - MIDI: the musical-MIDI code (firmware/px_midi.h) on a PC: decoder, CC map, messages sent, settings byte, clock; BLE MIDI
+#    (px_ble_midi.h): the Chocolate's writes, and (test build 27) the editor's SysEx kept across writes and its replies cut
+#    into notifications, 3,000 of them back whole through a reference reader
 #  - the Bluetooth audio image's controls (PX_OWN_FX): SYN PAD's left footswitch and the tuner on both (tests/uisim.c), CC 64
 #    (tests/midiio.c), the two effects' pages drawn whole
 #  - preset store: save / reload / power cut at every step of a save (firmware/px_store.h on a simulated flash)
@@ -39,7 +41,8 @@
 #    (test_bt_lbuf.c), the compiler runtime it adds (test_bt_rt.c), SBC through Android's encoder and decoder (test_bt_sbc.c), the third-party sources (test_bt_sources.mjs),
 #    the pairing store in the flash with power cuts at every step (test_bt_ps.c, test build 14)
 #    and the Bluetooth images' task message queues (test_ble_taskq.c: messages of the library's sizes, whole, in order)
-#  - editor: docs/pxedit.js against the simulated pedal (tests/edsim.c), PING's figures, and the editor's own logic
+#  - editor: docs/pxedit.js against the simulated pedal (tests/edsim.c), also over BLE MIDI as the Bluetooth audio image
+#    talks to it (test build 27), PING's figures, and the editor's own logic
 #    (docs/pxmidi.js: the Control Change map against docs/MIDI.md, learned controls; docs/pxlib.js: the model library)
 #  - pages: docs/index.html, docs/editor.html and the pedal skin in headless Chromium (needs Playwright: npm i playwright
 #    && npx playwright install chromium)
@@ -111,8 +114,9 @@ for t in midisim midiio; do
   build/$t > build/$t.log || { grep FAIL build/$t.log; exit 1; }
   tail -1 build/$t.log
 done
-# (the Bluetooth audio image's: CC 64 catches a SYN PAD's chord, CC 116 taps the delay's tempo, TIME stops at 780 ms)
-$CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -DPX_DLY_SHORT=1 -Iengine -Ifirmware -o build/midiio_fx tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm
+# (the Bluetooth audio image's: CC 64 catches a SYN PAD's chord, CC 116 taps the delay's tempo, TIME stops at 780 ms; test
+# build 27, a write's SysEx also goes to the web editor)
+$CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -DPX_DLY_SHORT=1 -DED_BT=1 -Iengine -Ifirmware -o build/midiio_fx tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm
 build/midiio_fx > build/midiio_fx.log || { grep FAIL build/midiio_fx.log; exit 1; }
 tail -1 build/midiio_fx.log
 echo "== LED map and the lights driver (LED_PROBE build, issue #8)"
@@ -158,6 +162,11 @@ node tests/test_audio.mjs
 echo "== editor"
 $CC -O1 -Wall -Wno-unused-function -o build/edsim tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 node tests/test_editor.mjs
+# the Bluetooth audio image's editor over BLE MIDI (test build 27, px_editor.h ED_BT): the same tests, the SysEx in BLE MIDI
+# writes and notifications (tests/test_editor.mjs EDSIM_BLE)
+$CC -O1 -Wall -Wno-unused-function -DED_BT=1 -o build/edsim_bt tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
+EDSIM_BLE=1 node tests/test_editor.mjs > build/editor_ble.log || { grep "FAIL" build/editor_ble.log; exit 1; }
+grep "^BLE:" build/editor_ble.log; tail -1 build/editor_ble.log
 node tests/test_ping.mjs
 node tests/test_editor_logic.mjs
 echo "== log channel (tools/op.mjs log)"

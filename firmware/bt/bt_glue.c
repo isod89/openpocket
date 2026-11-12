@@ -89,9 +89,9 @@ static void bt_mac_make(void)
 uint8_t *bt_get_mac_addr(void) { BT_CRUMB("bt_get_mac_addr"); return bt_mac; }               /* the library's is weak (hci_vendor.c) */
 const char *bt_get_local_name(void) { BT_CRUMB("bt_get_local_name"); return "OpenPocket"; }   /* the library's is weak: the name a phone lists */
 
-/* the host's task calls this hook on each pass (a weak reference: left undefined it would be a call to address 0, out of the
- * call range, which the linker refuses); the BLE image runs its GATT loop there, this one has nothing to do */
-void ble_profile_loop(void) { }
+/* the host's task calls the hook ble_profile_loop on each pass (a weak reference: left undefined it would be a call to address 0,
+ * out of the call range, which the linker refuses). Test build 27: bt_le_midi.c's sends the web editor's replies there (up to
+ * test build 26, an empty one here) */
 
 /* Where the host tells a classic link from an LE one: a handle below this is classic (hci_vendor.c, at every HCI event and ACL
  * packet). 0x50 is the LE controller's own value (link_layer.c, not linked); this controller's classic handles are 0x30 and up

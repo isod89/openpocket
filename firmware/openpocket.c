@@ -677,6 +677,9 @@ static void ir_changed(uint32_t s)   /* v38: a user IR was written or erased: th
 #define ED_DIAG_LEN 224u
 static void ed_diag_line(uint32_t i, char *out);
 #endif
+#if OP_BT_AUDIO
+#define ED_BT 1             /* test build 27: the web editor over Bluetooth MIDI too (px_editor.h, bt/bt_le_midi.c) */
+#endif
 #include "px_editor.h"      /* the web editor (docs/EDITOR-PROTOCOL.md) */
 #include "px_midi_io.h"     /* musical MIDI over USB (docs/MIDI.md) */
 #endif

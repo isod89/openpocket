@@ -4,7 +4,8 @@
  * pedal must ignore them, that the input ring is always emptied (usb.c stops reading the host's packets when it is
  * nearly full, and the editor's SysEx arrives in the same packets), and what the pedal sends back.
  *   cc -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/midiio tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm && build/midiio
- * With -DPX_OWN_FX=1 (the Bluetooth audio image's): CC 64 catches a SYN PAD's chord, and only that. */
+ * With -DPX_OWN_FX=1 (the Bluetooth audio image's): CC 64 catches a SYN PAD's chord, and only that. With -DED_BT=1 (that image's
+ * too, test build 27): a Bluetooth write's SysEx also goes to the web editor, and its musical messages to the pedal as before. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +66,12 @@ static int pad_presses;
 #define PX_PAD_PRESS() (pad_presses++)
 static int exp_last = -1, exp_n;
 #define PX_EXP_SET(v) (exp_last = (int)(v), exp_n++)
+#endif
+#if ED_BT                                                /* the Bluetooth audio image (-DED_BT=1): the web editor's SysEx, kept
+                                                        * across writes as px_editor.h keeps it (its ed_bt_write, one line) */
+#include "px_ble_midi.h"
+static px_blem_sx_t ed_bt_rx;
+static void ed_bt_write(const uint8_t *p, uint32_t n) { px_blem_sysex(&ed_bt_rx, p, n); }
 #endif
 #include "px_midi_io.h"
 
@@ -233,6 +240,27 @@ int main(void)
         px_midi_service();
         ok(PRESET.on[PX_B_DRIVE] == !was, "after a preset change the toggle flips what the new preset has");
     }
+#if ED_BT
+    {   /* the web editor over Bluetooth (test build 27): every write also gives its SysEx to the editor, kept across writes,
+         * and the musical messages of the same writes reach the pedal as before */
+        reset();
+        uint8_t w1[] = {0x80, 0x81, 0xF0, 0x7D, 0x4F, 0x50, 0x12}, w2[] = {0x80, 0x82, 0xF7, 0x83, 0xC0, 9};
+        uint8_t on[] = {0x80, 0x80, 0xB0, 24, 127};
+        px_midi_ble_write(w1, sizeof w1);
+        px_midi_service();
+        ok(!ed_bt_rx.ready && cur_preset == 5, "a write that starts an editor SysEx: kept, nothing for the pedal yet");
+        px_midi_ble_write(w2, sizeof w2);
+        px_midi_service();
+        ok(ed_bt_rx.ready && ed_bt_rx.n == 4 && ed_bt_rx.buf[3] == 0x12 && cur_preset == 9,
+           "the next write ends it (the editor's PING, whole) and its Program Change still loads preset 10");
+        ed_bt_rx.ready = 0;
+        PRESET.on[PX_B_DRIVE] = 0;
+        px_midi_ble_write(on, sizeof on);
+        px_midi_service();
+        ok(PRESET.on[PX_B_DRIVE] == 1 && !ed_bt_rx.ready && !ed_bt_rx.in, "the Chocolate's Control Change: as before, nothing for the editor");
+        ok(pop_out() == 0, "and nothing is sent back over USB");
+    }
+#endif
 #if PX_OWN_FX
     {   /* CC 64 (sustain) catches the PAD's chord: at 64 and up, with a PAD on; nothing else changes */
         reset();

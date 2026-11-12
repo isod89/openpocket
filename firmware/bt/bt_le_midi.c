@@ -12,7 +12,10 @@
  *    leave the radio to the music;
  *  - the LE address is the classic one with its top octet 0x06 instead of 0x02 (both locally administered, unicast), so each
  *    pedal has its own and a phone does not take the two for one device;
- *  - a disconnection restarts the advertising only when it is the LE link's (the classic link's go to bt_a2dp.c). */
+ *  - a disconnection restarts the advertising only when it is the LE link's (the classic link's go to bt_a2dp.c).
+ * Test build 27: the web editor over the same link (px_editor.h ED_BT): its SysEx comes in the MIDI writes (px_midi_io.h), its
+ * replies go back as notifications of the MIDI characteristic (below, ed_bt_send and ble_profile_loop). One LE link as before
+ * (bt_cfg.c): the editor or the Chocolate, not both at once. */
 #include "ble_adv.h"                                     /* (ble/: the advertising data, the scan response with the name) */
 
 extern void le_device_db_init(void);
@@ -32,6 +35,10 @@ extern void att_set_ccc_config(uint16_t handle, uint16_t cfg);
 extern uint16_t att_get_ccc_config(uint16_t handle);
 extern int ble_user_cmd_prepare(int cmd, int argc, ...);
 extern int le_controller_set_mac(const uint8_t *mac);
+/* test build 27, the editor's replies (all three in members already linked: att_server.c, hci_vendor.c, btstack_task.c) */
+extern int att_server_notify(uint16_t con, uint16_t handle, uint8_t *value, uint16_t len);   /* 0 sent, 87 no room now */
+extern uint8_t hci_le_get_acl_packet_num(uint16_t con);   /* the link's packets with the controller, not yet acknowledged */
+extern void stack_run_loop_resume(void);                  /* a message to the host's task (type 255): it runs its loop hooks */
 
 enum { LE_CMD_ADV_ENABLE = 1, LE_CMD_ADV_PARAM, LE_CMD_ADV_DATA, LE_CMD_RSP_DATA };
 enum { LE_HCI_EVENT_PACKET = 4, LE_EV_DISCONNECTION_COMPLETE = 0x05, LE_EV_META = 0x3E, LE_SUB_CONNECTION_COMPLETE = 0x01,
@@ -59,6 +66,75 @@ static uint16_t le_int, le_lat, le_tmo;                        /* its interval (
 static uint32_t le_links, le_writes, le_pairs, le_drop, le_adv_rc, le_adv_n;
 static uint8_t le_adv_ok;                                      /* advertising asked for at least once */
 static uint8_t le_mac[6];
+/* test build 27: the MIDI characteristic's client configuration as this link's central wrote it (bit 0: notifications). The
+ * library keeps it only after an att_send_init this image never makes (att_send.c: att_set_ccc_config does nothing without its
+ * buffer), so it is kept here, for the central's reads and the log; the replies do not wait for it: a central that asks the
+ * editor something over BLE MIDI listens (one bonded earlier may not write it again) */
+static uint16_t le_ccc;
+
+/* ---- test build 27: the web editor's replies (px_editor.h ED_BT), as BLE MIDI notifications of the MIDI characteristic.
+ * ed_bt_send copies a reply into le_tx; the host's task sends it a packet at a time from ble_profile_loop, which it calls after
+ * each of its messages, the controller's acknowledgements of sent packets (Number of Completed Packets, hci_vendor.c) among them:
+ * each acknowledgement brings the next packet. A packet is one link-layer packet (20 bytes of value: with the ATT and L2CAP
+ * heads, the 27 bytes the controller sends at once, whatever MTU the central asked for), and only a few wait unacknowledged in
+ * the controller (le_tx_inflight): about 2 packets for each 15 ms of the link's interval, so the editor takes the same small
+ * share of the radio's time whatever interval the central chose, about 2.5 KB/s of SysEx (a TEXTS reply in 0.4 s), and the
+ * classic link keeps the rest for the music. The ATT server's own answers share those slots. */
+#define LE_TX_BYTES 1024u   /* the longest reply sent: TEXTS, 918 bytes (DIAG's 2,304 are for USB: dropped here) */
+#define LE_TX_PKT 20u
+#define LE_TX_GIVE_UP 3000u /* ms without a packet sent: the reply is dropped (the editor asks again; the link may be gone) */
+static uint32_t le_tx_inflight(void)   /* le_int in 1.25 ms: 1 at 7.5 ms, 2 at 11.25 and 15 ms, 3 at 22.5 ms, 4 from 30 ms (of the
+                                        * controller's 5 LE buffers, bt_cfg.c: one is left for the ATT server's answers) */
+{
+    const uint32_t k = (le_int + 3u) / 6u;
+    return k < 1u ? 1u : k > 4u ? 4u : k;
+}
+static uint8_t le_tx[LE_TX_BYTES];
+static uint32_t le_tx_at, le_tx_n;                             /* le_tx[le_tx_at, le_tx_n) is still to send */
+static uint32_t le_tx_pkts, le_tx_lost;                        /* notifications sent; replies dropped (no link, too long, stuck) */
+static uint32_t le_tx_seen, le_tx_ms, le_tx_kick;              /* (the main loop's watch over a reply that does not move) */
+
+/* px_editor.h, every main-loop pass: the buffer is empty. A reply that sends nothing for LE_TX_GIVE_UP ms is dropped; every
+ * 50 ms the host's task is woken in case no acknowledgement does it */
+static int ed_bt_ready(uint32_t now)
+{
+    if (le_tx_at >= le_tx_n) return 1;
+    if (le_tx_pkts != le_tx_seen) { le_tx_seen = le_tx_pkts; le_tx_ms = now; }
+    else if (!le_conn || now - le_tx_ms > LE_TX_GIVE_UP) { le_tx_at = le_tx_n; le_tx_lost++; return 1; }
+    if (now - le_tx_kick >= 50u) { le_tx_kick = now; stack_run_loop_resume(); }
+    return 0;
+}
+/* px_editor.h ed_send: a reply, F0 .. F7, from the main loop; px_editor.h calls it only with the buffer empty */
+static void ed_bt_send(const uint8_t *p, uint32_t n)
+{
+    if (!le_conn || n > LE_TX_BYTES || le_tx_at < le_tx_n) { le_tx_lost++; return; }
+    memcpy(le_tx, p, n);
+    le_tx_at = 0;
+    le_tx_n = n;
+    le_tx_seen = le_tx_pkts;
+    le_tx_ms = le_tx_kick = ms_now();
+    stack_run_loop_resume();                                   /* the host's task sends it */
+}
+/* the host's task, after each of its messages (btstack_task.c calls this hook; the library's is weak). Up to test build 26 an
+ * empty one in bt_glue.c */
+void ble_profile_loop(void)
+{
+    uint8_t pkt[LE_TX_PKT];
+    while (le_tx_at < le_tx_n && le_conn && hci_le_get_acl_packet_num(le_conn) < le_tx_inflight()) {
+        uint32_t at = le_tx_at;
+        const uint32_t k = px_blem_pack(le_tx, le_tx_n, &at, ble_ms(), pkt, LE_TX_PKT);
+        if (!k || att_server_notify(le_conn, LE_H_MIDI, pkt, (uint16_t)k)) break;   /* (no room now: the next message tries) */
+        le_tx_at = at;
+        le_tx_pkts++;
+    }
+}
+/* a link came or went: nothing of the last one's is kept or sent (px_editor.h ed_bt_lost: its frame, its pushes) */
+static void le_link_reset(void)
+{
+    le_ccc = 0;
+    le_tx_at = le_tx_n = 0;
+    ed_bt_lost();
+}
 
 static int le_adv_on(void)
 {
@@ -81,7 +157,7 @@ static uint16_t le_att_read(uint16_t con, uint16_t handle, uint16_t offset, uint
         return n;
     }
     if (handle == LE_H_MIDI_CCC) {
-        if (buf && size >= 2u) { uint16_t c = att_get_ccc_config(handle); buf[0] = (uint8_t)c; buf[1] = (uint8_t)(c >> 8); }
+        if (buf && size >= 2u) { buf[0] = (uint8_t)le_ccc; buf[1] = (uint8_t)(le_ccc >> 8); }   /* (test build 27: was always 0) */
         return 2;
     }
     return 0;                                                   /* the MIDI value reads empty, as the specification wants */
@@ -89,8 +165,12 @@ static uint16_t le_att_read(uint16_t con, uint16_t handle, uint16_t offset, uint
 static int le_att_write(uint16_t con, uint16_t handle, uint16_t mode, uint16_t offset, uint8_t *buf, uint16_t size, uint8_t *sig)
 {
     (void)con; (void)mode; (void)offset; (void)sig;
-    if (handle == LE_H_MIDI) { le_writes++; px_midi_ble_write(buf, size); }   /* (px_midi_io.h: the USB path's px_midi_in) */
-    else if (handle == LE_H_MIDI_CCC && size >= 1u) att_set_ccc_config(handle, buf[0]);
+    if (handle == LE_H_MIDI) { le_writes++; px_midi_ble_write(buf, size); }   /* (px_midi_io.h: the USB path's px_midi_in,
+                                                                               * test build 27 the editor's SysEx too) */
+    else if (handle == LE_H_MIDI_CCC && size >= 1u) {
+        le_ccc = (uint16_t)(buf[0] | (size >= 2u ? buf[1] << 8 : 0));
+        att_set_ccc_config(handle, buf[0]);
+    }
     return 0;
 }
 
@@ -104,6 +184,7 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
         if (le_conn && h == le_conn) {                          /* (a classic disconnection is not ours) */
             le_conn = 0;
             le_drop = p[5];
+            le_link_reset();                                    /* (test build 27: the editor's reply and frame) */
             le_adv_rc = (uint32_t)le_adv_on();
         }
     } else if (p[0] == LE_EV_META) {
@@ -116,7 +197,7 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
             le_lat = (uint16_t)(q[2] | q[3] << 8);
             le_tmo = (uint16_t)(q[4] | q[5] << 8);
         }
-        if (q && p[2] != LE_SUB_CONNECTION_UPDATE_COMPLETE) { le_conn = (uint16_t)(p[4] | p[5] << 8); le_links++; }
+        if (q && p[2] != LE_SUB_CONNECTION_UPDATE_COMPLETE) { le_conn = (uint16_t)(p[4] | p[5] << 8); le_links++; le_link_reset(); }
     }
 }
 static void le_on_sm(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
@@ -169,5 +250,17 @@ static char *bt_le_text(char *o)
     if (le_conn) { o = ble__put(o, " I"); o = bt__dec(o, le_int); }
     if (le_drop) { o = ble__put(o, " D"); o = ble__hex(o, le_drop); }
     o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
+    return o;
+}
+/* test build 27, at the MIDI line's end (bt_a2dp.c ble_midi_line), once the editor has used the link: "ED 12/340 N1" = its frames
+ * answered over Bluetooth / notifications sent, the central's client configuration (1: notifications on), then X and the replies
+ * dropped, SX and the SysEx dropped, when there are any */
+static char *bt_le_ed_text(char *o)
+{
+    if (!ed_bt_frames && !ed_bt_rx.got && !ed_bt_rx.drop && !le_tx_lost) return o;
+    o = ble__put(o, " ED "); o = bt__dec(o, ed_bt_frames); *o++ = '/'; o = bt__dec(o, le_tx_pkts);
+    o = ble__put(o, " N"); o = bt__dec(o, le_ccc);
+    if (le_tx_lost) { o = ble__put(o, " X"); o = bt__dec(o, le_tx_lost); }
+    if (ed_bt_rx.drop) { o = ble__put(o, " SX"); o = bt__dec(o, ed_bt_rx.drop); }
     return o;
 }
