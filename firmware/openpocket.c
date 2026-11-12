@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 25
+#define BT_TEST_BUILD 26
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -179,7 +179,8 @@ static void lcd_init(void)
 #define LBUF_PX 1024u
 #if OP_BT_AUDIO
 static void bt_yield(void);     /* (bt/bt_a2dp.c, test build 24: the music's queue decoded while the screen draws) */
-#define LCD_YIELD() bt_yield()
+static volatile uint8_t lcd_yield_off;   /* (test build 26: the crash screen, fm1_fault: the decoder may be where it stopped) */
+#define LCD_YIELD() do { if (!lcd_yield_off) bt_yield(); } while (0)
 #else
 #define LCD_YIELD() ((void)0)
 #endif
@@ -306,6 +307,9 @@ struct { uint32_t crash, count, cpu, ms, pc; } op_c1x __attribute__((section(".n
 static void fm1_fault(const fm1_crash_t *c)
 {
     char h[9];
+#if OP_BT_AUDIO
+    lcd_yield_off = 1;                  /* (the screen below must not run the music's decoder: test build 26) */
+#endif
 #if OP_BT_AUDIO && DSP_CPU1
     op_c1x.crash = c->count; op_c1x.count = fm1_cpu1_fault.count; op_c1x.cpu = fm1_cpu1_fault.cpu;
     op_c1x.ms = fm1_cpu1_fault.ms; op_c1x.pc = fm1_cpu1_fault.pc;
@@ -583,6 +587,11 @@ static const int8_t QDEC[16] = {0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0};
 #define PX_PAD_PRESS() px_pad_press(&g_eng)
 #define PX_PAD_STOP() px_pad_stop(&g_eng)
 #define PX_EXP_SET(v) px_exp_set((int)(v))   /* test build 25: px_midi_io.h's CC 117, the expression pedal */
+#endif
+#if OP_BT_AUDIO     /* test build 26: ui.h's waits on a message ("SAVED", 0.7 s) serve the radio, as the main loop does */
+void ble_test_poll(void);
+#define UI_IDLE() ble_test_poll()
+#define UI_MS() ms_now()
 #endif
 #include "ui.h"
 #include "px_lights.h"      /* the button lights follow the blocks (issue #8; px_leds.h drives them) */

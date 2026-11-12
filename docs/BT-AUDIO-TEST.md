@@ -643,6 +643,14 @@ volume is smoothed over 10 ms, the wah over 15 ms, the whammy over 15 ms and the
 What to check: the pedal as the volume (swells, the delay's tails after it closes), a wah, a WHAMMY with a NAM preset (its
 pitch shifter runs as before: late blocks, `BYP`), and that turning a wah off at the heel keeps the sound.
 
+## Test build 26: the music through a save
+
+Test build 25's first log with music showed `GAP 2031/2`: the main loop stopped for 2 s once, when a preset was saved. After
+the flash write, the save page kept "SAVED" on the screen for 0.7 s in a plain wait, with the radio unserved: the music's
+ring ran dry (`UND`), its queue overflowed (dropped 4) and the radio's receive pool filled (`RX .../12096/12272 F16`). The
+wait now serves the radio as the main loop does (`ui.h` `UI_IDLE`, `ble_test_poll`). The flash write itself still holds the
+audio, the guitar's too, for a moment: save between songs. The crash screen no longer runs the music's decoder while it draws.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

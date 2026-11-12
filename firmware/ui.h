@@ -597,7 +597,12 @@ static void save_confirm(void)
         if (rc) { b[7] = (char)('0' + (uint32_t)(-rc) % 10u); b[8] = 0; }
         ft_box(0, 186, 240, rc ? b : "SAVED", &FT_MD, rc ? RED : GRN, UI_BG, 1);
     }
+#ifdef UI_IDLE      /* test build 26, the Bluetooth audio image: the radio served while "SAVED" stays (openpocket.c: the music
+                     * stopped for the whole 0.7 s, and its queue overflowed) */
+    { const uint32_t t0 = UI_MS(); while (UI_MS() - t0 < 700u) { fm1_wdt_feed(); UI_IDLE(); } }
+#else
     for (int i = 0; i < 7; i++) { fm1_wdt_feed(); fm1_delay_ms(100); }
+#endif
     save_close();
 }
 /* ===================================================== MIDI page ======== */
