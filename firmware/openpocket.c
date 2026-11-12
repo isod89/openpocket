@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 15
+#define BT_TEST_BUILD 16
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -878,7 +878,13 @@ static void app_main(void)
      * then SYSVDD 1.26 -> 1.38 V with its strong drive, a level per 100 us), before the audio; the 1.3 V regulator and VDDIO
      * stay as found. With the DSP's timing of test build 13 (no hold, bt/bt_a2dp.c): the A/B against DLY for the supply
      * margin (B'). The c1 line's P reads them back */
-    if (keys_held_at_boot != 1 && !safe) {   /* test build 15: on every boot; CAB held = the boot loader's (builds 12-14's) */
+    /* test build 16, the keys held at power-on: CAB = one core (the second held before the audio starts: builds 5-10 ran so,
+     * barred, with no start-up crash); DLY = the radio's interrupts below the audio (2), as the stock firmware */
+#if DSP_CPU1
+    if (keys_held_at_boot == 1 && !safe) { fm1_cpu1_stop(); fm1_cpu1_on = 0; }
+#endif
+    if (keys_held_at_boot == 2) bt_irq_prio = 2u;
+    if (!safe) {   /* test build 15 on: the stock core supplies on every boot */
         fm1_vdc14_raise(7u);
         fm1_p33_or(FM1_P3_ANA_CON6, 0x08u);
         fm1_p33_or(FM1_P3_ANA_CON9, 0x10u);
