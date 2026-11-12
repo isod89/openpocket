@@ -941,8 +941,11 @@ Test build 33 matched the Chocolate (in CubeSuite's "advanced custom mode": the 
 linked twice, and both links ended before any answer: `3E` ("failed to be established") after 197 ms, six events of 30 ms.
 Advertising had come back on at the very connection complete, beside the new master link, and music was playing.
 
-- **Advertising stays off** from the scan through the connection until the footswitch's first ATT answer, 3 s, or the link's
-  end (`LE_CEN_ADV_HOLD_MS`).
+- **Advertising stays off** from the scan through the connection until the footswitch is subscribed, 10 s (a safety net), or
+  the link's end (`LE_CEN_ADV_HOLD_MS`).
+- **The central role's clock**: its steps (the scan's turns, the pause, the connection's time limit) ran only after a message
+  of the host's task, and with no phone and no music nothing posted one: test build 33 stayed in `CEN PAUSE` for good. The main
+  loop now wakes the host's task every 200 ms while the role is on and the footswitch is not subscribed (`LE_CEN_WAKE_MS`).
 - **The last phone's call-back** (classic paging, 5 s after power-on) waits until the footswitch is linked, or 20 s.
 - **The cen line**: `CD3E/197` the footswitch's last link's end and its life in ms (the LE line's `D` is any link's), `X3E n`
   the links that ended `3E`, `IV n` the interval its connection complete gave (1.25 ms), and `LF flags/rssi/t`: `t` the

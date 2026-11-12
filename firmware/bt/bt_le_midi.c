@@ -138,10 +138,10 @@ enum { LE_CEN_OFF, LE_CEN_SCAN, LE_CEN_INIT, LE_CEN_LINK, LE_CEN_PAUSE };
 #define LE_ALONE_ADV_MS 2000u
 static uint8_t le_adv_held;                /* advertising held off while the scanner (or the connection to the footswitch) runs alone */
 /* test build 34: build 33's two footswitch links ended unanswered (3E, "failed to be established", after 197 ms: six events of
- * 30 ms), with advertising turned on again at the very connection complete beside the new master link. Now it waits for the
- * footswitch's first ATT answer, or LE_CEN_ADV_HOLD_MS, or the link's end. And the footswitch's links in the cen line apart
+ * 30 ms), with advertising turned on again at the very connection complete beside the new master link. Now it waits until the
+ * footswitch is subscribed, or LE_CEN_ADV_HOLD_MS, or the link's end. And the footswitch's links in the cen line apart
  * from a phone's: the last one's end (reason, life in ms), the 3E endings, the interval its connection complete gave */
-#define LE_CEN_ADV_HOLD_MS 3000u
+#define LE_CEN_ADV_HOLD_MS 10000u  /* (a safety net: the client's own limits end a link that does not answer, LE_CEN_REQ_MS) */
 static uint32_t le_cen_link_ms, le_cen_life, le_cen_3e;
 static uint8_t le_cen_end;                 /* (the last footswitch link's end reason, 0: none yet) */
 static uint16_t le_cen_intv;
@@ -339,7 +339,7 @@ static void le_cen_poll(uint32_t now)
         le_cen_rest(now);                                      /* (scanning again later) */
     } else if (le_cen_st == LE_CEN_LINK && i >= 0) {
         const uint16_t con = le_lk.conn[i];
-        if (le_adv_held && now - le_cen_link_ms >= LE_CEN_ADV_HOLD_MS) le_adv_release();   /* (test build 34: no answer yet) */
+        if (le_adv_held && now - le_cen_link_ms >= LE_CEN_ADV_HOLD_MS) le_adv_release();   /* (test build 34: not subscribed yet) */
         if (le_ac.req_n && !le_ac.busy && !le_cen_hold && !le_att_send(con, le_ac.req, le_ac.req_n)) {
             le_ac.req_n = 0; le_ac.busy = 1; le_cen_ms = now;
         }
@@ -410,11 +410,11 @@ static void le_att_client(uint8_t type, uint16_t con, uint8_t *p, uint16_t n)
         return;
     }
     if (type != 8u) return;
-    le_adv_release();                                          /* (test build 34: the footswitch answers: advertising may come) */
     r = attc_rx(&le_ac, p, n);
     if (r == ATTC_R_MIDI) { le_cen_midi++; px_midi_ble_write_link((uint32_t)i, p + 3, (uint32_t)n - 3u); }
     else if (r == ATTC_R_PAIR) { le_cen_pairs++; le_cen_hold = 1; le_cen_ms = ble_ms(); (void)sm_api_request_pairing(con); }
     else if (r == ATTC_R_READY) {                              /* subscribed: this footswitch is the one, until power-off */
+        le_adv_release();                                      /* (test build 34: advertising may come, beside this link) */
         le_cen_subs++;
         le_cs.known = 1; le_cs.type = le_cen_param.type; memcpy(le_cs.addr, le_cen_param.addr, 6);
         le_cen_val = le_ac.val; le_cen_ccc = le_ac.ccc;
@@ -529,8 +529,8 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
                     le_cen_st = LE_CEN_LINK;
                     le_cen_links++;
                     le_cen_hold = 0;
-                    le_cen_link_ms = ble_ms();          /* (test build 34: advertising stays held until the footswitch
-                                                         * answers, LE_CEN_ADV_HOLD_MS, or the link ends: le_adv_release) */
+                    le_cen_link_ms = ble_ms();          /* (test build 34: advertising stays held until the footswitch is
+                                                         * subscribed, LE_CEN_ADV_HOLD_MS, or the link ends: le_adv_release) */
                     le_cen_intv = (uint16_t)(q[0] | q[1] << 8);
                     attc_start(&le_ac, known ? le_cen_val : 0u, known ? le_cen_ccc : 0u);
                 }
@@ -611,9 +611,19 @@ static void le_hw_sample(void)
         le_hw_flag[i] = f;
     }
 }
+/* test build 34: the central role's clock. le_cen_poll runs in ble_profile_loop, after a message of the host's task; with no
+ * phone and no music nothing posts one (advertising alone brings the host no event), and build 33 stayed in PAUSE for good
+ * (SO2 in 76 s, the Chocolate never heard). So while the role is on and the footswitch is not subscribed, the main loop wakes
+ * the host's task every LE_CEN_WAKE_MS (a type-255 message, stack_run_loop_resume: the editor's 50 ms kick's way) */
+#define LE_CEN_WAKE_MS 200u
+static uint32_t le_cen_wake_ms;
 static void bt_le_watch(uint32_t now)
 {
     le_hw_sample();
+    if (le_lk.cen && le_adv_ok && !(le_cen_st == LE_CEN_LINK && le_ac.st == ATTC_READY) && now - le_cen_wake_ms >= LE_CEN_WAKE_MS) {
+        le_cen_wake_ms = now;
+        stack_run_loop_resume();
+    }
     const int on_air = le_adv_ok && (le_lk.adv || le_cen_scan || le_links_up(&le_lk));
     if (!le_watch_due(&le_wd, ble_cnt_irq_ev + ble_cnt_irq_rx, now, on_air, LE_WD_MS)) return;
     le_wd_req = 1;
