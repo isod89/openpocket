@@ -39,6 +39,9 @@ extern int os_sem_post(void *s);
 extern void hci_user_confirmation_request(uint8_t yes, uint8_t *addr);   /* (hci_vendor.c: the reply to HCI 0x33, to that address) */
 extern uint32_t bt_stub_calls;
 extern const char *bt_stub_last;
+/* btstack's avctp_user.c (the library, Apache-2.0): the newest pairing in its device list (here the pairing store, bt_ps.h), then
+ * user_send_cmd_prepare(1, 6, its address), the SDK's "connect to this address"; returns 0 when there is none */
+extern uint8_t connect_last_device_from_vm(void);
 
 /* the SDK's numbers (include_lib/btstack/avctp_user.h, include_lib/utils/event/bt_event.h, Apache-2.0) */
 enum { USER_CTRL_WRITE_SCAN_ENABLE = 13, USER_CTRL_WRITE_CONN_ENABLE = 15 };
@@ -62,6 +65,12 @@ static int16_t bt_ring_mem[BT_RING_N] __attribute__((aligned(4), section(".bss.l
 enum { BT_OFF, BT_STARTING, BT_VISIBLE, BT_LINKED, BT_PLAYING, BT_FAILED };
 static volatile uint32_t bt_st;
 static int bt_off_by_key;                                       /* REV held at power-on: Bluetooth off this boot (openpocket.c) */
+static uint8_t bt_pwr_stock;                                    /* test build 18 (openpocket.c): 0 the stock power setup not done
+                                                                 * (DLY held), 1 done with the DC-DC already on, 2 done, moved */
+/* test build 18: the last phone called back once after power-on (M-VAVE's V22 fixes the same: "Bluetooth would not automatically
+ * reconnect after being turned on"); an iPhone does not page an audio device by itself. 0 not yet, 1 asked, then the library's
+ * return + 2 (2: no pairing stored, 3: paging that phone) */
+static volatile uint32_t bt_rc_state, bt_rc_ms;
 static uint16_t ble_conn;                                       /* (openpocket.c: a link is up, scroll the link line) */
 volatile uint32_t bt_cnt_irq_br, bt_cnt_irq_slot;               /* bt_irq.c: IRQ 40 and 41 */
 static volatile uint32_t bt_ev_n, bt_ev_hist[6], bt_ev_i;       /* the events, the last six: from << 12 | code << 4 */
@@ -288,6 +297,12 @@ static void bt_app_task(void *arg)
             user_send_cmd_prepare(USER_CTRL_WRITE_CONN_ENABLE, 0, 0);
             bt_scans++;
             bt_scan_ms = ms_now();
+        }
+        if (bt_cmd_bits & 2u) {                                 /* test build 18: the last phone, called back (ble_test_poll) */
+            bt_cmd_bits &= ~2u;
+            BT_CRUMB("reconnect: the last phone");
+            bt_rc_state = 2u + connect_last_device_from_vm();   /* (paging it, up to the 8 s page timeout; failed, the scans
+                                                                 * resume, or the KICK below asks for them again) */
         }
     }
 }
@@ -551,6 +566,14 @@ void ble_test_poll(void)
         if (!bt_t_vis) bt_t_vis = ms_now();
         bt_cmd(1u);
     }
+    {   /* test build 18: the last phone called back, once per power-on: 3 s after Bluetooth became visible and 5 s after power-on
+         * (well past the DSP's start at 1.5 s and the start-up window after it), unless a phone has come by itself meanwhile */
+        const uint32_t t = ms_now();
+        if (!bt_rc_state && bt_st == BT_VISIBLE && bt_t_vis && t - bt_t_vis >= 3000u && t >= 5000u) {
+            bt_rc_state = 1u; bt_rc_ms = t;
+            bt_cmd(2u);
+        }
+    }
     if (bt_cnt_irq_br != bt_q40_n) { bt_q40_n = bt_cnt_irq_br; bt_q40_t = now; }
     else if (bt_st == BT_VISIBLE && now - bt_q40_t > BT_QUIET_MS) {
         /* visible, no link, and the baseband's interrupt has been silent for 5 s: the scans have stopped (test build 3 after a
@@ -690,6 +713,11 @@ void ble_test_line(char *out)
     o = ble__put(o, " EV "); o = bt__dec(o, bt_ev_n);
     o = ble__put(o, bt_init_ok ? " RDY" : " NORDY");
     o = ble__put(o, " SCAN "); o = bt__dec(o, bt_scans);
+    /* test build 18: RC the last phone's call-back (0 not yet, 1 asked, 2 no pairing stored, 3+ paged) @ when; PS the stock power
+     * setup (0 not done: DLY held, 1 done, 2 done with the 1.3 V supply moved onto its DC-DC) and P3_ANA_CON0 / CON5 read back */
+    o = ble__put(o, " RC "); o = bt__dec(o, bt_rc_state); *o++ = '@'; o = bt__dec(o, bt_rc_ms);
+    o = ble__put(o, " PS "); o = bt__dec(o, bt_pwr_stock); *o++ = ' ';
+    o = bt__hex(o, fm1_p33_read(FM1_P3_ANA_CON0), 2); *o++ = '/'; o = bt__hex(o, fm1_p33_read(FM1_P3_ANA_CON5), 2);
     o = ble__put(o, " V "); o = ble__hex(o, ble_vm_flags()); *o++ = ' '; o = bt__hex(o, ble_vm_area >> 12, 2);   /* (as the BLE image) */
     *o++ = ' '; o = bt__hex(o, ble_vm_trim(), 4);
     o = ble__put(o, " ADDR ");

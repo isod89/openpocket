@@ -21,8 +21,8 @@
 #ifndef BT_IRQ_PRIO
 #define BT_IRQ_PRIO 5u                              /* the classic baseband's interrupts: above audio (3) and the timer (4), request_irq */
 #endif
-/* test build 16: the priority request_irq gives them, set before Bluetooth starts (openpocket.c: DLY held at power-on = 2, below
- * the audio, as the stock firmware has them) */
+/* the priority request_irq gives them. Test builds 16-17 lowered it to 2 with DLY held at power-on (below the audio, as the stock
+ * firmware has them); test build 18 no longer does (openpocket.c: test build 3 ran so and could not pair) */
 static uint8_t bt_irq_prio = BT_IRQ_PRIO;
 #else
 #define BT_CRUMB_OS(s) ((void)0)

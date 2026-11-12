@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 17
+#define BT_TEST_BUILD 18
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -723,6 +723,16 @@ static void app_main(void)
     dbn_t bhome = {0,0,0};
     uint32_t adc_tick = 0, t_knob = 0, t_tuner = 0;
     int32_t master_raw = -100;
+#if OP_BT_AUDIO
+    /* test build 18: the stock core supplies first, before anything else runs. M-VAVE's V22 (2026-11-12) now sets them in its
+     * boot loader (isd_config.ini DVDD=15, DCDC14=7): VDC14 1.40 -> 1.60 V, then SYSVDD 1.26 -> 1.38 V with its strong drive, a
+     * level per 100 us (fm1_sys.h; the timer runs since fm1_cstart). Test builds 15 to 17 raised them only after the second core
+     * had started; the rest of the stock power setup follows the power-on keys (below) */
+    fm1_vdc14_raise(7u);
+    fm1_p33_or(FM1_P3_ANA_CON6, 0x08u);
+    fm1_p33_or(FM1_P3_ANA_CON9, 0x10u);
+    fm1_sysvdd_raise(15u);
+#endif
 #if !AUDIO_PROBE
     {   /* before the second core starts: the data-cache ways as RAM (through a pointer: it is RAM code) */
         void (*volatile f)(void) = pxc_init;
@@ -874,22 +884,18 @@ static void app_main(void)
     input_baseline();
     keys_capture_idle();
 #if OP_BT_AUDIO
-    /* test build 14, CAB held at power-on: the stock firmware's core supplies (v30's four lines, bddb272: VDC14 1.40 -> 1.60 V,
-     * then SYSVDD 1.26 -> 1.38 V with its strong drive, a level per 100 us), before the audio; the 1.3 V regulator and VDDIO
-     * stay as found. With the DSP's timing of test build 13 (no hold, bt/bt_a2dp.c): the A/B against DLY for the supply
-     * margin (B'). The c1 line's P reads them back */
-    /* test build 16, the keys held at power-on: CAB = one core (the second held before the audio starts: builds 5-10 ran so,
-     * barred, with no start-up crash); DLY = the radio's interrupts below the audio (2), as the stock firmware */
+    /* the keys held at power-on (test build 18): CAB = one core (the second held before the audio starts: builds 5-10 ran so,
+     * barred, with no start-up crash; the stage's way out if two cores fail); DLY = without the rest of the stock power setup.
+     * (Test builds 16-17's DLY, the radio's interrupts below the audio as the stock firmware has them, is gone: test build 3 ran
+     * so and could not pair, OpenPocket's audio interrupt being the whole DSP block, not stock's DMA work; ble/ble_os.c) */
 #if DSP_CPU1
     if (keys_held_at_boot == 1 && !safe) { fm1_cpu1_stop(); fm1_cpu1_on = 0; }
 #endif
-    if (keys_held_at_boot == 2) bt_irq_prio = 2u;
-    if (!safe) {   /* test build 15 on: the stock core supplies on every boot */
-        fm1_vdc14_raise(7u);
-        fm1_p33_or(FM1_P3_ANA_CON6, 0x08u);
-        fm1_p33_or(FM1_P3_ANA_CON9, 0x10u);
-        fm1_sysvdd_raise(15u);
-    }
+    /* test build 18: the rest of M-VAVE's power setup (fm1_sys.h fm1_power_stock, from its firmware's __hw_power_init): the 1.3 V
+     * supply moved onto its DC-DC and tuned, VDDIOM 4 (V22's isd_config.ini VDDIO=4), the radio's 1.2 V regulator on automatic
+     * (on an FM-1 without them the radio heard far less). The second core idles in its RAM loop here, no audio yet. DLY held:
+     * not done, as up to test build 17 (on a Pocket X the release's v30 slowed and crackled with the DC-DC: the A/B by ear) */
+    if (keys_held_at_boot != 2) bt_pwr_stock = (uint8_t)(1 + fm1_power_stock());
 #endif
     op_stage(ST_PRESET, "PRESET...");
     load_preset(cur_preset);
