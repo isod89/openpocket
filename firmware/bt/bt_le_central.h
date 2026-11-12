@@ -20,11 +20,13 @@ static const uint8_t LE_UUID_MIDI_CHR[16] = {0xF3, 0x6B, 0x10, 0x9D, 0x66, 0xF2,
  * [2] event type (0 connectable, 1 directed, 2 scannable, 3 not connectable, 4 scan response), [3] address type, [4..9] the
  * address as HCI gives it, [10] RSSI (dBm), [11] the data's length, [12..] the data (31 bytes at most). The footswitch is the
  * address that has shown, in its advertising data or its scan response (two reports), the BLE MIDI service UUID and a name
- * containing LE_CEN_NAME, has advertised as connectable, and is heard at LE_CEN_RSSI or more. Once one has been linked and
- * subscribed, only that address is taken again (until power-off): another player's controller on stage is never taken */
-#ifndef LE_CEN_NAME
-#define LE_CEN_NAME "CHOCOLATE"       /* (compared without case) */
-#endif
+ * containing one of LE_CEN_NAMES, has advertised as connectable, and is heard at LE_CEN_RSSI or more. Once one has been linked
+ * and subscribed, only that address is taken again (until power-off): another player's controller on stage is never taken */
+static const char *const LE_CEN_NAMES[] = {   /* (upper case, compared without case) */
+    "FOOTCTRL",                               /* the regular Chocolate's name in its quick guide and in players' reports */
+    "CHOCOLATE",                              /* ("M-VAVE Chocolate" in another of its manuals) */
+};
+#define LE_CEN_NAMES_N (sizeof LE_CEN_NAMES / sizeof LE_CEN_NAMES[0])
 #ifndef LE_CEN_RSSI
 #define LE_CEN_RSSI (-80)
 #endif
@@ -51,7 +53,7 @@ static int le_cen_name_has(const uint8_t *v, uint32_t n, const char *w)   /* w (
     return 0;
 }
 /* what an advertisement's data shows (AD structures: length, type, value): LE_SEEN_MIDI the BLE MIDI UUID in a list of 128-bit
- * UUIDs (0x06 incomplete, 0x07 complete), LE_SEEN_NAME the name (0x08 short, 0x09 complete) containing LE_CEN_NAME */
+ * UUIDs (0x06 incomplete, 0x07 complete), LE_SEEN_NAME the name (0x08 short, 0x09 complete) containing one of LE_CEN_NAMES */
 static uint32_t le_cen_ad(const uint8_t *d, uint32_t n)
 {
     uint32_t i = 0, f = 0, k;
@@ -61,7 +63,8 @@ static uint32_t le_cen_ad(const uint8_t *d, uint32_t n)
         if (!len || i + 1u + len > n) break;          /* (a malformed structure ends the reading) */
         if (type == 0x06u || type == 0x07u)
             for (k = 0; k + 16u <= len - 1u; k += 16u) if (!memcmp(v + k, LE_UUID_MIDI_SVC, 16)) f |= LE_SEEN_MIDI;
-        if ((type == 0x08u || type == 0x09u) && le_cen_name_has(v, len - 1u, LE_CEN_NAME)) f |= LE_SEEN_NAME;
+        if (type == 0x08u || type == 0x09u)
+            for (k = 0; k < LE_CEN_NAMES_N; k++) if (le_cen_name_has(v, len - 1u, LE_CEN_NAMES[k])) f |= LE_SEEN_NAME;
         i += 1u + len;
     }
     return f;

@@ -186,6 +186,16 @@ int main(void)
         n = REPORT(4, 0, A1, rsp, 11, -61);
         ok(le_cen_report(&s, ev, n, 110, &t, a) && t == 0 && !memcmp(a, A1, 6), "scan: then the scan response's name: the footswitch, its address");
         memset(&s, 0, sizeof s);
+        rsp[0] = 9; rsp[1] = 0x09; memcpy(rsp + 2, "FootCtrl", 8);
+        n = REPORT(0, 0, A1, adv, 21, -60); le_cen_report(&s, ev, n, 100, &t, a);
+        n = REPORT(4, 0, A1, rsp, 10, -60);
+        ok(le_cen_report(&s, ev, n, 110, &t, a) && !memcmp(a, A1, 6), "scan: the name FootCtrl, as the regular Chocolate advertises: the footswitch");
+        memset(&s, 0, sizeof s);
+        rsp[0] = 6; rsp[1] = 0x08; memcpy(rsp + 2, "FOOTC", 5);
+        n = REPORT(0, 0, A1, adv, 21, -60); le_cen_report(&s, ev, n, 100, &t, a);
+        n = REPORT(4, 0, A1, rsp, 7, -60);
+        ok(!le_cen_report(&s, ev, n, 110, &t, a), "scan: a short name cut before the whole word: not taken");
+        memset(&s, 0, sizeof s);
         rsp[0] = 17; rsp[1] = 0x09; memcpy(rsp + 2, "M-VAVE CHOCOLATE", 16);
         n = REPORT(4, 1, A2, rsp, 18, -50); le_cen_report(&s, ev, n, 10, &t, a);
         n = REPORT(0, 1, A2, adv, 21, -90);

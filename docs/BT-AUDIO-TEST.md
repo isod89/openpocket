@@ -774,9 +774,10 @@ it, and so does the phone's music.
 
 ### How it works
 
-- **Which one is the Chocolate.** It is the advertiser that shows the BLE MIDI service UUID and a name containing `CHOCOLATE`
-  (without case), in its advertising data or its scan response, advertises as connectable and is heard at -80 dBm or more
-  (`firmware/bt/bt_le_central.h`, `LE_CEN_NAME`, `LE_CEN_RSSI`). Once one has been linked and subscribed, only its address.
+- **Which one is the Chocolate.** It is the advertiser that shows the BLE MIDI service UUID and a name containing `FOOTCTRL`
+  (the regular Chocolate's Bluetooth name in its quick guide and in players' reports) or `CHOCOLATE` (another of its manuals),
+  without case, in its advertising data or its scan response, advertises as connectable and is heard at -80 dBm or more
+  (`firmware/bt/bt_le_central.h`, `LE_CEN_NAMES`, `LE_CEN_RSSI`). Once one has been linked and subscribed, only its address.
 - **Scanning** (active, for the scan responses' names) runs only while the footswitch's link is down: 10 ms every 200 ms, 5 % of
   the radio's time. With it found, the pedal stops scanning and connects (the library's initiator, which itself listens 5 ms in
   every 15 while the classic link is on), asking a connection interval of 30 ms at most, no latency, a 2 s supervision timeout
@@ -812,7 +813,8 @@ footswitch's address once known.
 ### What to check
 
 1. The music playing from the phone, the Chocolate on: within a few seconds its footswitches act. The log: `CEN LINK`, `S1`,
-   `MIDI` rising with each press.
+   `MIDI` rising with each press. `CEN SCAN` with `R` rising and `M0` means no advertiser passed the filter: the Chocolate's
+   name is then neither of the two (a scanner app on a phone, such as nRF Connect, shows its name and services).
 2. The Chocolate off and on again: it comes back by itself (`K`, `S` up by one).
 3. The editor connected over Bluetooth meanwhile (test build 27): both work.
 4. The music with the Chocolate away (scanning): `UND`, `GAP` as in test build 27.
