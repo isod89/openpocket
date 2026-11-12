@@ -100,7 +100,14 @@ const int config_btctler_le_hw_ram_use_static = 1;
 const int config_multilink_support_esco_enalbe = 0;
 const int config_btctler_le_slave_multilink = 1;            /* (RF_ble.c: the multi-link scheduler places the links' events; test
                                                              * build 27's two links use it) */
-const int config_btctler_le_rx_nums = 5;
+const int config_btctler_le_rx_nums = 8;                    /* test build 35: 8 (up to 34: 5). It sizes only the LE baseband's
+                                                             * receive DMA pool, 294 bytes each (RF_ble.c le_hw_init: 2,387 bytes,
+                                                             * 1,505 with 5), from the Bluetooth heap. A link keeps its receive
+                                                             * buffers there (hw_alloc_rx 255 per packet, the initiator's 2 x 263)
+                                                             * and advertising needs 2 x 263 more (le_hw_advertising), else it
+                                                             * stops before it starts ("RX DMA NULL"): test build 34's advertiser
+                                                             * beside the Chocolate's link stayed in state 0 (HW 1:0/0) and
+                                                             * MIDIWeb never found the pedal */
 const int config_btctler_le_acl_packet_length = 27;
 const int config_btctler_le_acl_total_nums = 5;
 const int config_btctler_le_slave_conn_update_winden = 2500;

@@ -157,6 +157,24 @@ static le_cen_scan_t le_cs;
 static attc_t le_ac;
 static struct __attribute__((packed)) { uint16_t intv, lat, tmo; uint8_t type, addr[6]; } le_cen_param;   /* (read later by the
                                                                  * host's thread: static) */
+/* test build 35: the footswitch's connection parameter update requests (L2CAP signalling: the pedal is its central). Test build
+ * 34: the regular Chocolate, linked at 30 ms (IV24), asked for 11.25 ms and got it (C9); beside the music its link then ended
+ * and came back again and again (K10 in about three minutes, CD08, X3E 3), and the advertiser beside it never started. So a
+ * request below LE_CEN_INTERVAL is refused: the library answers "rejected" and the link keeps 30 ms, with no update procedure
+ * at all. l2cap.c's weak hook, called (l2cap_acl_handler) for a request inside the host's range, before it is accepted:
+ * p = interval min, max (1.25 ms), latency, timeout (10 ms), little endian; 0 accepts it. "UR 2/6-9" in the cen line: the
+ * requests refused, the last one's interval min-max */
+static uint32_t le_cen_upd_rej, le_cen_upd_ok;
+static uint16_t le_cen_upd_min, le_cen_upd_max;
+int l2cap_connection_update_request_just(uint8_t *p, uint16_t handle)
+{
+    (void)handle;
+    le_cen_upd_min = (uint16_t)(p[0] | p[1] << 8);
+    le_cen_upd_max = (uint16_t)(p[2] | p[3] << 8);
+    if (le_cen_upd_min < LE_CEN_INTERVAL) { le_cen_upd_rej++; return 1; }
+    le_cen_upd_ok++;
+    return 0;
+}
 
 /* ---- test build 27: the web editor's replies (px_editor.h ED_BT), as BLE MIDI notifications of the MIDI characteristic.
  * ed_bt_send copies a reply into le_tx; the host's task sends it a packet at a time from ble_profile_loop, which it calls after
@@ -777,6 +795,11 @@ void bt_le_cen_line(char *out)
         if (le_cen_end) { o = ble__put(o, " CD"); o = bt__hex(o, le_cen_end, 2); *o++ = '/'; o = bt__dec(o, le_cen_life); }
         if (le_cen_3e) { o = ble__put(o, " X3E "); o = bt__dec(o, le_cen_3e); }
         if (le_cen_intv) { o = ble__put(o, " IV"); o = bt__dec(o, le_cen_intv); }
+        if (le_cen_upd_rej || le_cen_upd_ok) {               /* (test build 35: its update requests refused, accepted / the last) */
+            o = ble__put(o, " UR"); o = bt__dec(o, le_cen_upd_rej);
+            if (le_cen_upd_ok) { *o++ = '+'; o = bt__dec(o, le_cen_upd_ok); }
+            *o++ = '/'; o = bt__dec(o, le_cen_upd_min); *o++ = '-'; o = bt__dec(o, le_cen_upd_max);
+        }
         o = ble__put(o, " T"); o = bt__dec(o, le_cen_tries);
         o = ble__put(o, " K"); o = bt__dec(o, le_cen_links);
         o = ble__put(o, " S"); o = bt__dec(o, le_cen_subs);

@@ -958,6 +958,24 @@ From the library's bitcode, on the master's establishment: the initiator is enab
 (`le_hw_ioctrl` 6: offset x 2 + 4 slots, `__master_reset_transmitWindowDelay`), and with `config_btctler_le_master_multilink` 0
 `master_setup_first_data_location` changes nothing: the vendor's single-master path, with no stand-in on it.
 
+### Test build 35: the footswitch's link kept at 30 ms, and room for advertising beside it
+
+Test build 34 on the pedal, in the gig's order (pedal, Chocolate in its standard mode, then the phone's music): the Chocolate
+linked and changed presets (`CEN LINK ... K10 S7 MIDI 11`), the music played clean (`UND 0`, no drop), but its link kept
+ending and coming back (`K10` in about three minutes, `X3E 3`, `CD08/2054`), and MIDIWeb never found the pedal. The cen line
+showed why on two counts:
+
+- **The link's interval**: made at 30 ms (`IV24`), it ran at 11.25 ms (`C9` in the LE line): the Chocolate asked for a faster
+  link (an L2CAP connection parameter update request) and the library accepted it. Beside the music that is too much radio.
+  Now `l2cap_connection_update_request_just` (l2cap.c's weak hook, before the library accepts a request) refuses any request
+  below `LE_CEN_INTERVAL`: no update procedure, the link stays at 30 ms. `UR n+m/min-max` in the cen line: the requests
+  refused (and accepted), the last one's interval range.
+- **The advertiser beside the link never started** (`HW2 0:6/0 1:0/0`: the second radio entity in state 0, not 2).
+  `le_hw_advertising` takes 2 x 263 bytes from the LE baseband's receive DMA pool, which `config_btctler_le_rx_nums` sizes
+  (294 bytes each: 1,505 with 5), and a link keeps its own receive buffers there; when they are missing it stops before
+  advertising ("RX DMA NULL"). Now 8 (2,387 bytes, 882 more from the Bluetooth heap); the setting sizes nothing else
+  (`le_hw_init`). In the log, the second entity in state 2 (`1:2/..`) is advertising.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate
