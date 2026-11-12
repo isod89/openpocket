@@ -43,7 +43,10 @@ const int sniff_support_reset_anchor_point = 0;
 const int config_btctler_single_carrier_en = 0;
 const int config_btctler_le_master_multilink = 0;
 const int config_btctler_le_roles = 6;                      /* test build 23: LE_ADV | LE_SLAVE (ble/ble_cfg.c): advertises, a central connects */
-const int config_btctler_le_hw_nums = 1;                   /* (one LE link: the footswitch, or a phone's MIDI app) */
+const int config_btctler_le_hw_nums = 2;                   /* test build 27: two LE radio entities, so two links (the Chocolate and
+                                                             * the web editor), or one link and advertising (bt/bt_le_links.h); up to
+                                                             * 26: 1, one link (the footswitch, or a phone's MIDI app). The LE
+                                                             * baseband's memory grows by 664 bytes (RF_ble.c le_hw_init) */
 const int config_vendor_le_bb = 0;
 const int config_update_mode = 0;                           /* no update over Bluetooth */
 /* the SDK's usual values (an application's in the SDK): the A2DP buffer levels the link uses to pace itself (ms), sniff */
@@ -57,7 +60,10 @@ uint8_t tws_auto_pair_enable = 0;
 
 /* ---- host (lib_btstack_config.c, bt_profile_config.c) */
 const int config_stack_modules = BT_BTSTACK_CLASSIC | BT_BTSTACK_LE;
-const int config_le_hci_connection_num = 1;
+const int config_le_hci_connection_num = 2;                /* test build 27: two (the host's 1,240 bytes a link, btstack_memory.c,
+                                                             * and its bonding table's 56, le_device_db_memory.c, from the Bluetooth
+                                                             * heap); never above config_btctler_le_hw_nums, which the host asserts
+                                                             * at start-up (btstack_main.c btstack_mem_init: a reset) */
 const int config_le_sm_support_enable = 1;                 /* (Just Works, as ble/ble_cfg.c: a Chocolate pairs by itself) */
 const int config_le_gatt_server_num = 1;
 const int config_le_gatt_client_num = 0;

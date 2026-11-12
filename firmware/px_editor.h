@@ -64,16 +64,23 @@ static struct { uint8_t on; uint32_t last_ms, hash, push_ms; } ed_w;
  * editor's frames is taken from Bluetooth: no update, no UBOOT key. With no Bluetooth frame ever, every byte goes the USB way
  * as before. */
 #include "px_ble_midi.h"
-static px_blem_sx_t ed_bt_rx;                   /* the SysEx of the BLE MIDI writes, one whole frame at a time */
-static uint8_t ed_bt;                           /* the last frame came over Bluetooth: replies and pushes go back that way */
+#ifndef ED_BT_LINKS
+#define ED_BT_LINKS 1u                          /* the LE links (the Bluetooth audio image: 2, test build 27) */
+#endif
+static px_blem_sx_t ed_bt_rx[ED_BT_LINKS];      /* each link's SysEx, one whole frame at a time */
+static uint8_t ed_bt, ed_bt_link;               /* the last frame came over Bluetooth, on that link: replies and pushes go there */
 static uint32_t ed_bt_frames;                   /* frames answered over Bluetooth (bt/bt_le_midi.c's log words) */
-static int ed_bt_ready(uint32_t now);           /* the LE link's send buffer is empty (it also keeps it moving) */
-static void ed_bt_send(const uint8_t *p, uint32_t n);   /* a reply, F0 .. F7, into that buffer */
-static void ed_bt_write(const uint8_t *p, uint32_t n) { px_blem_sysex(&ed_bt_rx, p, n); }   /* every BLE MIDI write */
-static void ed_bt_lost(void)                    /* the LE link came or went: nothing of the last one's is kept or sent */
+static int ed_bt_ready(uint32_t now);           /* the LE side's send buffer is empty (it also keeps it moving) */
+static void ed_bt_send(uint32_t link, const uint8_t *p, uint32_t n);   /* a reply, F0 .. F7, into that buffer, for that link */
+static void ed_bt_write(uint32_t link, const uint8_t *p, uint32_t n)   /* every BLE MIDI write, with the link it came on */
 {
-    ed_bt_rx.in = ed_bt_rx.keep = ed_bt_rx.ready = 0;
-    if (ed_bt) { ed_bt = 0; ed_w.on = 0; }
+    if (link < ED_BT_LINKS) px_blem_sysex(&ed_bt_rx[link], p, n);
+}
+static void ed_bt_lost(uint32_t link)           /* that LE link came or went: nothing of the last one's is kept or sent */
+{
+    if (link >= ED_BT_LINKS) return;
+    ed_bt_rx[link].in = ed_bt_rx[link].keep = ed_bt_rx[link].ready = 0;
+    if (ed_bt && ed_bt_link == link) { ed_bt = 0; ed_w.on = 0; }
 }
 #endif
 
@@ -92,7 +99,7 @@ static void ed_send(void)
 {
     ed_out[ed_n++] = 0xF7;
 #if ED_BT
-    if (ed_bt) { ed_bt_send(ed_out, ed_n); return; }
+    if (ed_bt) { ed_bt_send(ed_bt_link, ed_out, ed_n); return; }
 #endif
     ota_wire_send(ed_out, ed_n);
 }
@@ -389,16 +396,27 @@ static void ed_service(uint32_t now)
         if (h != ed_w.hash) { ed_w.hash = h; ed_w.push_ms = now; ed_state_frame(); ed_send(); }
     }
 #if ED_BT
-    if (ed_bt_rx.ready && ed_bt_ready(now)) {          /* a frame from Bluetooth, once the last reply there has left */
-        const uint8_t *b = ed_bt_rx.buf;
-        if (ed_bt_rx.n >= 4u && b[0] == ED_H0 && b[1] == ED_H1 && b[2] == ED_H2) {
-            ed_bt = 1;
-            ed_bt_frames++;
-            ed_w.last_ms = now;
-            ed_handle(b + 4, ed_bt_rx.n - 4u);         /* (read in place: the writes keep nothing while ready is set, and no
+    {                                                  /* a frame from Bluetooth, once the last reply there has left; one a
+                                                        * pass, the links in turn (its reply holds the buffer) */
+        static uint8_t turn;
+        uint32_t j;
+        for (j = 0; j < ED_BT_LINKS; j++) {
+            const uint32_t l = (turn + j) % ED_BT_LINKS;
+            px_blem_sx_t *const r = &ed_bt_rx[l];
+            const uint8_t *const b = r->buf;
+            if (!r->ready || !ed_bt_ready(now)) continue;
+            if (r->n >= 4u && b[0] == ED_H0 && b[1] == ED_H1 && b[2] == ED_H2) {
+                ed_bt = 1;
+                ed_bt_link = (uint8_t)l;
+                ed_bt_frames++;
+                ed_w.last_ms = now;
+                ed_handle(b + 4, r->n - 4u);           /* (read in place: the writes keep nothing while ready is set, and no
                                                         * Bluetooth task runs inside ed_handle) */
+            }
+            r->ready = 0;                              /* (anything else from Bluetooth is dropped) */
+            turn = (uint8_t)((l + 1u) % ED_BT_LINKS);
+            break;
         }
-        ed_bt_rx.ready = 0;                            /* (anything else from Bluetooth is dropped) */
     }                                                  /* then USB's frame, in the same pass as before */
 #endif
     if (!ota_frame_get(&p, &n) || n < 4u || p[0] != ED_H0 || p[1] != ED_H1 || p[2] != ED_H2)

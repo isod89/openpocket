@@ -29,19 +29,29 @@ static void midi_persist(void)                  /* the page's HOME: save the set
 /* what a Bluetooth write leaves here (px_midi_ble_write) goes through the same px_midi_in as USB. The writer is the Bluetooth
  * stack's task, which runs from the main loop (ble_poll), so nothing here races: a full ring only drops what does not fit.
  * With ED_BT (the Bluetooth audio image) the write's SysEx also goes to the web editor (px_editor.h ed_bt_write), which
- * the including file has included before this one. */
+ * the including file has included before this one, kept for the LE link it came on (px_midi_ble_write_link: two links at once
+ * since test build 27). The musical messages of every link share one reader: a Chocolate's message starts with its timestamp
+ * and status, so it reads the same whatever another link left half done; only SysEx is kept between writes. */
 #include "px_ble_midi.h"
 #define BLE_MQ 32u
 static uint32_t ble_in_q[BLE_MQ], ble_in_w, ble_in_r;
 static px_blem_t ble_parse;
+#if ED_BT
+static void px_midi_ble_write_link(uint32_t link, const uint8_t *p, uint32_t n)   /* (link: the LE link it came on) */
+#else
 static void px_midi_ble_write(const uint8_t *p, uint32_t n)
+#endif
 {
     uint32_t pkt[BLE_MQ], got = px_blem_parse(&ble_parse, p, n, pkt, BLE_MQ), i;
     for (i = 0; i < got && ble_in_w - ble_in_r < BLE_MQ; i++) ble_in_q[ble_in_w++ % BLE_MQ] = pkt[i];
 #if ED_BT
-    ed_bt_write(p, n);   /* the Bluetooth audio image: the same write's SysEx, for the web editor (px_editor.h) */
+    ed_bt_write(link, p, n);   /* the Bluetooth audio image: the same write's SysEx, for the web editor (px_editor.h), kept for
+                                * its link: two links' writes may come in turns, the musical messages of both reach the pedal */
 #endif
 }
+#if ED_BT
+static void px_midi_ble_write(const uint8_t *p, uint32_t n) { px_midi_ble_write_link(0u, p, n); }   /* (the first link's) */
+#endif
 #endif
 
 #if PX_OWN_FX

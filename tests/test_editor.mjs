@@ -56,7 +56,9 @@ function bleRead(st, p, deliver) {
 
 function sim(args) {
   const child = spawn(SIM, args, { stdio: ["pipe", "pipe", "inherit"] });
-  const ble = BLE ? { sizes: [20, 182, 3, 514, 7, 244], k: 0, sx: null, bad: 0, notes: 0, writes: 0, after: null } : null;
+  const ble = BLE ? { sizes: [20, 182, 3, 514, 7, 244], k: 0, sx: null, bad: 0, notes: 0, writes: 0, after: null, between: null,
+    c: { sx: null, bad: 0, notes: 0, got: [] } } : null;   // (c: the second LE link's notifications, read apart)
+  if (ble) ble.raw = (l) => child.stdin.write(`${l}\n`);   // (a line as it is: another link's writes)
   const usb = [];                                    // (BLE: what came back the USB way)
   const access = { inputs: new Map(), outputs: new Map() };
   const lines = [];
@@ -72,7 +74,10 @@ function sim(args) {
         const input = { name, state: "connected", onmidimessage: null, open: async () => {} };
         const output = { name, state: "connected", open: async () => {}, send: (b) => {
           if (!ble) { child.stdin.write(Buffer.from(b).toString("hex") + "\n"); return; }
-          for (const w of bleWrites(b, ble.sizes[ble.k++ % ble.sizes.length])) { ble.writes++; child.stdin.write(`b${Buffer.from(w).toString("hex")}\n`); }
+          for (const w of bleWrites(b, ble.sizes[ble.k++ % ble.sizes.length])) {
+            ble.writes++; child.stdin.write(`b${Buffer.from(w).toString("hex")}\n`);
+            if (ble.between) child.stdin.write(`${ble.between}\n`);   // (a line after each write: another link's, in turns)
+          }
           if (ble.after) { child.stdin.write(`${ble.after}\n`); ble.after = null; }   // (a line right after this request's writes)
         } };
         port = { input, output };
@@ -82,6 +87,9 @@ function sim(args) {
       else if (ble && ln.startsWith("b")) {
         ble.notes++;
         bleRead(ble, Buffer.from(ln.slice(1), "hex"), (data) => { if (port && port.input.onmidimessage) port.input.onmidimessage({ data }); });
+      } else if (ble && ln.startsWith("c")) {                     // the second LE link's notifications
+        ble.c.notes++;
+        bleRead(ble.c, Buffer.from(ln.slice(1), "hex"), (data) => ble.c.got.push(data));
       } else if (ble && ln) usb.push(ln);
       else if (port && port.input.onmidimessage && ln) port.input.onmidimessage({ data: Uint8Array.from(Buffer.from(ln, "hex")) });
     }
@@ -107,7 +115,7 @@ function sim(args) {
 async function bleCheck(s) {
   if (!BLE) return;
   const [frames, notes, lost, drop] = await s.bt();
-  ok(frames > 0 && notes === s.ble.notes && !lost && !drop && !s.ble.bad,
+  ok(frames > 0 && notes === s.ble.notes + s.ble.c.notes && !lost && !drop && !s.ble.bad && !s.ble.c.bad,
      `BLE: ${frames} frames in ${s.ble.writes} writes, ${notes} notifications back, none lost or malformed`);
 }
 
@@ -194,6 +202,31 @@ if (BLE) {                                     // the LE link goes: the pushes s
   const [, , lost] = await s.bt();
   ok(l1.length === 52 && pg && pushes.some((x) => x.preset.p[amp][2] === 46) && pushes.some((x) => x.preset.p[amp][2] === 47) && lost === 0,
      "BLE: a push and a reply cross: each waits for the other, nothing lost");
+  // two LE links (test build 27): the Chocolate on link 1 presses between every write of the editor's requests on link 0
+  // (a Control Change, then a Program Change); the editor's frames still come whole, and nothing goes to link 1
+  s.ble.between = "c808eb0187f";
+  const n0 = s.ble.c.notes, two = await ed.state(), l2 = await ed.list();
+  s.ble.between = "c808ec003";
+  const nm2 = await ed.namList();
+  s.ble.between = null;
+  ok(two.slot === 7 && l2.length === 52 && nm2.models.length === 28 && s.ble.c.notes === n0,
+     "BLE, two links: the Chocolate's writes between the editor's on the other link spoil nothing, nothing goes to it");
+  // a second editor on link 1: INFO from there is answered there only, while the editor on link 0 goes on
+  s.ble.c.got.length = 0;
+  for (const w of bleWrites([0xF0, 0x7D, 0x4F, 0x50, 1, 0xF7], 7)) s.ble.raw(`c${Buffer.from(w).toString("hex")}`);
+  const st3 = await ed.state();
+  for (let i = 0; i < 40 && !s.ble.c.got.length; i++) await sleep(10);
+  const ci = s.ble.c.got[0];
+  ok(ci && ci[4] === 1 && s.ble.c.got.length === 1 && st3.slot === 7, "BLE, two links: INFO asked on link 1 is answered on link 1; link 0's STATE on link 0");
+  // link 1 goes: the editor on link 0, the last to ask, is still pushed, without asking again
+  await ed.state();
+  await s.bt("drop 1");
+  pushes.length = 0;
+  await sleep(60);
+  s.pedal(`set ${amp} 2 48`);
+  for (let i = 0; i < 40 && !pushes.length; i++) await sleep(10);
+  ok(pushes.length >= 1 && pushes.at(-1).preset.p[amp][2] === 48, "BLE, two links: link 1 gone, the editor on link 0 is still pushed");
+  await s.bt("link 1");
 }
 
 // ---- 4. saving, slots ----

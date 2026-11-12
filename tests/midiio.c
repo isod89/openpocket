@@ -70,8 +70,8 @@ static int exp_last = -1, exp_n;
 #if ED_BT                                                /* the Bluetooth audio image (-DED_BT=1): the web editor's SysEx, kept
                                                         * across writes as px_editor.h keeps it (its ed_bt_write, one line) */
 #include "px_ble_midi.h"
-static px_blem_sx_t ed_bt_rx;
-static void ed_bt_write(const uint8_t *p, uint32_t n) { px_blem_sysex(&ed_bt_rx, p, n); }
+static px_blem_sx_t ed_bt_rx[2];                         /* (two LE links, test build 27) */
+static void ed_bt_write(uint32_t link, const uint8_t *p, uint32_t n) { if (link < 2u) px_blem_sysex(&ed_bt_rx[link], p, n); }
 #endif
 #include "px_midi_io.h"
 
@@ -248,17 +248,32 @@ int main(void)
         uint8_t on[] = {0x80, 0x80, 0xB0, 24, 127};
         px_midi_ble_write(w1, sizeof w1);
         px_midi_service();
-        ok(!ed_bt_rx.ready && cur_preset == 5, "a write that starts an editor SysEx: kept, nothing for the pedal yet");
+        ok(!ed_bt_rx[0].ready && cur_preset == 5, "a write that starts an editor SysEx: kept, nothing for the pedal yet");
         px_midi_ble_write(w2, sizeof w2);
         px_midi_service();
-        ok(ed_bt_rx.ready && ed_bt_rx.n == 4 && ed_bt_rx.buf[3] == 0x12 && cur_preset == 9,
+        ok(ed_bt_rx[0].ready && ed_bt_rx[0].n == 4 && ed_bt_rx[0].buf[3] == 0x12 && cur_preset == 9,
            "the next write ends it (the editor's PING, whole) and its Program Change still loads preset 10");
-        ed_bt_rx.ready = 0;
+        ed_bt_rx[0].ready = 0;
         PRESET.on[PX_B_DRIVE] = 0;
         px_midi_ble_write(on, sizeof on);
         px_midi_service();
-        ok(PRESET.on[PX_B_DRIVE] == 1 && !ed_bt_rx.ready && !ed_bt_rx.in, "the Chocolate's Control Change: as before, nothing for the editor");
+        ok(PRESET.on[PX_B_DRIVE] == 1 && !ed_bt_rx[0].ready && !ed_bt_rx[0].in, "the Chocolate's Control Change: as before, nothing for the editor");
         ok(pop_out() == 0, "and nothing is sent back over USB");
+        /* two LE links at once (test build 27): the editor on link 1 sends a SysEx over three writes while the Chocolate on
+         * link 0 presses in between; both are understood, neither spoils the other */
+        uint8_t e1[] = {0x80, 0x81, 0xF0, 0x7D, 0x4F, 0x50}, e2[] = {0x80, 0x12, 0x01}, e3[] = {0x80, 0x82, 0xF7};
+        uint8_t off[] = {0x80, 0x8E, 0xB0, 24, 0}, pc3[] = {0x80, 0x8E, 0xC0, 3};
+        px_midi_ble_write_link(1, e1, sizeof e1);
+        px_midi_ble_write_link(0, off, sizeof off);
+        px_midi_service();
+        int mid = PRESET.on[PX_B_DRIVE] == 0 && ed_bt_rx[1].in && !ed_bt_rx[1].ready;
+        px_midi_ble_write_link(1, e2, sizeof e2);
+        px_midi_ble_write_link(0, pc3, sizeof pc3);
+        px_midi_ble_write_link(1, e3, sizeof e3);
+        px_midi_service();
+        ok(mid && cur_preset == 3 && ed_bt_rx[1].ready && ed_bt_rx[1].n == 5 && ed_bt_rx[1].buf[4] == 0x01 && !ed_bt_rx[0].ready,
+           "two links in turns: the Chocolate's switch and preset act, the editor's SysEx on the other link comes whole");
+        ed_bt_rx[1].ready = 0;
     }
 #endif
 #if PX_OWN_FX

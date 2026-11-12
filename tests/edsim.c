@@ -35,10 +35,10 @@
  * Built with -DED_BT=1 it is also the Bluetooth audio image's editor over BLE MIDI (test build 27, px_editor.h ED_BT): a line
  * "b" + hex is one BLE MIDI write to the MIDI characteristic, and the pedal's notifications come back one a line, "b" + hex, sent
  * as bt/bt_le_midi.c sends them (px_blem_pack, 20 bytes at most, two a pass of the main loop: a reply holds the send buffer
- * until it is out);
+ * until it is out). With -DED_BT_LINKS=2u, as the image, a second LE link: its writes and notifications start with "c";
  *   in   "#bt"                   "#bt FRAMES SENT LOST DROP": frames answered over Bluetooth, notifications sent, replies
- *                                dropped (no link, too long, the buffer busy), SysEx dropped by the collector
- *   in   "#bt drop" / "#bt link" the LE link goes (nothing more is sent) / a new one comes
+ *                                dropped (no link, too long, the buffer busy), SysEx dropped by the collectors
+ *   in   "#bt drop [1]" / "#bt link [1]"   LE link 0 (or 1) goes (nothing more is sent to it) / a new one comes
  *   edsim [FLASH.bin] [--persist FILE] [--dump OUT.bin]
  * --persist FILE: the flash lives in FILE (read at the start when it exists, written again after each change);
  * --dump OUT.bin: the flash is written to OUT.bin when stdin closes.
@@ -185,34 +185,43 @@ static void sim_ble(const char *l)
 #endif
 #include "../firmware/px_editor.h"
 #if ED_BT
-/* the LE link, as bt/bt_le_midi.c drives it: the reply in a buffer of its own, sent from there as notifications */
+/* the LE links, as bt/bt_le_midi.c drives them (ED_BT_LINKS of them: 1, or 2 with -DED_BT_LINKS=2u as the image): the reply in
+ * a buffer of its own, sent from there as notifications to the link that asked; link 0's lines start with "b", link 1's "c" */
 static uint8_t le_tx[1024];
-static uint32_t le_tx_at, le_tx_n, le_tx_pkts, le_tx_lost, le_link = 1;
+static uint32_t le_tx_at, le_tx_n, le_tx_link, le_tx_pkts, le_tx_lost, le_up[2] = {1, 1};
 static int ed_bt_ready(uint32_t now) { (void)now; return le_tx_at >= le_tx_n; }
-static void ed_bt_send(const uint8_t *p, uint32_t n)
+static void ed_bt_send(uint32_t link, const uint8_t *p, uint32_t n)
 {
-    if (!le_link || n > sizeof le_tx || le_tx_at < le_tx_n) { le_tx_lost++; return; }
+    if (link >= ED_BT_LINKS || !le_up[link] || n > sizeof le_tx || le_tx_at < le_tx_n) { le_tx_lost++; return; }
     memcpy(le_tx, p, n);
     le_tx_at = 0;
     le_tx_n = n;
+    le_tx_link = link;
 }
 static void le_pump(void)                              /* two notifications a pass, as the pedal has two with the controller */
 {
     uint8_t pkt[20];
-    for (int i = 0; i < 2 && le_link && le_tx_at < le_tx_n; i++) {
+    for (int i = 0; i < 2 && le_up[le_tx_link] && le_tx_at < le_tx_n; i++) {
         uint32_t k = px_blem_pack(le_tx, le_tx_n, &le_tx_at, ms_now(), pkt, sizeof pkt);
-        putchar('b');
+        putchar(le_tx_link ? 'c' : 'b');
         for (uint32_t j = 0; j < k; j++) printf("%02x", pkt[j]);
         putchar('\n');
         le_tx_pkts++;
     }
     fflush(stdout);
 }
-static void sim_bt(const char *l)
+static void sim_bt(const char *l)                      /* "#bt drop [LINK]", "#bt link [LINK]", "#bt" */
 {
-    if (!strcmp(l, "drop")) { le_link = 0; le_tx_at = le_tx_n = 0; ed_bt_lost(); return; }
-    if (!strcmp(l, "link")) { le_link = 1; le_tx_at = le_tx_n = 0; ed_bt_lost(); return; }
-    printf("#bt %u %u %u %u\n", ed_bt_frames, le_tx_pkts, le_tx_lost, ed_bt_rx.drop);
+    const uint32_t k = l[4] == ' ' && l[5] == '1' ? 1u : 0u;
+    if (!strncmp(l, "drop", 4) || !strncmp(l, "link", 4)) {
+        le_up[k] = l[0] == 'l';
+        if (le_tx_link == k) le_tx_at = le_tx_n = 0;
+        ed_bt_lost(k);
+        return;
+    }
+    uint32_t drop = 0;
+    for (uint32_t i = 0; i < ED_BT_LINKS; i++) drop += ed_bt_rx[i].drop;
+    printf("#bt %u %u %u %u\n", ed_bt_frames, le_tx_pkts, le_tx_lost, drop);
     fflush(stdout);
 }
 #endif
@@ -443,11 +452,12 @@ static void poll_in(uint32_t ms)
     ll = 0;
     if (line[0] == '#') { command(line); return; }
 #if ED_BT
-    if (line[0] == 'b') {                              /* a BLE MIDI write */
+    if (line[0] == 'b' || line[0] == 'c') {           /* a BLE MIDI write, on link 0 ("b") or 1 ("c") */
+        const uint32_t k = line[0] == 'c' ? 1u : 0u;
         uint32_t n = 0, i;
         uint8_t w[2048];
         for (i = 1; line[i] && line[i + 1] && n < sizeof w; i += 2) w[n++] = (uint8_t)(hexv(line[i]) << 4 | hexv(line[i + 1]));
-        if (le_link) ed_bt_write(w, n);
+        if (le_up[k]) ed_bt_write(k, w, n);
         return;
     }
 #endif

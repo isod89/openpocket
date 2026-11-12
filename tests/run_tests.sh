@@ -153,6 +153,9 @@ $CC -O1 -Wall -Wno-unused-function -o build/ble_status tests/test_ble_status.c &
 $CC -O1 -Wall -Wno-unused-function -o build/ble_vm tests/test_ble_vm.c && build/ble_vm
 $CC -O1 -Wall -Wno-unused-function -I tests/ble_shim -I firmware/ble -o build/test_ble_taskq tests/test_ble_taskq.c && build/test_ble_taskq
 $CC -O1 -Wall -Wno-unused-function -Wno-unused-variable -DOP_BT_AUDIO=1 -I tests/ble_shim -I firmware/ble -I firmware/bt -o build/test_bt_taskq tests/test_ble_taskq.c && build/test_bt_taskq
+# (test build 27: the two LE links, which handle is which link and when to advertise)
+$CC -O1 -Wall -Wno-unused-function -I firmware/bt -o build/test_bt_le_links tests/test_bt_le_links.c
+build/test_bt_le_links > build/le_links.log || { grep FAIL build/le_links.log; exit 1; }; tail -1 build/le_links.log
 echo "== Chocolate Plus files (tools/chocolate/fcp.py)"
 python3 tests/test_fcp.py
 echo "== pedal skin input"
@@ -163,8 +166,9 @@ echo "== editor"
 $CC -O1 -Wall -Wno-unused-function -o build/edsim tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 node tests/test_editor.mjs
 # the Bluetooth audio image's editor over BLE MIDI (test build 27, px_editor.h ED_BT): the same tests, the SysEx in BLE MIDI
-# writes and notifications (tests/test_editor.mjs EDSIM_BLE)
-$CC -O1 -Wall -Wno-unused-function -DED_BT=1 -o build/edsim_bt tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
+# writes and notifications (tests/test_editor.mjs EDSIM_BLE), on two LE links as the image (the Chocolate's writes between the
+# editor's, a second editor on the other link, one link lost)
+$CC -O1 -Wall -Wno-unused-function -DED_BT=1 -DED_BT_LINKS=2u -o build/edsim_bt tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 EDSIM_BLE=1 node tests/test_editor.mjs > build/editor_ble.log || { grep "FAIL" build/editor_ble.log; exit 1; }
 grep "^BLE:" build/editor_ble.log; tail -1 build/editor_ble.log
 node tests/test_ping.mjs
