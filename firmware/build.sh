@@ -152,9 +152,14 @@ s={}
 for ln in open(sys.argv[1]):
     m=re.match(r"^([0-9a-f]{8}) .*\s([0-9a-f]{8}) (\S+)$",ln.rstrip("\n"))
     if m and m.group(3) in want: s.setdefault(m.group(3),[]).append((int(m.group(1),16),int(m.group(2),16)))
-bad=[n for n in want if len(s.get(n,[]))!=1]
+# (test build 23: the LE members linked for BLE MIDI may have statics of the same names, channel above all: each one is taken
+# where a2dp_media_codec.c's and lmp.c's own layouts put it, and only a missing one fails)
+bad=[n for n in ("lmp_acl_link","local_private_key","a2dp_mutual_toggle") if len(s.get(n,[]))!=1]
 if bad: sys.exit("bt layout: not exactly one symbol for "+", ".join(bad))
-(la,ls),(pk,_),(mt,_),(ch,_),(cc,_)=(s[n][0] for n in want)
+(la,ls),(pk,_),(mt,_)=(s[n][0] for n in ("lmp_acl_link","local_private_key","a2dp_mutual_toggle"))
+near=lambda n,at: next(((a,z) for a,z in s.get(n,[]) if a==at), (s.get(n,[(0,0)])[0]))
+(ch,_),(cc,_)=near("channel",mt+8),near("current_conn",mt+4)
+if len(s.get("channel",[]))>1 or len(s.get("current_conn",[]))>1: print(f"bt layout: {len(s.get('channel',[]))} symbols named channel, {len(s.get('current_conn',[]))} current_conn: the ones beside a2dp_mutual_toggle taken")
 ok=ls==0x250 and pk==la+0x254 and ch==mt+8 and cc==mt+4
 print(f"bt layout: lmp_acl_link {la:#010x} ({ls:#x}), local_private_key {pk:#010x}, a2dp_mutual_toggle {mt:#010x}, current_conn {cc:#010x}, channel {ch:#010x}: {'ok' if ok else 'MOVED'}")
 if not ok: sys.exit("bt layout: the library's statics moved: firmware/bt/bt_a2dp.c BT_CH must follow if channel moved (lmp_acl_link and current_conn: nothing reads them in test build 13)")

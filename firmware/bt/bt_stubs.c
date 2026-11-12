@@ -27,25 +27,14 @@ BT_STUB_V(adv_disable_for_connect_timeout)
 /* btstack: bt_audio.c */
 BT_STUB_V(aec_sco_connection_start)
 BT_STUB_V(aec_sco_connection_stop)
-/* lib_ccm_aes: ccm_memory.c */
-BT_STUB_V(aes_hw_lock)
-BT_STUB_V(aes_hw_unlock)
+/* lib_ccm_aes: ccm_memory.c (test build 23: linked, BLE MIDI) */
 /* btstack: ancs_client.c */
 BT_STUB(int, ancs_client_btstack_init_for_check)
-/* btstack: att_send.c */
-BT_STUB_V(att_clear_prepare_send_data)
-BT_STUB(short, att_get_default_conn_handle)
-/* btstack: att_dispatch.c */
-BT_STUB_V(att_global_info_init)
-/* btstack: att_send.c */
-BT_STUB_V(att_send_init)
-BT_STUB_V(att_send_ram_free)
-BT_STUB_V(att_send_schedule)
-BT_STUB_V(att_send_set_mtu_size)
-/* btstack: att_server.c */
-BT_STUB_V(att_server_send_request)
-/* btstack: att_send.c */
-BT_STUB(int, att_set_conn_handle)
+/* btstack: att_send.c (test build 23: linked, BLE MIDI) */
+/* btstack: att_dispatch.c (test build 23: linked, BLE MIDI) */
+/* btstack: att_send.c (test build 23: linked, BLE MIDI) */
+/* btstack: att_server.c (test build 23: linked, BLE MIDI) */
+/* btstack: att_send.c (test build 23: linked, BLE MIDI) */
 /* btstack: avctp.c */
 BT_STUB(int, auto_pause_music_player)
 BT_STUB(int, auto_start_music_player)
@@ -64,8 +53,7 @@ BT_STUB_V(bredr_fcc_init)
 BT_STUB_V(bredr_fcc_set_param)
 /* btctrler: tws_link.c */
 BT_STUB(void *, bredr_get_tws_esco_packet)
-/* lib_ccm_aes: ccm_memory.c */
-BT_STUB(int, ccm_memory_v2)
+/* lib_ccm_aes: ccm_memory.c (test build 23: linked, BLE MIDI) */
 /* btstack: a2dp_source.c */
 BT_STUB_V(clear_start_flag)
 /* btctrler: bredr_dut.c */
@@ -86,10 +74,8 @@ BT_STUB(char, get_esco_wait_start_monitor)
 /* btstack: avctp.c */
 BT_STUB(int, get_music_volume)
 BT_STUB(int, get_pp_key_statue)
-/* btctrler: hci_ll_cmds.c */
-BT_STUB(int, hci_le_controller_cmd_handler)
-/* btctrler: hci_ll.c */
-BT_STUB_V(hci_ll_get_device_address)
+/* btctrler: hci_ll_cmds.c (test build 23: linked, BLE MIDI) */
+/* btctrler: hci_ll.c (test build 23: linked, BLE MIDI) */
 /* btctrler: ll_common_iso.c */
 BT_STUB_V(hci_push_iso_sdu)
 /* btctrler: h4_uart_interface_loop.c */
@@ -108,73 +94,27 @@ BT_STUB(int, hfp_send_hangup_cmd)
 BT_STUB(int, hid_diy_data_try_send)
 BT_STUB_V(hid_init)
 BT_STUB(int, hid_send_cmd_ioctrl)
-/* btctrler: ll_resolve_list.c */
-BT_STUB_V(irk_enc)
+/* btctrler: ll_resolve_list.c (test build 23: linked, BLE MIDI) */
 /* btstack: avctp.c */
 BT_STUB(int, is_need_to_suspend)
-/* btctrler: hci_ll_cmds.c */
-BT_STUB(int, le_controller_get_mac)
-BT_STUB(int, le_controller_set_random_mac)
+/* btctrler: hci_ll_cmds.c (test build 23: linked, BLE MIDI) */
 /* btctrler: direct_test_dut.c */
 BT_STUB_V(le_dut_hci_reset_handle)
-/* btctrler: RF_ble.c */
-BT_STUB_V(le_hw_reset_power)
+/* btctrler: RF_ble.c (test build 23: linked, BLE MIDI) */
 /* btctrler: tws_le_link.c */
 BT_STUB(int, le_tws_connect_timer_handle)
 BT_STUB_V(link_le_adv_try_start_disable)
 BT_STUB_V(link_le_scan_try_start_disable)
-/* btctrler: link_layer.c */
-BT_STUB_V(ll_destroy)
-/* btctrler: hci_ll.c */
-BT_STUB_V(ll_event_handler)
+/* btctrler: link_layer.c (test build 23: linked, BLE MIDI) */
+/* btctrler: hci_ll.c (test build 23: linked, BLE MIDI) */
 /* btctrler: ll_extended_advertising.c */
 BT_STUB_V(ll_ext_destroy)
-/* btctrler: hci_ll.c */
-BT_STUB(int, ll_hci_adv_enable)
-BT_STUB_V(ll_hci_adv_scan_response_set_data)
-BT_STUB_V(ll_hci_adv_set_data)
-BT_STUB_V(ll_hci_adv_set_params)
-BT_STUB_V(ll_hci_cmd_handler)
-BT_STUB(int, ll_hci_connection_update)
-BT_STUB(int, ll_hci_create_conn)
-BT_STUB(int, ll_hci_create_conn_cancel)
-BT_STUB(int, ll_hci_create_conn_ext)
-BT_STUB_V(ll_hci_destory)
-BT_STUB(int, ll_hci_disconnect)
-BT_STUB_V(ll_hci_ext_create_conn)
-BT_STUB(short, ll_hci_get_acl_data_len)
-BT_STUB(short, ll_hci_get_acl_total_num)
-BT_STUB(void *, ll_hci_param_config_get)
-BT_STUB_V(ll_hci_periodic_adv_creat_sync)
-BT_STUB_V(ll_hci_periodic_adv_create_sync_cancel)
-BT_STUB_V(ll_hci_periodic_adv_terminate_sync)
-BT_STUB_V(ll_hci_private_free_dma_rx)
-BT_STUB(int, ll_hci_scan_enable)
-BT_STUB_V(ll_hci_scan_set_params)
-BT_STUB_V(ll_hci_set_data_length)
-BT_STUB_V(ll_hci_set_event_mask)
-BT_STUB_V(ll_hci_set_ext_adv_data)
-BT_STUB_V(ll_hci_set_ext_adv_enable)
-BT_STUB_V(ll_hci_set_ext_adv_params)
-BT_STUB_V(ll_hci_set_ext_scan_enable)
-BT_STUB_V(ll_hci_set_ext_scan_params)
-BT_STUB_V(ll_hci_set_periodic_adv_data)
-BT_STUB_V(ll_hci_set_periodic_adv_enable)
-BT_STUB_V(ll_hci_set_periodic_adv_params)
-BT_STUB_V(ll_hci_set_phy)
-BT_STUB(int, ll_hci_vendor_send_key_num)
-/* btctrler: link_layer.c */
-BT_STUB_V(ll_init)
-BT_STUB(void *, ll_link_for_handle)
-/* btctrler: hci_ll_cmds.c */
-BT_STUB(int, ll_push_acl_data)
-/* btctrler: link_layer.c */
-BT_STUB(char, ll_push_control_data)
-BT_STUB_V(ll_reset)
-/* btctrler: ll_resolve_list.c */
-BT_STUB_V(ll_vendor_device_address_generate)
-/* btctrler: hci_ll.c */
-BT_STUB(int, ll_vendor_latency_hold_cnt)
+/* btctrler: hci_ll.c (test build 23: linked, BLE MIDI) */
+/* btctrler: link_layer.c (test build 23: linked, BLE MIDI) */
+/* btctrler: hci_ll_cmds.c (test build 23: linked, BLE MIDI) */
+/* btctrler: link_layer.c (test build 23: linked, BLE MIDI) */
+/* btctrler: ll_resolve_list.c (test build 23: linked, BLE MIDI) */
+/* btctrler: hci_ll.c (test build 23: linked, BLE MIDI) */
 /* btctrler: direct_test_dut.c */
 BT_STUB(int, ogf_vendor_le_controller)
 /* btstack: opp.c */
@@ -204,13 +144,7 @@ BT_STUB_V(sdp_master_init)
 int sdp_send_cmd_iotl(void) { bt_stub_calls++; bt_stub_last = "sdp_send_cmd_iotl"; BT_CRUMB("sdp_send_cmd_iotl"); return -1; }
 /* btstack: hfp_ag_profile.c */
 BT_STUB(int, setup_hfp_ag_esco_link)
-/* btstack: sm.c */
-BT_STUB_V(sm_allow_ltk_reconstruction_without_le_device_db_entry)
-BT_STUB_V(sm_check_pair_config)
-BT_STUB_V(sm_cmd_request_resume)
-BT_STUB_V(sm_exit)
-BT_STUB(char, sm_get_local_irk)
-BT_STUB_V(sm_set_make_resolvable_address)
+/* btstack: sm.c (test build 23: linked, BLE MIDI) */
 /* btstack: spp_profile.c */
 BT_STUB_V(spp_handl_init)
 BT_STUB(int, spp_send_cmd_ioctrl)
@@ -269,14 +203,12 @@ BT_STUB_V(tws_tx_unsniff_req)
 BT_STUB_V(tws_unsniff_with_phone)
 /* btstack: client_user.c */
 BT_STUB(int, user_client_search_profile_start)
-/* btstack: att_send.c */
-BT_STUB(int, user_data_att_send)
-BT_STUB(int, user_data_cbuf_is_write_able)
+/* btstack: att_send.c (test build 23: linked, BLE MIDI) */
 
 /* data of the members left out (zero; sizes as the library's own objects, 32-bit) */
 uint8_t PSM_L2CAP_OBEX[4] __attribute__((aligned(4)));
 uint8_t fast_search_data[4] __attribute__((aligned(4)));
-uint8_t le_param[172] __attribute__((aligned(4)));
+/* le_param: test build 23, the LE controller's own (link_layer.c and the ll_* members, linked for BLE MIDI) */
 uint8_t prbs9_table1[511] __attribute__((aligned(4)));
 uint8_t tws_conn[176] __attribute__((aligned(4)));
 uint8_t tws_link[80] __attribute__((aligned(4)));

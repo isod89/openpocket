@@ -41,7 +41,12 @@ enum { ED_INFO = 1, ED_CAT_BLOCK, ED_CAT_TYPE, ED_TEXTS, ED_STATE, ED_SET, ED_OR
 #ifndef ED_OUT_BYTES
 #define ED_OUT_BYTES 1024u   /* a reply's bytes at most (an image with longer DIAG lines sets more) */
 #endif
+#if OP_BT_AUDIO   /* test build 23: in the RAM code window's data (.bss_hi), out of the 96 KB RAM, which BLE MIDI needs; only the CPU reads it
+                  * (ota_wire_send packs it into USB-MIDI packets) */
+static uint8_t ed_out[ED_OUT_BYTES] __attribute__((section(".bss.hi.ed_out")));
+#else
 static uint8_t ed_out[ED_OUT_BYTES];
+#endif
 static uint32_t ed_n;
 static struct { uint8_t on; uint32_t last_ms, hash, push_ms; } ed_w;
 

@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 22
+#define BT_TEST_BUILD 23
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -679,6 +679,7 @@ static void ed_diag_line(uint32_t i, char *out);
 #include "bt/bt_glue.c"
 #include "bt/bt_a2dp.c"
 #include "bt/bt_irq.c"           /* the classic baseband's interrupt handlers (bt/bt_isr.S enters them) */
+#include "bt/bt_le_midi.c"       /* test build 23: BLE MIDI beside the music (the LE controller and host linked too) */
 #else
 #include "ble/ble_cfg.c"
 #include "ble/ble_rf.c"

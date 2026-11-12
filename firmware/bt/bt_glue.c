@@ -97,7 +97,7 @@ void ble_profile_loop(void) { }
  * packet). 0x50 is the LE controller's own value (link_layer.c, not linked); this controller's classic handles are 0x30 and up
  * (lmp.c lmp_create_conn). Up to test build 10 it was a stand-in returning 0, so no handle was classic: the host dropped every
  * packet of the phone's and never told L2CAP, SDP or A2DP that a link was up. (Not counted as a stand-in: it runs all the time) */
-uint16_t get_ble_link_handle(void) { return 0x50u; }
+/* test build 23: link_layer.c is linked now (BLE MIDI) and gives its own get_ble_link_handle, the same 0x50 */
 
 /* ---- the SDP record: the library's own A2DP sink record (sdp_util.c, "JL_A2DP", the stock firmware's), registered in the table
  * the SDP server reads (firmware/bt/app-bt.ld brackets .sdp_record_item as sdp_record_item_begin..end; it links the items, so

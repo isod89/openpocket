@@ -42,6 +42,9 @@ extern const char *bt_stub_last;
 /* btstack's avctp_user.c (the library, Apache-2.0): the newest pairing in its device list (here the pairing store, bt_ps.h), then
  * user_send_cmd_prepare(1, 6, its address), the SDK's "connect to this address"; returns 0 when there is none */
 extern uint8_t connect_last_device_from_vm(void);
+/* test build 23: BLE MIDI beside the music (bt/bt_le_midi.c, included after this file) */
+static void bt_le_advertise(void);
+static char *bt_le_text(char *o);
 
 /* the SDK's numbers (include_lib/btstack/avctp_user.h, include_lib/utils/event/bt_event.h, Apache-2.0) */
 enum { USER_CTRL_WRITE_SCAN_ENABLE = 13, USER_CTRL_WRITE_CONN_ENABLE = 15 };
@@ -249,6 +252,7 @@ int bt_event_notify(int from, void *e)
         bt_init_ok = 1; bt_st = BT_VISIBLE; ble_state = BLE_ADV;
         if (!bt_t_vis) bt_t_vis = ms_now();
         bt_cmd(1u);                                             /* visible (inquiry scan) and connectable (page scan) */
+        bt_le_advertise();                                      /* test build 23: and BLE MIDI advertising (bt_le_midi.c), once */
         break;
     case BT_STATUS_START_CONNECTED: case BT_STATUS_FIRST_CONNECTED: case BT_STATUS_SECOND_CONNECTED:
         if (bt_st < BT_LINKED) { bt_st = BT_LINKED; bt_links++; }
@@ -779,7 +783,13 @@ void ble_midi_line(char *out)
 {
     char *o = bt_line_t;
     if (bt_st == BT_OFF && bt_stall_valid()) { bt_stall_line_state(out); return; }
-    if (bt_st < BT_LINKED) { bt_tasks_line(out); return; }     /* (the link's figures are all 0 until a phone is linked) */
+    if (bt_st < BT_LINKED) {                                    /* (the link's figures are all 0 until a phone is linked) */
+        char *e = out;
+        bt_tasks_line(out);
+        while (*e) e++;
+        if (e - out < 170) { e = bt_le_text(e); *e = 0; }      /* (test build 23: the BLE MIDI side) */
+        return;
+    }
     const uint32_t ms = bt_fq_samples() * 10u / 441u;
     const int32_t base = (int32_t)(bt_ring.base ? bt_ring.base : 1u);   /* (32-bit: the firmware has no 64-bit division) */
     int32_t pm = ((int32_t)bt_ring.step - base) * 10000 / base;   /* 0.01 %; |step - base| <= 0.5 % of base */
@@ -799,6 +809,7 @@ void ble_midi_line(char *out)
     *o++ = (char)('0' + (pm / 10) % 10); *o++ = (char)('0' + pm % 10); *o++ = '%';
     o = ble__put(o, " DISC "); o = bt__dec(o, bt_disc);
     o = ble__put(o, " FQ "); o = bt__dec(o, bt_fq_w - bt_fq_r);
+    o = bt_le_text(o);                                          /* (test build 23: the BLE MIDI side) */
     o = bt_stacks_text(o);
     *o = 0;
     bt_line_out(out, bt_line_t);

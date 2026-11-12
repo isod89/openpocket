@@ -71,3 +71,35 @@ third_party/jieli-bt/crypto/endian.c.bc
 third_party/jieli-bt/crypto/hmac.c.bc
 third_party/jieli-bt/crypto/sha256.c.bc
 third_party/jieli-bt/crypto/uECC_new.c.bc
+
+# test build 23: Bluetooth LE beside the classic link (BLE MIDI, bt/bt_le_midi.c), as the stock firmware runs both: jieli-ble's LE
+# controller, its LE host (ATT, SM, GAP) and the rest of its AES-CCM
+third_party/jieli-ble/btctrler/RF_ble.c.bc
+third_party/jieli-ble/btctrler/analog_ble.c.bc
+third_party/jieli-ble/btctrler/hci_ll.c.bc
+third_party/jieli-ble/btctrler/hci_ll_cmds.c.bc
+third_party/jieli-ble/btctrler/le_low_power.c.bc
+third_party/jieli-ble/btctrler/link_layer.c.bc
+third_party/jieli-ble/btctrler/ll_adv.c.bc
+third_party/jieli-ble/btctrler/ll_afh.c.bc
+third_party/jieli-ble/btctrler/ll_events.c.bc
+third_party/jieli-ble/btctrler/ll_init.c.bc
+third_party/jieli-ble/btctrler/ll_keys.c.bc
+third_party/jieli-ble/btctrler/ll_resolve_list.c.bc
+third_party/jieli-ble/btctrler/ll_scan.c.bc
+third_party/jieli-ble/btctrler/ll_slave.c.bc
+third_party/jieli-ble/btctrler/ll_vendor.c.bc
+third_party/jieli-ble/btctrler/ll_white_list.c.bc
+third_party/jieli-ble/btctrler/RF_ble5.c.bc
+third_party/jieli-ble/btctrler/multilink_schedule.c.bc
+third_party/jieli-ble/btctrler/ll_data_extension.c.bc
+third_party/jieli-ble/btctrler/ll_multiple_phys.c.bc
+third_party/jieli-ble/btstack/att_server.c.bc
+third_party/jieli-ble/btstack/att_db.c.bc
+third_party/jieli-ble/btstack/att_dispatch.c.bc
+third_party/jieli-ble/btstack/att_send.c.bc
+third_party/jieli-ble/btstack/sm.c.bc
+third_party/jieli-ble/btstack/le_device_db_memory.c.bc
+third_party/jieli-ble/btstack/gap.c.bc
+third_party/jieli-ble/ccm/aes_tab.c.bc
+third_party/jieli-ble/ccm/ccm_memory.c.bc
