@@ -850,6 +850,30 @@ To check: the editor's catalogue read over Bluetooth from an iPhone, then 2 minu
 words before it and whether `WD` brought the pedal back (it shows in the phone's Bluetooth MIDI list again within a few
 seconds, `A` rises, the LE interrupts move).
 
+### Test build 28's hang at Bluetooth's start
+
+On the pedal, test build 28 (c595492) stopped about 1.5 s after power-on: a watchdog reset, then safe mode, with no stall
+record (`last boot FAILED: it stopped at FIRST 6 S, reset by WATCHDOG; blocks 126, load 80%`). The safe-mode boot's own c1
+line (`V never`, `SE 0`) is that boot's, Bluetooth off, not the failed one's. 126 blocks of 2.9 ms with the DSP's load mean
+the DSP had just started (1.5 s), the moment Bluetooth becomes visible in a normal boot (`V 1452`): there test build 28
+starts advertising and, new, scanning for the footswitch.
+
+The cause, in the library's bitcode: the LE event interrupt (`RF_ble.c ble_event_irq_handler`) holds the baseband's spinlock
+(`bb_hdl`, a `testset` loop, interrupts off) for its whole run and calls `ble_slot_schedule`, which for a scanning or
+initiating entity calls `le_hw_suspend`. That asks `cpu_in_irq()`: in an interrupt it uses `ble_hw_disable_isr`, otherwise
+`ble_hw_disable`, which takes the same spinlock. This image's `cpu_in_irq()` counted only the classic baseband's interrupts
+(`bt/bt_irq.c`); the LE ones jump into the library's own entries (`ble/ble_isr.S`) and could not count themselves. So the LE
+interrupt took the lock it held, and spun there for ever with the interrupts off: nothing ran, not even the stall watch's
+tick. Up to test build 27 no entity scanned or initiated, so nothing in an LE interrupt reached that question.
+
+The fix (`ble/ble_os.c`): `cpu_in_irq()` is 1 also while the code runs on the system stack, where every interrupt runs and
+nothing else does (crt0 points `ssp` there; the main loop runs on `_ustack`, the tasks on their own stacks; the stall record
+relies on the same). Inside the LE interrupts the library now takes its interrupt paths, as in the SDK, and the waits of
+`ble_os.c` refuse there. `tests/test_ble_taskq.c` checks it. The BLE image is unchanged (its `cpu_in_irq()` stays 0).
+
+To check: a normal boot with the Chocolate away: the pedal starts, `CEN SCAN` and `R` rising in the LE line; then with the
+Chocolate on.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

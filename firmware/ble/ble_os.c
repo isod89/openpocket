@@ -6,9 +6,10 @@
  *
  * Tasks never run by themselves: ble_poll() (called from the main loop) resumes every task that is ready and returns
  * when all of them are waiting again. A task gives up the processor only inside os_taskq_pend, os_sem_pend,
- * os_mutex_pend or os_time_dly. The library's interrupt code (the classic baseband's, bt/bt_irq.c) posts messages and
- * semaphores, deletes timers and allocates and frees memory; it never waits here: inside it cpu_in_irq() is 1, the
- * library's own test for "do not wait", and the waits refuse (the SDK's os_time_dly must not be called in an interrupt). */
+ * os_mutex_pend or os_time_dly. The library's interrupt code (the classic baseband's, bt/bt_irq.c, and the LE baseband's)
+ * posts messages and semaphores, deletes timers and allocates and frees memory; it never waits here: inside it cpu_in_irq()
+ * is 1, the library's own test for "do not wait", and the waits refuse (the SDK's os_time_dly must not be called in an
+ * interrupt). */
 #include <stdint.h>
 #include <stddef.h>
 #include "fm1_irq.h"
@@ -51,9 +52,21 @@ int cpu_irq_disabled(void) { return !(fm1_icfg() & 0x200u); }   /* icfg bit 9: t
  * audio and the stall watch (a watchdog reset, no record), or switched tasks inside the interrupt (an audio gap of 20 ms or
  * more). The BLE image keeps 0: no interrupt of its calls the library's waits. */
 volatile uint32_t bt_isr_depth;
-int cpu_in_irq(void) { return bt_isr_depth != 0u; }
+/* Test build 28: or running on the system stack, where every interrupt runs (crt0 points ssp there; the main loop runs on
+ * _ustack, the tasks on their own stacks in NOINIT; fm1_guard.h fm1_sp_in_isr, the stall record relies on it too). The LE
+ * baseband's two interrupts (ble/ble_isr.S) jump into the library's own complete interrupt entries, so they cannot count
+ * themselves in bt_isr_depth, and inside them the library took its task-side paths: RF_ble.c le_hw_suspend, which
+ * ble_slot_schedule calls from the LE event interrupt for a scanning or initiating entity, then used ble_hw_disable, which
+ * takes the baseband's spinlock (bb_hdl, testset, interrupts off) that the interrupt already holds, instead of
+ * ble_hw_disable_isr. It spun there for ever with the interrupts off: test build 28 (the first build that scans) hung right
+ * after Bluetooth's start, a watchdog reset with no stall record. Up to test build 27 no entity scanned or initiated, so
+ * nothing in an LE interrupt asked cpu_in_irq(). */
+#ifndef BLE_SP_IN_ISR
+#define BLE_SP_IN_ISR() fm1_sp_in_isr()                          /* (fm1_guard.h, included by openpocket.c before this file) */
+#endif
+int cpu_in_irq(void) { return bt_isr_depth != 0u || BLE_SP_IN_ISR(); }
 static uint32_t bt_wait_irq, bt_wait_main;                      /* waits refused inside an interrupt; waits asked by the main loop */
-#define BLE_IN_IRQ() (bt_isr_depth != 0u)
+#define BLE_IN_IRQ() (cpu_in_irq() != 0)
 #define BLE_WAIT_IRQ() (bt_wait_irq++, BT_CRUMB("wait in irq"))
 #define BLE_WAIT_MAIN() (bt_wait_main++)
 #else

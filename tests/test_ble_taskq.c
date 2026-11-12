@@ -35,6 +35,10 @@
 #ifdef __APPLE__
 #define section(x) used                                 /* (Mach-O takes no ELF section names; Linux, the CI, keeps them) */
 #endif
+#if OP_BT_AUDIO
+static int t_on_sys_stack;                              /* (test build 28: "the code runs on the system stack", an LE interrupt) */
+#define BLE_SP_IN_ISR() (t_on_sys_stack != 0)
+#endif
 #include "../firmware/ble/ble_os.c"
 #if OP_BT_AUDIO
 static void bt_taskq_spy(const char *task, int type, int argc, const int *argv) { (void)task; (void)type; (void)argc; (void)argv; }
@@ -189,6 +193,18 @@ int main(void)
         w0 = bt_wait_main;
         os_time_dly(1);
         CHECK(bt_wait_main == w0 + 1u, "a wait asked by the main loop (a timer's callback) is counted");
+        /* test build 28: the LE baseband's interrupts do not count themselves (ble_isr.S jumps into the library's own entry);
+         * they run on the system stack, and that alone makes cpu_in_irq() 1 (RF_ble.c le_hw_suspend then takes
+         * ble_hw_disable_isr, not the spinlock its interrupt holds) */
+        t_on_sys_stack = 1;
+        CHECK(cpu_in_irq() == 1 && bt_isr_depth == 0u, "on the system stack (an LE interrupt), with no depth counted: cpu_in_irq() is 1");
+        cur = t; t->state = T_READY; t->wake_ms = 0;
+        w0 = bt_wait_irq;
+        os_time_dly(2);
+        CHECK(t->state == T_READY && t->wake_ms == 0u && bt_wait_irq == w0 + 1u, "os_time_dly in an LE interrupt returns at once, refused and counted");
+        t_on_sys_stack = 0;
+        CHECK(cpu_in_irq() == 0, "back on a task's or the main loop's stack: 0 again");
+        cur = 0;
     }
     {   /* each task's queue peak, stack depth and red zone */
         task_t *t = task_find("btstack");
