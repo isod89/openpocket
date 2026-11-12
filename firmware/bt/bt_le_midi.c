@@ -63,7 +63,8 @@ enum { LE_CMD_ADV_ENABLE = 1, LE_CMD_ADV_PARAM, LE_CMD_ADV_DATA, LE_CMD_RSP_DATA
 enum { LE_CMD_SCAN_PARAM = 13, LE_CMD_CREATE_CONN = 15, LE_CMD_CREATE_CONN_CANCEL = 16, LE_CMD_SCAN_ENABLE = 22 };
 enum { LE_EV_ENCRYPTION_CHANGE = 0x08, LE_EV_KEY_REFRESH = 0x30, LE_EV_ADV_REPORT = 0xE2 };   /* (0xE2: the host's GAP report) */
 enum { LE_HCI_EVENT_PACKET = 4, LE_EV_DISCONNECTION_COMPLETE = 0x05, LE_EV_META = 0x3E, LE_SUB_CONNECTION_COMPLETE = 0x01,
-       LE_SUB_CONNECTION_UPDATE_COMPLETE = 0x03, LE_SUB_DATA_LENGTH_CHANGE = 0x07, LE_SUB_ENHANCED_CONNECTION_COMPLETE = 0x0A,
+       LE_SUB_CONNECTION_UPDATE_COMPLETE = 0x03, LE_SUB_LTK_REQUEST = 0x05, LE_SUB_DATA_LENGTH_CHANGE = 0x07,
+       LE_SUB_ENHANCED_CONNECTION_COMPLETE = 0x0A,
        LE_SUB_PHY_UPDATE_COMPLETE = 0x0C, LE_SM_JUST_WORKS_REQUEST = 0xD0 };
 enum { LE_IO_NO_INPUT_NO_OUTPUT = 3, LE_AUTHREQ_BONDING = 1 };
 enum { LE_H_GAP_NAME = 0x0003, LE_H_MIDI = 0x0007, LE_H_MIDI_CCC = 0x0008 };
@@ -93,6 +94,10 @@ static uint32_t le_adv_kick;                                   /* (ble_profile_l
  * the controller's own thread idle, advertising asked again but never on air. (RF_ble.c le_hw_close frees a lost link's entity
  * and resumes a suspended advertiser; ll_adv_open answers an enable with "already open", so asking again changes nothing) */
 static uint32_t le_drop_ms;                                    /* when the last LE link ended (ms_now) */
+static uint32_t le_link_t0[LE_LINKS], le_life_ms;              /* (test build 31: when each link came, the last one's life in ms) */
+static uint32_t le_enc_n, le_ltk_n, le_att_fwd;                /* (test build 31: encryption changes and key refreshes, LTK
+                                                                 * requests, ATT packets of a phone's link handed to the server) */
+static uint8_t le_enc_st;                                      /* (the last encryption change's status: 06 key missing) */
 static uint32_t le_upd_n, le_phy_n, le_dl_n;                   /* connection updates, PHY updates, data length changes */
 static uint16_t le_upd_intv, le_upd_lat, le_upd_tmo, le_dl_tx;   /* the last update's interval (1.25 ms), latency, timeout (10 ms);
                                                                  * the last data length change's transmit octets */
@@ -336,12 +341,22 @@ static void le_cen_adv(const uint8_t *p, uint32_t n, uint32_t now)
     le_cen_ms = now;
     le_cen_tries++;
 }
-/* the ATT packets with an odd opcode (att_dispatch.c): the footswitch's responses and notifications */
+/* the ATT packets with an odd opcode (att_dispatch.c): the footswitch's responses and notifications. Test build 31: att_dispatch.c
+ * gives every odd opcode to the client once one is registered, and to the server only while none is (up to test build 27); so
+ * a packet of another link (a phone's) is handed to the server here, as before. The server's handler is att_global_info's
+ * second word (struct att_info_t: client, server, flags, ...) */
+extern uint8_t att_global_info[];
+typedef void (*le_att_handler_t)(uint8_t type, uint16_t con, uint8_t *p, uint16_t n);
 static void le_att_client(uint8_t type, uint16_t con, uint8_t *p, uint16_t n)
 {
     const int i = le_links_find(&le_lk, con);
     uint32_t r;
-    if (type != 8u || i < 0 || le_lk.role[i] != LE_ROLE_CENTRAL) return;   /* (a phone's link: nothing for the client) */
+    if (i < 0 || le_lk.role[i] != LE_ROLE_CENTRAL) {           /* (a phone's link: the server's, as with no client) */
+        const le_att_handler_t srv = *(const le_att_handler_t *)(const void *)(att_global_info + 4);
+        if (type == 8u && srv) { le_att_fwd++; srv(type, con, p, n); }
+        return;
+    }
+    if (type != 8u) return;
     r = attc_rx(&le_ac, p, n);
     if (r == ATTC_R_MIDI) { le_cen_midi++; px_midi_ble_write_link((uint32_t)i, p + 3, (uint32_t)n - 3u); }
     else if (r == ATTC_R_PAIR) { le_cen_pairs++; le_cen_hold = 1; le_cen_ms = ble_ms(); (void)sm_api_request_pairing(con); }
@@ -410,13 +425,20 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
             le_dl_n++; le_dl_tx = (uint16_t)(p[5] | p[6] << 8);
         } else if (p[2] == LE_SUB_PHY_UPDATE_COMPLETE && size >= 8u && !p[3]) {
             le_phy_n++; le_phy_tx = p[6]; le_phy_rx = p[7];
+        } else if (p[2] == LE_SUB_LTK_REQUEST) {
+            le_ltk_n++;                                         /* (test build 31: a central encrypting with a key it holds) */
         }
+    }
+    if ((p[0] == LE_EV_ENCRYPTION_CHANGE || p[0] == LE_EV_KEY_REFRESH) && size >= 5u
+        && le_links_find(&le_lk, (uint32_t)(p[3] | p[4] << 8) & 0x0FFFu) >= 0 && !le_ev_again(p)) {
+        le_enc_n++; le_enc_st = p[2];                           /* (test build 31: an LE link's; 06: the key is missing) */
     }
     if (p[0] == LE_EV_DISCONNECTION_COMPLETE) {                 /* (a classic disconnection, or the same event again: not ours) */
         const int i = le_links_ended(&le_lk, (uint32_t)(p[3] | p[4] << 8) & 0x0FFFu);
         if (i >= 0) {
             le_drop = p[5];
             le_drop_ms = ms_now();                              /* (test build 28: the log's D08@31500) */
+            le_life_ms = le_drop_ms - le_link_t0[i];            /* (test build 31: how long it lasted) */
             le_link_reset((uint32_t)i);                         /* (test build 27: the editor's reply and frame on that link) */
             if (le_lk.role[i] == LE_ROLE_CENTRAL) { le_cen_st = LE_CEN_OFF; le_cen_hold = 0; le_ac.busy = 0; le_ac.req_n = 0; }
             le_adv_more();                                      /* (a link free: advertising, if it is not on yet) */
@@ -439,6 +461,7 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
             const int i = le_links_made(&le_lk, h, (uint32_t)(q[0] | q[1] << 8), role);
             if (i >= 0) {
                 le_link_reset((uint32_t)i);
+                le_link_t0[i] = ms_now();                       /* (test build 31: the link's life, in the log's D word) */
                 if (role == LE_ROLE_CENTRAL) {                  /* (test build 28: the footswitch, connected to: its client) */
                     const int known = le_cs.known && !memcmp(le_cs.addr, p + 8, 6);
                     le_scan_on(0);                      /* (a connection that came after its cancel, while scanning again) */
@@ -478,7 +501,9 @@ void ble_profile_init(void)
     att_server_register_packet_handler(le_on_event);
     hci_event_callback_set(le_on_event);
     le_l2cap_register_packet_handler(le_on_event);
-    att_dispatch_register_client(le_att_client);               /* (test build 28: the footswitch's responses and notifications) */
+    if (!le_cen_off) att_dispatch_register_client(le_att_client);   /* (test build 28: the footswitch's responses and
+                                                                 * notifications; test build 31: only with the central role on, so
+                                                                 * that with it off (DLY) the routing is test build 27's) */
 }
 
 /* on the stack's INIT_OK (bt_a2dp.c), once: this pedal's LE address, then advertising */
@@ -501,8 +526,27 @@ static uint32_t bt_le_up(void) { return le_links_up(&le_lk); }
  * Something should be on air (advertising, scanning or a link) and neither LE interrupt has moved for LE_WD_MS (advertising
  * alone moves them every 500 ms): ble_profile_loop turns advertising and scanning off and on again. WD in the LE line */
 #define LE_WD_MS 4000u
+/* test build 31: the LE radio entities' run flags (bb_hdl, offsets in le_hw_text below), sampled on every main-loop pass: the
+ * resumes (flag 2) and suspensions (1, 3) seen, per slot, a lower bound of the slot scheduler's work (HW in the LE line) */
+extern uint8_t *bb_hdl;
+static uint8_t le_hw_flag[8];
+static uint16_t le_hw_res[8], le_hw_sus[8];
+static void le_hw_sample(void)
+{
+    const uint8_t *const h = bb_hdl, *a;
+    uint32_t i;
+    if (!h || !(a = *(const uint8_t *const *)(const void *)(h + 16))) return;
+    for (i = 0; i < 8u; i++) {
+        const uint8_t *const e = *(const uint8_t *const *)(const void *)(a + 28u * i);
+        const uint8_t f = e && *(const uint16_t *)(const void *)(h + 2u * i) ? e[344] : 0xFFu;
+        if (f == le_hw_flag[i]) continue;
+        if (f == 2u) le_hw_res[i]++; else if (f == 1u || f == 3u) le_hw_sus[i]++;
+        le_hw_flag[i] = f;
+    }
+}
 static void bt_le_watch(uint32_t now)
 {
+    le_hw_sample();
     const int on_air = le_adv_ok && (le_lk.adv || le_cen_scan || le_links_up(&le_lk));
     if (!le_watch_due(&le_wd, ble_cnt_irq_ev + ble_cnt_irq_rx, now, on_air, LE_WD_MS)) return;
     le_wd_req = 1;
@@ -530,6 +574,7 @@ static char *le_hw_text(char *o)
         const uint8_t *const e = *(const uint8_t *const *)(const void *)(a + 28u * i);
         if (!id || !e) continue;
         *o++ = ' '; o = bt__dec(o, i); *o++ = ':'; o = bt__dec(o, e[343]); *o++ = '/'; o = bt__dec(o, e[344]);
+        if (le_hw_res[i] || le_hw_sus[i]) { *o++ = '+'; o = bt__dec(o, le_hw_res[i]); *o++ = '-'; o = bt__dec(o, le_hw_sus[i]); }
     }
     o = ble__put(o, " IE "); o = bt__hex(o, *(volatile uint32_t *)0x28030u & 0xFFu, 2);
     o = ble__put(o, " BB "); return bt__hex(o, *(volatile uint32_t *)0x28038u & 0xFFu, 2);
@@ -539,7 +584,8 @@ static char *le_hw_text(char *o)
 static char *le_drop_text(char *o)
 {
     if (!le_drop) return o;
-    o = ble__put(o, " D"); o = bt__hex(o, le_drop, 2); *o++ = '@'; return bt__dec(o, le_drop_ms);
+    o = ble__put(o, " D"); o = bt__hex(o, le_drop, 2); *o++ = '@'; o = bt__dec(o, le_drop_ms);
+    *o++ = '/'; return bt__dec(o, le_life_ms);                  /* (test build 31: "D13@49866/2950", the link lasted 2.95 s) */
 }
 /* the log's words for the LE side, appended to the classic lines (bt_a2dp.c): "LE 2 L3 W134 P1 A4/0 I12/24 IRQ 812/97" =
  * the links up (test build 27: up to two), links made so far, MIDI writes, Just Works pairings, advertising asked n times / its
@@ -598,11 +644,18 @@ void bt_le_line(char *out)
     if (le_phy_n) { o = ble__put(o, " PHY"); o = bt__dec(o, le_phy_n); *o++ = ' '; o = bt__dec(o, le_phy_tx); *o++ = '/'; o = bt__dec(o, le_phy_rx); }
     if (le_dl_n) { o = ble__put(o, " DL"); o = bt__dec(o, le_dl_n); *o++ = ' '; o = bt__dec(o, le_dl_tx); }
     o = le_drop_text(o);
+    /* test build 31: a phone's link: encryption changes and key refreshes (count / the last status: 00 encrypted, 06 the key
+     * is missing), LTK requests (the central encrypts with a key from an earlier pairing: this image keeps LE keys in RAM
+     * only), ATT packets of its link handed to the server past the client (le_att_client) */
+    if (le_enc_n) { o = ble__put(o, " EN"); o = bt__dec(o, le_enc_n); *o++ = '/'; o = bt__hex(o, le_enc_st, 2); }
+    if (le_ltk_n) { o = ble__put(o, " LTK"); o = bt__dec(o, le_ltk_n); }
+    if (le_att_fwd) { o = ble__put(o, " AF"); o = bt__dec(o, le_att_fwd); }
     o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
     if (le_wd_n) { o = ble__put(o, " WD"); o = bt__dec(o, le_wd_n); *o++ = '@'; o = bt__dec(o, le_wd_ms); }
     o = bt_le_ed_text(o);
     o = ble__put(o, " CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st < 5u ? le_cen_st : 0u]);
     if (le_adv_held) o = ble__put(o, " AH");                   /* (test build 31: advertising held, the scanner alone) */
+    o = ble__put(o, " RH"); o = bt__dec(o, bt_le_rep_host);    /* (test build 31: reports posted to the host, bt_a2dp.c) */
     o = ble__put(o, " RAW"); o = bt__dec(o, le_raw);
     o = ble__put(o, " SO"); o = bt__dec(o, le_scan_opens);
     o = le_hw_text(o);

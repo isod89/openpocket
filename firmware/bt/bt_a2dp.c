@@ -103,6 +103,7 @@ extern uint8_t acl_tx_pool[], acl_tx_pool_end[], acl_rx_pool[], acl_rx_pool_end[
 typedef struct { char task, type; uint8_t b[5]; } bt_msg_t;
 static bt_msg_t bt_msg_last[BT_MSG_LAST];
 static volatile uint32_t bt_msg_n, bt_msg_kept, bt_msg_acl, bt_msg_ncp;
+static volatile uint32_t bt_le_rep_host;                        /* (test build 31: LE meta subevent 2 posted to the host task) */
 static void bt_taskq_spy(const char *task, int type, int argc, const int *argv)
 {
     const int host = task[0] == 'b' && task[2] == 's';
@@ -116,6 +117,9 @@ static void bt_taskq_spy(const char *task, int type, int argc, const int *argv)
     bt_msg_n++;
     if (host && type == 0x400002) bt_msg_acl++;                 /* btstack: an ACL packet */
     else if (host && type == 0x400001 && argc > 0 && (argv[0] & 0xFF) == 0x13) bt_msg_ncp++;
+    else if (host && type == 0x400001 && argc > 0 && (argv[0] & 0xFF) == 0x3E && ((uint32_t)argv[0] >> 16 & 0xFFu) == 0x02u)
+        bt_le_rep_host++;                                       /* (test build 31: an LE advertising report from the controller,
+                                                                 * before the host reads it: counted, not kept) */
     else if (!(host && type == 0xFF)) {                         /* (test build 27: the web editor's wake-ups of the host's task,
                                                                  * stack_run_loop_resume, are not kept) */
         k = bt_msg_kept;

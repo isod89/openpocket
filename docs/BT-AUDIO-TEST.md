@@ -892,7 +892,18 @@ turned off and on (no longer only asked again). New in the LE line, after `CEN`:
 advertising reports that reach the pedal's callback (before any test), `SO` the scanner starts asked, and `HW`: the library's
 radio entities, `HW2 0:1/0 1:2/2 IE 03 BB 00` = two entities, slot 0 scanning (state 1, run flag 0: enabled at once), slot 1
 advertising (state 2, 2: resumed); states 1 scanning, 2 advertising, 3 connecting, 6 the footswitch's link, 7 a phone's; run
-flag 1 or 3 suspended; `IE` the entities' interrupt enables, `BB` the status register.
+flag 1 or 3 suspended, and `+n-m` after it the resumes and suspensions the main loop saw; `IE` the entities' interrupt
+enables, `BB` the status register. `RH` counts the advertising reports the controller posted to the host (before the host
+reads them), `RAW` those that reached the pedal's callback.
+
+Also in test build 31, for a phone's link: with DLY held (no central role) test build 30 lost an iPhone's link every few
+seconds, the phone ending it (`D13`), where build 27 kept it. `att_dispatch.c` gives every ATT packet with an odd opcode to the
+client once one is registered (the footswitch's, since test build 28), and to the server only while none is: the client is now
+registered only with the central role on, and it hands a packet of another link to the server (`AF` counts them). The `D` word
+now ends with the link's life in ms (`D13@49866/2950`); `EN n/ss` counts a phone link's encryption changes and the last status
+(`06`: the key is missing), `LTK n` the phone asking to encrypt with a key from an earlier pairing. This image keeps LE pairing
+keys in RAM only: after a restart, a phone that paired before must forget the pedal (iPhone: Settings > Bluetooth, the `i` next
+to `OpenPocket`, Forget This Device) if `EN` shows `06`.
 
 ## Checked on a computer
 
