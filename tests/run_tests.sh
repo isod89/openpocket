@@ -77,11 +77,15 @@ $CC -O2 $FX -Iengine tests/engine/pipe_test.c engine/px_dsp.c firmware/px_math.c
 $CC -O2 $FX -Iengine tests/engine/long.c engine/px_dsp.c firmware/px_math.c -lm -o build/long_fx && build/long_fx "LOW OCTAVE" PAD | tail -1
 echo "== the Bluetooth audio image's own effects: LOW OCTAVE (PIT) and SYN PAD (docs/OWN-FX.md)"
 for D in "$FX" "-DPX_OWN_FX=1"; do                     # as the image builds the engine, and with the host's defaults (PX_RUNS 1)
-  for t in lowoct pad exp; do                           # (exp: test build 25's expression pedal)
+  for t in lowoct pad exp nam_keep; do                  # (exp: test build 25's expression pedal; nam_keep: test build 28's
+                                                        # factory models left out, PXN_KEEP below)
     $CC -O2 $D -Iengine tests/engine/$t.c engine/px_dsp.c firmware/px_math.c -lm -o build/$t
     build/$t > build/$t.log || { cat build/$t.log; exit 1; }; tail -1 build/$t.log
   done
 done
+# test build 28: the Bluetooth audio image's 4 factory NAM models (firmware/build.sh PXN_KEEP), the others playing a kept one
+$CC -O2 $FX -DPXN_KEEP=0x93u -Iengine tests/engine/nam_keep.c engine/px_dsp.c firmware/px_math.c -lm -o build/nam_keep_bt
+build/nam_keep_bt > build/nam_keep_bt.log || { cat build/nam_keep_bt.log; exit 1; }; tail -1 build/nam_keep_bt.log
 echo "== NAM (fixed point against the float reference, every factory model)"
 $CC -O2 -DPXN_EMUVEC -Iengine tests/engine/nam_test.c engine/px_nam.c -o build/nam_test
 if python3 -c "import numpy" 2>/dev/null; then mkdir -p build/nam; python3 tests/test_nam.py build/nam_test > build/nam/log.txt || { cat build/nam/log.txt; exit 1; }; tail -1 build/nam/log.txt; else echo "(numpy not installed: NAM comparison skipped)"; fi

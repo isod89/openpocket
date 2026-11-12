@@ -69,6 +69,9 @@ HOTRAM=1; [ -n "$OP_BT" ] && HOTRAM=0
 # paid for by the drive and delay code no model reaches (left out: the same sound) and by the delay ring (456 ticks shorter).
 # In DSPDEF, so that openpocket.c (g_eng, px_audio.h) and px_dsp.c see one px_engine
 [ -n "$OP_BT" ] && DSPDEF="$DSPDEF -DPX_OWN_FX=1"
+# test build 28: the Bluetooth audio image builds in 4 of the 12 factory NAM models (TWIN, AC15, JCM900, MARK IV: bits 0, 1, 4,
+# 7, engine/px_nam_factory.h PXN_KEEP), 59,872 bytes of flash for the LE central role; the others play the closest kept one
+[ -n "$OP_BT" ] && DSPDEF="$DSPDEF -DPXN_KEEP=0x93u"
 INC="-I$HERE/inc -I$HERE/../engine"
 $CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $BLEDEF -DOP_GUARD_STACK=$GUARD_STACK $INC \
     -I"$BSP/chip" -I"$BSP/boards/fm1" -include "$O/channel.h" -c "$HERE/openpocket.c" -o "$O/openpocket.o"

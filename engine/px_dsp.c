@@ -1280,6 +1280,23 @@ static void rc_drive(px_engine *e)
 static int px_may_load = 1;                            /* v38: 0 in px_engine_knobs (the audio side): no flash reads there */
 /* ---------------------------------------------------------------- NAM (v37) --- */
 #include "px_nam_factory.h"                            /* the factory models (tools/mk_nam_factory.py) */
+/* test build 28 (px_nam_factory.h PXN_KEEP): the factory model that plays for model m, m itself when it is built in, else
+ * the closest kept one (PXN_FALL: the cleans to TWIN, the Marshalls and the crunch to JCM900, the high gains to MARK IV),
+ * else the first kept; and its row in PXN_FW. With every model built in (the default), m and m */
+static const int8_t PXN_FALL[PX_NAM_NFACT] = {0, 1, 0, 0, 4, 4, 4, 7, 4, 7, 7, 7};
+static int pxn_fact(int m)
+{
+    if (PXN_KB(m)) return m;
+    if (PXN_KB(PXN_FALL[m])) return PXN_FALL[m];
+    for (int i = 0; i < PX_NAM_NFACT; i++) if (PXN_KB(i)) return i;
+    return 0;
+}
+static int pxn_row(int m)
+{
+    int r = 0;
+    for (int i = 0; i < m; i++) r += (int)PXN_KB(i);
+    return r;
+}
 #if defined(__PI32V2__) && !defined(PX_NAM_POOL)       /* the pedal: the big piece in its "POOL" RAM region */
 #define PX_NAM_POOL __attribute__((section(".pool")))
 #endif
@@ -1315,7 +1332,7 @@ int px_nam_name(int m, char *buf)
 {
     int i = 0;
     if (m >= 0 && m < PX_NAM_NFACT) {
-        const char *s = PXN_FNAME[m];
+        const char *s = PXN_FNAME[pxn_fact(m)];       /* (test build 28: a model left out shows the one that plays) */
         while (s[i] && i < 11) { buf[i] = s[i]; i++; }
         buf[i] = 0;
         return 1;
@@ -1343,7 +1360,7 @@ static int nam_load(int m, float *level_db)
 {
     const float *w = 0;
     *level_db = 0.0f;
-    if (m >= 0 && m < PX_NAM_NFACT) { w = PXN_FW[m]; *level_db = PXN_FLVL[m]; }
+    if (m >= 0 && m < PX_NAM_NFACT) { const int k = pxn_fact(m); w = PXN_FW[pxn_row(k)]; *level_db = PXN_FLVL[k]; }
     else if (m >= PX_NAM_NFACT && m < PX_NAM_N) {
         char nm[12];
         float *tmp = (float *)px_nam_r0;
