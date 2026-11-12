@@ -206,11 +206,14 @@ int l2cap_connection_update_request_just(uint8_t *p, uint16_t handle)
 #define LE_TX_BYTES 1024u   /* the longest reply sent: TEXTS, 918 bytes (DIAG's 2,304 are for USB: dropped here) */
 #define LE_TX_PKT 20u
 #define LE_TX_GIVE_UP 3000u /* ms without a packet sent: the reply is dropped (the editor asks again; the link may be gone) */
-static uint32_t le_tx_inflight(uint32_t intv)   /* intv in 1.25 ms: 1 at 7.5 ms, 2 at 11.25 and 15 ms, 3 at 22.5 ms, 4 from
-                                                 * 30 ms (of the controller's 5 LE buffers, bt_cfg.c, both links': one is left) */
+static uint32_t le_tx_inflight(uint32_t intv)   /* intv in 1.25 ms: 1 at 7.5 ms, 2 from 11.25 ms. Test build 37: 2 at most (up
+                                                 * to 36: 3 at 22.5 ms, 4 from 30 ms). Every packet out takes the LE baseband's
+                                                 * transmit DMA pool beside the advertiser's and the footswitch link's buffers,
+                                                 * and a full pool is the library's reset (bt_cfg.c config_btctler_le_acl_total_nums:
+                                                 * test build 36 crashed so, a phone slowed to 30 ms and 4 packets out) */
 {
     const uint32_t k = (intv + 3u) / 6u;
-    return k < 1u ? 1u : k > 4u ? 4u : k;
+    return k < 1u ? 1u : k > 2u ? 2u : k;
 }
 static uint8_t le_tx[LE_TX_BYTES];
 static uint32_t le_tx_at, le_tx_n, le_tx_link;                 /* le_tx[le_tx_at, le_tx_n) is still to send, to link le_tx_link */

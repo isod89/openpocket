@@ -993,6 +993,19 @@ about 1 and 2 s both end.
   (`gap_request_connection_parameter_update`, within Apple's limits). `PQ n/rc` in the LE line: the requests and the library's
   answer; the phone's own update then shows as `U n intv/lat/timeout`.
 
+### Test build 37: room in the LE transmit pool
+
+Test build 36 crashed 87 s after power-on, with the Chocolate linked, the music playing and MIDIWeb's editor reading the
+pedal: `CRASH PC 0200109E` (`P33_SYSTEM_RESET`, the library's fatal stop: an endless loop here) `RETS 0204D178` (inside
+`le_hw_send_packet`) `VEC 63`, `DBG 0`. `le_hw_send_packet` stops there when its transmit buffer cannot be had: `hw_alloc_tx`
+takes size + 24 bytes, as an lbuf, from the LE baseband's transmit DMA pool (`le_hw_init`: `config_btctler_le_acl_total_nums`
+x 294 + 35 bytes, 1,505 with 5), which also holds the advertiser's 2 x 263 (since test build 35 advertising runs beside the
+footswitch's link) and the initiator's. Test build 36 had asked the phone for 15-30 ms, and the editor sends up to
+`le_tx_inflight` packets at a time by the interval: 4 from 30 ms, 1 at the iPhone's 7.5 ms before.
+
+- **`config_btctler_le_acl_total_nums` 8** (2,387 bytes; 882 more from the Bluetooth heap).
+- **The editor 2 packets out at most** (`le_tx_inflight`): a little slower to read the pedal over Bluetooth, never a full pool.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

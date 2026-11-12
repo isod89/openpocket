@@ -109,7 +109,14 @@ const int config_btctler_le_rx_nums = 8;                    /* test build 35: 8 
                                                              * beside the Chocolate's link stayed in state 0 (HW 1:0/0) and
                                                              * MIDIWeb never found the pedal */
 const int config_btctler_le_acl_packet_length = 27;
-const int config_btctler_le_acl_total_nums = 5;
+const int config_btctler_le_acl_total_nums = 8;              /* test build 37: 8 (up to 36: 5). It also sizes the LE baseband's
+                                                             * transmit DMA pool (RF_ble.c le_hw_init: 294 bytes each, 2,387; 1,505
+                                                             * with 5), which holds the advertiser's 2 x 263 (le_hw_advertising),
+                                                             * the initiator's and every packet out (hw_alloc_tx, size + 24, an
+                                                             * lbuf). A failed allocation in le_hw_send_packet is the library's
+                                                             * P33_SYSTEM_RESET: test build 36 crashed so (PC 0200109E, RETS
+                                                             * 0204D178, 87 s in) with advertising beside the Chocolate's link and
+                                                             * the editor sending 4 packets at a time to a phone slowed to 30 ms */
 const int config_btctler_le_slave_conn_update_winden = 2500;
 const int config_le_sm_sub_sc_enable = 0;
 const int config_le_sm_sub_sc_bridge_edr_enable = 0;
