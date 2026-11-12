@@ -46,6 +46,7 @@ extern uint8_t connect_last_device_from_vm(void);
 static void bt_le_advertise(void);
 static char *bt_le_text(char *o);
 static uint32_t bt_le_up(void);                                 /* (test build 28: LE links up; the LE side's watchdog) */
+static int bt_le_cen_settled(void);                             /* (test build 34: the footswitch linked, or no central role) */
 static void bt_le_watch(uint32_t now);
 
 /* the SDK's numbers (include_lib/btstack/avctp_user.h, include_lib/utils/event/bt_event.h, Apache-2.0) */
@@ -618,9 +619,11 @@ void ble_test_poll(void)
         bt_cmd(1u);
     }
     {   /* test build 18: the last phone called back, once per power-on: 3 s after Bluetooth became visible and 5 s after power-on
-         * (well past the DSP's start at 1.5 s and the start-up window after it), unless a phone has come by itself meanwhile */
+         * (well past the DSP's start at 1.5 s and the start-up window after it), unless a phone has come by itself meanwhile.
+         * Test build 34: and once the footswitch is linked (no paging while the pedal connects to it), or 20 s after power-on */
         const uint32_t t = ms_now();
-        if (!bt_rc_state && bt_st == BT_VISIBLE && bt_t_vis && t - bt_t_vis >= 3000u && t >= 5000u) {
+        if (!bt_rc_state && bt_st == BT_VISIBLE && bt_t_vis && t - bt_t_vis >= 3000u && t >= 5000u
+            && (bt_le_cen_settled() || t >= 20000u)) {
             bt_rc_state = 1u; bt_rc_ms = t;
             bt_cmd(2u);
         }

@@ -935,6 +935,26 @@ manufacturer data `73696E636FD60508004A4C414953444B` ("sinco", then "JLAISDK": a
 BLE MIDI device: test build 33 links it, finds no MIDI service and skips it (`SK1`) until the pedal is powered off. For the
 pedal the Chocolate goes in its MIDI mode, the one in which a phone lists it as "FootCtrl Bluetooth".
 
+### Test build 34: the footswitch's link left alone while it is made
+
+Test build 33 matched the Chocolate (in CubeSuite's "advanced custom mode": the name FootCtrl, no MIDI UUID) twice and
+linked twice, and both links ended before any answer: `3E` ("failed to be established") after 197 ms, six events of 30 ms.
+Advertising had come back on at the very connection complete, beside the new master link, and music was playing.
+
+- **Advertising stays off** from the scan through the connection until the footswitch's first ATT answer, 3 s, or the link's
+  end (`LE_CEN_ADV_HOLD_MS`).
+- **The last phone's call-back** (classic paging, 5 s after power-on) waits until the footswitch is linked, or 20 s.
+- **The cen line**: `CD3E/197` the footswitch's last link's end and its life in ms (the LE line's `D` is any link's), `X3E n`
+  the links that ended `3E`, `IV n` the interval its connection complete gave (1.25 ms), and `LF flags/rssi/t`: `t` the
+  footswitch's connectable advertisements, 0 undirected, 1 directed (to another central, which a footswitch keeps to: it then
+  ignores the pedal's connection request, and the link ends `3E`).
+
+From the library's bitcode, on the master's establishment: the initiator is enabled at once when no LE link exists
+(`le_hw_initiating`); the connection request takes its window, offset and interval from the link layer's parameters
+(`__connect_req_pdu`, CSA #1: the features have no CSA #2); the new master link's first anchor is the request's window offset
+(`le_hw_ioctrl` 6: offset x 2 + 4 slots, `__master_reset_transmitWindowDelay`), and with `config_btctler_le_master_multilink` 0
+`master_setup_first_data_location` changes nothing: the vendor's single-master path, with no stand-in on it.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

@@ -254,6 +254,9 @@ int main(void)
         ok(le_cen_report(&s, ev, n, 20, &t, a) && !memcmp(a, A1, 6), "scan: FootCtrl without the MIDI UUID (Manufacturer mode), connectable: taken");
         ok(s.name_n == 1 && s.uuid_n == 0 && s.conn_n == 1 && s.best_set && s.best == -71 && s.last_flags == 6 && s.last_rssi == -71,
            "scan: the log's view: one name, no UUID, one connectable report, best -71, last flags 6 at -71");
+        ok(s.last_ctype == 1, "scan: its connectable reports were ADV_IND (type 0, kept as 1: the log's LF .../0)");
+        n = REP(1, A1, fl, 3, -70); le_cen_report(&s, ev, n, 30, &t, a);
+        ok(s.last_ctype == 2, "scan: then a directed one (type 1, kept as 2: LF .../1, another central's)");
         memset(&s, 0, sizeof s);
         n = REP(0, A2, fl, 3, -86); le_cen_report(&s, ev, n, 10, &t, a);
         n = REP(4, A2, rsp, 10, -86);

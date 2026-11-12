@@ -36,7 +36,8 @@ static const char *const LE_CEN_NAMES[] = {   /* (upper case, compared without c
 #define LE_CEN_SEEN 6u
 #define LE_CEN_SKIP 4u
 enum { LE_SEEN_MIDI = 1, LE_SEEN_NAME = 2, LE_SEEN_CONN = 4 };
-typedef struct { uint8_t addr[6], type, flags; int8_t rssi; uint32_t ms; } le_seen_t;
+typedef struct { uint8_t addr[6], type, flags; int8_t rssi; uint8_t ctype; uint32_t ms; } le_seen_t;   /* (ctype: its last
+                                                                 * connectable report's event type + 1: 1 ADV_IND, 2 directed) */
 typedef struct {
     le_seen_t seen[LE_CEN_SEEN];  /* the addresses heard lately, what each has shown */
     uint8_t addr[6], type, known; /* the footswitch linked and subscribed (known: until power-off) */
@@ -45,6 +46,8 @@ typedef struct {
     uint32_t name_n, uuid_n, conn_n;          /* reports showing a footswitch's name, the MIDI UUID; connectable reports */
     int8_t best, last_rssi;                   /* the best RSSI of a name-matched address; the last one's RSSI */
     uint8_t best_set, last_flags;             /* (best set); what the last name-matched address has shown (LE_SEEN_*) */
+    uint8_t last_ctype;                       /* (test build 34) its connectable reports' event type + 1 (2: directed to
+                                               * another central, which ignores a connection request from the pedal) */
     uint8_t skip[LE_CEN_SKIP][6];             /* connected to, no MIDI service: not taken again this boot */
     uint32_t skip_n;
 } le_cen_scan_t;
@@ -122,10 +125,11 @@ static int le_cen_report(le_cen_scan_t *s, const uint8_t *p, uint32_t n, uint32_
     e->flags |= (uint8_t)f;
     e->rssi = (int8_t)p[10];
     e->ms = ms ? ms : 1u;
-    if (p[2] <= 1u) e->type = p[3];                     /* (the advertiser's own address type: its connectable reports') */
+    if (p[2] <= 1u) { e->type = p[3]; e->ctype = (uint8_t)(p[2] + 1u); }   /* (the advertiser's own address type: its
+                                                                 * connectable reports'; test build 34: their event type) */
     if (e->flags & LE_SEEN_NAME) {                      /* (test build 33: the log's view of the name-matched) */
         if (!s->best_set || e->rssi > s->best) { s->best = e->rssi; s->best_set = 1; }
-        s->last_flags = e->flags; s->last_rssi = e->rssi;
+        s->last_flags = e->flags; s->last_rssi = e->rssi; s->last_ctype = e->ctype;
     }
     if ((e->flags & (LE_SEEN_NAME | LE_SEEN_CONN)) != (LE_SEEN_NAME | LE_SEEN_CONN) || e->rssi < LE_CEN_RSSI) return 0;
     *type = e->type; memcpy(addr, e->addr, 6);

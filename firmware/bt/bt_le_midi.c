@@ -137,6 +137,14 @@ enum { LE_CEN_OFF, LE_CEN_SCAN, LE_CEN_INIT, LE_CEN_LINK, LE_CEN_PAUSE };
 #define LE_ALONE_SCAN_MS 4000u
 #define LE_ALONE_ADV_MS 2000u
 static uint8_t le_adv_held;                /* advertising held off while the scanner (or the connection to the footswitch) runs alone */
+/* test build 34: build 33's two footswitch links ended unanswered (3E, "failed to be established", after 197 ms: six events of
+ * 30 ms), with advertising turned on again at the very connection complete beside the new master link. Now it waits for the
+ * footswitch's first ATT answer, or LE_CEN_ADV_HOLD_MS, or the link's end. And the footswitch's links in the cen line apart
+ * from a phone's: the last one's end (reason, life in ms), the 3E endings, the interval its connection complete gave */
+#define LE_CEN_ADV_HOLD_MS 3000u
+static uint32_t le_cen_link_ms, le_cen_life, le_cen_3e;
+static uint8_t le_cen_end;                 /* (the last footswitch link's end reason, 0: none yet) */
+static uint16_t le_cen_intv;
 static uint32_t le_raw, le_raw_kick, le_scan_opens;   /* (the log: advertising reports at the callback, before any test; the
                                                         * report count at the last ask; scanner starts asked) */
 static uint8_t le_cen_off;                 /* openpocket.c: DLY held at power-on, no central role this boot */
@@ -284,6 +292,12 @@ static void le_cen_rest(uint32_t now)
     if (le_adv_held) { le_adv_held = 0; le_cen_st = LE_CEN_PAUSE; le_cen_ms = now; le_adv_more(); }
     else le_cen_st = LE_CEN_OFF;
 }
+static void le_adv_release(void)                               /* (test build 34: the footswitch's link established) */
+{
+    if (!le_adv_held) return;
+    le_adv_held = 0;
+    le_adv_more();
+}
 static void le_cen_drop(uint16_t con)                          /* the footswitch's link goes: it is found again from scanning */
 {
     le_cen_fails++;
@@ -325,6 +339,7 @@ static void le_cen_poll(uint32_t now)
         le_cen_rest(now);                                      /* (scanning again later) */
     } else if (le_cen_st == LE_CEN_LINK && i >= 0) {
         const uint16_t con = le_lk.conn[i];
+        if (le_adv_held && now - le_cen_link_ms >= LE_CEN_ADV_HOLD_MS) le_adv_release();   /* (test build 34: no answer yet) */
         if (le_ac.req_n && !le_ac.busy && !le_cen_hold && !le_att_send(con, le_ac.req, le_ac.req_n)) {
             le_ac.req_n = 0; le_ac.busy = 1; le_cen_ms = now;
         }
@@ -395,6 +410,7 @@ static void le_att_client(uint8_t type, uint16_t con, uint8_t *p, uint16_t n)
         return;
     }
     if (type != 8u) return;
+    le_adv_release();                                          /* (test build 34: the footswitch answers: advertising may come) */
     r = attc_rx(&le_ac, p, n);
     if (r == ATTC_R_MIDI) { le_cen_midi++; px_midi_ble_write_link((uint32_t)i, p + 3, (uint32_t)n - 3u); }
     else if (r == ATTC_R_PAIR) { le_cen_pairs++; le_cen_hold = 1; le_cen_ms = ble_ms(); (void)sm_api_request_pairing(con); }
@@ -480,7 +496,12 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
             le_drop_ms = ms_now();                              /* (test build 28: the log's D08@31500) */
             le_life_ms = le_drop_ms - le_link_t0[i];            /* (test build 31: how long it lasted) */
             le_link_reset((uint32_t)i);                         /* (test build 27: the editor's reply and frame on that link) */
-            if (le_lk.role[i] == LE_ROLE_CENTRAL) { le_cen_st = LE_CEN_OFF; le_cen_hold = 0; le_ac.busy = 0; le_ac.req_n = 0; }
+            if (le_lk.role[i] == LE_ROLE_CENTRAL) {
+                le_cen_hold = 0; le_ac.busy = 0; le_ac.req_n = 0;
+                le_cen_end = p[5]; le_cen_life = le_life_ms;    /* (test build 34: the footswitch's own, in the cen line) */
+                if (p[5] == 0x3Eu) le_cen_3e++;
+                le_cen_rest(ble_ms());                          /* (scanning again later; advertising's turn first if held) */
+            }
             le_adv_more();                                      /* (a link free: advertising, if it is not on yet) */
         }
     } else if (p[0] == LE_EV_ADV_REPORT) {
@@ -508,7 +529,9 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
                     le_cen_st = LE_CEN_LINK;
                     le_cen_links++;
                     le_cen_hold = 0;
-                    le_adv_held = 0;                    /* (test build 31: advertising again, for a phone, beside this link) */
+                    le_cen_link_ms = ble_ms();          /* (test build 34: advertising stays held until the footswitch
+                                                         * answers, LE_CEN_ADV_HOLD_MS, or the link ends: le_adv_release) */
+                    le_cen_intv = (uint16_t)(q[0] | q[1] << 8);
                     attc_start(&le_ac, known ? le_cen_val : 0u, known ? le_cen_ccc : 0u);
                 }
                 le_adv_more();                                  /* (test build 27: the other link stays open to a central) */
@@ -564,6 +587,8 @@ static void bt_le_advertise(void)
 
 /* test build 28: an LE link up (bt_a2dp.c: the classic scans' kick then waits longer) */
 static uint32_t bt_le_up(void) { return le_links_up(&le_lk); }
+/* test build 34: the footswitch linked, or the central role off (bt_a2dp.c: the last phone's call-back waits for it) */
+static int bt_le_cen_settled(void) { return !le_lk.cen || le_cen_slot() >= 0; }
 /* test build 28: the LE side's watchdog, from the main loop (ble_test_poll: the host's task may have nothing to do then).
  * Something should be on air (advertising, scanning or a link) and neither LE interrupt has moved for LE_WD_MS (advertising
  * alone moves them every 500 ms): ble_profile_loop turns advertising and scanning off and on again. WD in the LE line */
@@ -737,6 +762,11 @@ void bt_le_cen_line(char *out)
     o = ble__put(o, "CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st < 5u ? le_cen_st : 0u]);
     if (le_lk.cen) {
         if (le_adv_held) o = ble__put(o, " AH");
+        /* test build 34: the footswitch's links apart from a phone's: the last one's end (CD reason / life in ms), the 3E
+         * endings (failed to be established: no answer to the connection), the interval its connection complete gave */
+        if (le_cen_end) { o = ble__put(o, " CD"); o = bt__hex(o, le_cen_end, 2); *o++ = '/'; o = bt__dec(o, le_cen_life); }
+        if (le_cen_3e) { o = ble__put(o, " X3E "); o = bt__dec(o, le_cen_3e); }
+        if (le_cen_intv) { o = ble__put(o, " IV"); o = bt__dec(o, le_cen_intv); }
         o = ble__put(o, " T"); o = bt__dec(o, le_cen_tries);
         o = ble__put(o, " K"); o = bt__dec(o, le_cen_links);
         o = ble__put(o, " S"); o = bt__dec(o, le_cen_subs);
@@ -751,7 +781,10 @@ void bt_le_cen_line(char *out)
         o = ble__put(o, " UU"); o = bt__dec(o, le_cs.uuid_n);
         o = ble__put(o, " CN"); o = bt__dec(o, le_cs.conn_n);
         if (le_cs.best_set) { o = ble__put(o, " B"); o = le_dec_s(o, le_cs.best); }
-        if (le_cs.last_flags) { o = ble__put(o, " LF"); o = bt__dec(o, le_cs.last_flags); *o++ = '/'; o = le_dec_s(o, le_cs.last_rssi); }
+        if (le_cs.last_flags) {
+            o = ble__put(o, " LF"); o = bt__dec(o, le_cs.last_flags); *o++ = '/'; o = le_dec_s(o, le_cs.last_rssi);
+            if (le_cs.last_ctype) { *o++ = '/'; o = bt__dec(o, le_cs.last_ctype - 1u); }   /* (test build 34: 0 ADV_IND, 1 directed) */
+        }
         if (le_cs.skip_n) { o = ble__put(o, " SK"); o = bt__dec(o, le_cs.skip_n); }
         o = ble__put(o, " RH"); o = bt__dec(o, bt_le_rep_host);
         o = ble__put(o, " RAW"); o = bt__dec(o, le_raw);
