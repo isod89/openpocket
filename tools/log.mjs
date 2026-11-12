@@ -236,9 +236,9 @@ export function wWords(c1) {
 // fm1_cpu1_echo: the echo of CPU1's fault / the late flag of a hold), after one the PC CPU0 was at; CN, the canary after the Bluetooth heap (words found
 // changed, the first one's value); after a fault of the second core (F count/cpu), its record's 9 words and X, the debug unit's
 // ten words. null for an earlier build's c1 line (no P)
-export const KEYS = ["none: two cores, the radio's interrupts above the audio, the stock core supplies (test build 16)",
-  "CAB: one core, the second held (test build 16; 15: the boot loader's supplies; 14: the stock ones)",
-  "DLY: the radio's interrupts below the audio, as the stock firmware (test build 16)", "REV: Bluetooth off"];
+export const KEYS = ["none: two cores, nothing of the second core's in the radio's memory, the radio's interrupts above the audio, the stock core supplies (test build 17; 16: the music's mix and the firmware's data were still in it)",
+  "CAB: one core, the second held (test builds 16-17; 15: the boot loader's supplies; 14: the stock ones)",
+  "DLY: the radio's interrupts below the audio, as the stock firmware (test builds 16-17)", "REV: Bluetooth off"];
 const F_NAMES = ["DBG", "EMU", "PC", "RETS", "EMU1", "ms", "job handed", "job finished", "fn"];
 export function c1Words(c1) {
   const m = / KEY (\d+) P ([0-9A-F]{2})\/([0-9A-F]{2}) V (\d+) D (\d+) SE (\d+)@(\d+) E (\d+)\/(\d+)(?: ([0-9A-F]{8}))? CN (\d+)(?: ([0-9A-F]{8}))? S ([0-9A-F]{8}) F (\d+)\/(\d+)\b/i.exec(c1 || "");

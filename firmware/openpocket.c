@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 16
+#define BT_TEST_BUILD 17
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -1141,6 +1141,12 @@ void fm1_cstart(void)
     for (d = _pool_tail_start; d < _pool_tail_end; d++) *d = 0;
     for (d = _bss_lo_start; d < _bss_lo_end; d++) *d = 0;
     for (s = _data_load, d = _data_start; d < _data_end; s++, d++) *d = *s;
+#if OP_BT_AUDIO   /* test build 17: the firmware's own data, above the radio's window (bt/app-bt.ld .data_hi) */
+    {
+        extern uint32_t _data_hi_start[], _data_hi_end[], _data_hi_load[];
+        for (s = _data_hi_load, d = _data_hi_start; d < _data_hi_end; s++, d++) *d = *s;
+    }
+#endif
     for (s = _rt_load, d = _rt_start; d < _rt_end; s++, d++) *d = *s;
     op_pwr.vdc0 = (uint8_t)vdc0; op_pwr.vdc1 = (uint8_t)fm1_vdc14();
     op_pwr.sys0 = (uint8_t)sys0; op_pwr.sys1 = (uint8_t)fm1_sysvdd(); op_pwr.dcdc = (uint8_t)dcdc;

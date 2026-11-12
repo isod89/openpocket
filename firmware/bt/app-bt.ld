@@ -38,6 +38,17 @@ SECTIONS
                   . = ALIGN(4); _c1_start = .; KEEP(*(.c1_text*)) . = ALIGN(4); _c1_end = .;   /* the second core's loop */
                   _rt_end = .; } > RAMTEXT AT > XIP
     _rt_load = LOADADDR(.ram_text);
+    /* Test build 17: the firmware's own initialised data, out of the radio's 64 KB window (see .bss): openpocket.o's (the output
+     * stage's gains and fades a_gain, a_gv, a_mg, a_xf, a_xft; the volume; the UI's) and px_dsp.o's (the NAM network's kernel
+     * pointers pxn_*). The second core reads and writes them in every block; up to test build 16 they were the first bytes of
+     * .data, at 0x01C08000, inside the window, beside the music's mix buffer (px_audio.h bt_mix, now in .bss_hi). Here, after
+     * the RAM code, outside the PC guard's range (fm1_guard.h: _rt_start.._rt_end); copied by fm1_cstart (openpocket.c) like
+     * .data; firmware/build.sh puts it in the image and checks that nothing else of the firmware's is left in the window.
+     * (The first match in the script wins: .data below no longer sees these two files' .data.) */
+    .data_hi : { . = ALIGN(4); _data_hi_start = .;
+                 *openpocket.o(.data .data.* .sdata .sdata.*) *px_dsp.o(.data .data.* .sdata .sdata.*)
+                 . = ALIGN(4); _data_hi_end = .; } > RAMTEXT AT > XIP
+    _data_hi_load = LOADADDR(.data_hi);
     /* v40.1: data in the RAM code window's free end, after the code (the PC guard covers only _rt_start.._rt_end), out of
      * the 96 KB RAM. Zeroed by fm1_cstart like .bss. v40.4 (app.ld) moved the engine's buffers marked PX_LO (px_dsp.c: the
      * IR's spectra, the oversampling's and the lanes' buffers, 14.6 KB) to .bss_lo; here they stay in this window, as in test

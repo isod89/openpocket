@@ -178,13 +178,15 @@ fi
 "$TC/common/bin/objcopy" -O binary -j .text     "$O/openpocket.elf" "$O/text.bin"
 "$TC/common/bin/objcopy" -O binary -j .data     "$O/openpocket.elf" "$O/data.bin"
 "$TC/common/bin/objcopy" -O binary -j .ram_text "$O/openpocket.elf" "$O/rt.bin" 2>/dev/null || : > "$O/rt.bin"
+# (test build 17: the Bluetooth audio image's own data above the radio's window, bt/app-bt.ld .data_hi; none elsewhere)
+"$TC/common/bin/objcopy" -O binary -j .data_hi  "$O/openpocket.elf" "$O/datahi.bin" 2>/dev/null || : > "$O/datahi.bin"
 python3 - "$TC" "$O" "$APP" <<'PY'
-import re,subprocess,sys
+import os,re,subprocess,sys
 tc,out,dest=sys.argv[1:]
 syms=subprocess.run([f"{tc}/common/bin/objdump","-t",f"{out}/openpocket.elf"],capture_output=True,text=True,check=True).stdout
 def sym(n):
     m=re.search(rf"^([0-9a-f]+) .*\s{n}$",syms,re.M); return int(m.group(1),16) if m else None
-load=sym("_data_load"); rt_load=sym("_rt_load"); start=sym("_start")
+load=sym("_data_load"); rt_load=sym("_rt_load"); start=sym("_start"); dh_load=sym("_data_hi_load")
 be,cl,ch,nb=sym("_bss_end"),sym("_cram_lo"),sym("_cram_hi"),sym("_ble_stack_hi")
 re_,hs,he=sym("_rt_end"),sym("_bss_hi_start"),sym("_bss_hi_end")
 ls_,le=sym("_bss_lo_start"),sym("_bss_lo_end")
@@ -211,11 +213,43 @@ if bd is not None and bw and b0 and c1s and c1e:   # the Bluetooth audio image (
                             ("the mailbox is not in the region",mb is None or c1s<=mb<c1e),("the region runs past the RAM",c1e<=0x01C08000+98304)) if not ok]
         if c1e-c1s!=3136: print(f"bt window : NOTE the region is {c1e-c1s} bytes, not 3136: something else is in it, or padding")
         if bad: sys.exit("bt window: the second core's memory: "+"; ".join(bad))
+    # test build 17: nothing of the firmware's own in the window but what only CPU0 and the radio touch. Up to build 16 the
+    # music's mix buffer and the firmware's initialised data (the output stage's gains, the NAM network's kernel pointers),
+    # which the second core reads and writes in every block, lay there. Every input section of a non-library file inside
+    # [bd_base, bd_base + 64 KB), from the link map, must be one of these (CPU0 and the radio only):
+    cpu0_only={".bd_base",".bss.lo2.bt_ring",".bss.lo2.sbc",".bss.lo.nm_stage",".bss.bt_heap",".bss.bt_canary",".sdp_record_item"}
+    cpu0_files=("bt_sbc.o","iis.o","bt_rt.o")   # (the SBC decoder, the I2S driver, the runtime: the radio's task and CPU0's interrupt)
+    mp=f"{out}/openpocket.map"
+    if os.path.exists(mp):
+        ml=open(mp).read().split("\n"); found=[]; ours=[]
+        for i,l in enumerate(ml):
+            m=re.match(r"^ (\S+)\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+)$",l)
+            if not m and re.match(r"^ (\S+)$",l) and i+1<len(ml):
+                m2=re.match(r"^\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S+)$",ml[i+1])
+                if m2: m=(l.strip(),)+m2.groups()
+            if m and not isinstance(m,tuple): m=m.groups()
+            if not m: continue
+            sec,a,sz,f=m[0],int(m[1],16),int(m[2],16),m[3]
+            if sz==0 or "libjl.a" in f or "/sbc/" in f or not (a<w and a+sz>bd): continue
+            base=os.path.basename(f); ours.append(f"{sec} {base} {a:#x}+{sz}")
+            if sec not in cpu0_only and base not in cpu0_files: found.append(f"{sec} {base} {a:#x}+{sz}")
+        print(f"bt window : the firmware's own inside it: {'; '.join(ours) if ours else 'none'}")
+        dhs,dhe,mix=sym("_data_hi_start"),sym("_data_hi_end"),sym("bt_mix")
+        print(f"bt window : the firmware's data {dhs if dhs is None else hex(dhs)}..{dhe if dhe is None else hex(dhe)}, "
+              f"the music's mix {mix if mix is None else hex(mix)} ({'above the window' if dhs and mix and dhs>=w and mix>=w else 'NOT above the window'})")
+        if dhs is None or mix is None or dhs<w or mix<w: found.append("the firmware's data or the music's mix is not above the window")
+        if found: sys.exit("bt window: what the second core may touch is inside the radio's window: "+"; ".join(found))
+    else: print("bt window : no link map, the firmware's own data in the window NOT checked")
 if nb and nb >= 0x01C7C000 and nb > sym("_ble_stack_lo"): print(f"NOINIT    : {nb-0x01C7C000} of 15696 bytes up to the BLE task stacks' end")
 if cl is not None and ch is not None: print(f"cache RAM : {ch-cl} of 28672 bytes (the rest, {28672-(ch-cl)}, to the NAM network's vector unit)")
 assert start==0x02000120,hex(start or 0)
 img=bytearray(open(f"{out}/text.bin","rb").read())
-for at,part in sorted([(rt_load,open(f"{out}/rt.bin","rb").read()),(load,open(f"{out}/data.bin","rb").read())]):
+parts=[(rt_load,open(f"{out}/rt.bin","rb").read()),(load,open(f"{out}/data.bin","rb").read())]
+dh=open(f"{out}/datahi.bin","rb").read()
+if dh:   # (test build 17: bt/app-bt.ld .data_hi, copied by fm1_cstart)
+    assert dh_load is not None,"data_hi without _data_hi_load"
+    parts.append((dh_load,dh))
+for at,part in sorted(parts):
     if part:
         assert at-0x02000120>=len(img),"sections overlap"
         img+=b"\xff"*(at-0x02000120-len(img))+part

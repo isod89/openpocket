@@ -150,7 +150,10 @@ static int a_running;
 #include "px_bt_ring.h"
 static bt_ring_t bt_ring;
 static const float bt_gain = 0.5f;                     /* -6 dB: the phone's own volume does the rest */
-static float bt_mix[A_FR] __attribute__((section(".bss.lo2.bt_mix")));   /* (beside the ring: app-bt.ld .bss_lo2) */
+/* this block's music, filled by CPU0 (a_bt_fill), read by whichever core runs dsp_out. Test build 17: in .bss_hi, far above the
+ * radio's 64 KB window; up to test build 16 it lay beside the ring, inside the window, and CPU1 cleared and read it in every
+ * block (app-bt.ld .data_hi says why that matters) */
+static float bt_mix[A_FR] __attribute__((section(".bss.hi.bt_mix")));
 #endif
 
 /* DSP work for one block: a_in -> a_res (gain, clipping) + load measurement. Runs on the 2nd core (CPU1)
@@ -188,11 +191,11 @@ static void dsp_out(void)                              /* a_out -> a_res: safety
         } else if (tg == 0.0f) for (uint32_t i = 0; i < A_FR; i++) a_out[i] = 0.0f;
     }
 #if OP_BT_AUDIO
-    /* the phone's music: through the change fade below with the guitar (up to test build 10 it was added after it, so a full
-     * preset change cut the guitar but left the music at full level in the blocks the DMA then repeats while the interrupt is
-     * held, audio_apply). Not read while the fade sits at silence, or after a NaN: the music waits, it does not skip */
-    for (uint32_t i = 0; i < A_FR; i++) bt_mix[i] = 0.0f;
-    if (!a_mute && !a_nan && !(a_xft == 0 && a_xf == 0.0f)) bt_ring_mix(&bt_ring, bt_mix, A_FR, bt_gain);
+    /* the phone's music (bt_mix: read from the ring by CPU0 before the block was handed over, a_bt_fill), through the change
+     * fade below with the guitar (up to test build 10 it was added after it, so a full preset change cut the guitar but left
+     * the music at full level in the blocks the DMA then repeats while the interrupt is held, audio_apply). A NaN found in
+     * this block drops this block's music with the guitar (2.9 ms); from the next block on, a_bt_fill leaves it waiting */
+    if (a_nan) for (uint32_t i = 0; i < A_FR; i++) bt_mix[i] = 0.0f;
 #endif
     /* the output: a soft knee from 0.8 of full scale (the same slope there, then bending towards full scale, which it
      * never reaches) instead of a hard clip, whose corners crackle on the loudest notes */
@@ -656,6 +659,17 @@ static void a_testsig(void)
     }
 }
 #endif
+#if OP_BT_AUDIO
+/* test build 17: this block's music, read from the ring here, by CPU0, before the block is handed over (to CPU1, the pipeline or
+ * dsp_block). The ring (bt_a2dp.c bt_ring_mem) lies in the radio's 64 KB window, which the second core must not touch: up to
+ * test build 16 dsp_out read it there, on CPU1. The block before has left bt_mix: a_collect / a_lp_post waited for its
+ * dsp_out. Not read while the fade sits at silence, or after a NaN, or muted: the music waits, it does not skip */
+static void a_bt_fill(void)
+{
+    for (uint32_t i = 0; i < A_FR; i++) bt_mix[i] = 0.0f;
+    if (!a_mute && !a_nan && !(a_xft == 0 && a_xf == 0.0f)) bt_ring_mix(&bt_ring, bt_mix, A_FR, bt_gain);
+}
+#endif
 static void a_block(const uint8_t *data, int len)      /* a guitar block: its DSP started, or run */
 {
 #if DSP_CPU1
@@ -694,6 +708,9 @@ static void a_block(const uint8_t *data, int len)      /* a guitar block: its DS
     uad_tone(a_in);
 #endif
     tn_capture(a_in, A_FR);
+#if OP_BT_AUDIO
+    a_bt_fill();                                       /* (the music, on CPU0: the ring is in the radio's window) */
+#endif
 #if DSP_CPU1
     /* a NAM amp on two cores (px_nam_dual): pipelined here (dsp_pipe), CPU1 its helper */
     if (a_c1 && !px_nam_dual(&g_eng)) {
