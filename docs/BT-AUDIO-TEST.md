@@ -976,6 +976,23 @@ showed why on two counts:
   advertising ("RX DMA NULL"). Now 8 (2,387 bytes, 882 more from the Bluetooth heap); the setting sizes nothing else
   (`le_hw_init`). In the log, the second entity in state 2 (`1:2/..`) is advertising.
 
+### Test build 36: longer supervision timeouts, and a slower phone link
+
+Test build 35 on the pedal: the Chocolate held one link 101.6 s at 30 ms (it asked for 15 ms three times, refused, and stayed);
+MIDIWeb found the pedal and the editor, the Chocolate and the music worked together for about 25 s (`W85`, `ED 84/658`,
+`MIDI 5`). Then both LE links ended at the same moment by supervision timeout (`CD08/101619`, `D08@109540/26045`), with no
+preset saved; the music's link stayed up (`UND 0`, `DISC 0`). The pedal linked the Chocolate again by itself, with advertising
+beside it (`HW2 0:6/0 1:2/0`). The likely cause: the pedal's own link (its clock) and the phone's (the phone's clock, an
+iPhone at 7.5 ms, four events in each of the Chocolate's 30 ms) drift into each other, and with the supervision timeouts at
+about 1 and 2 s both end.
+
+- **The footswitch's supervision timeout 6 s** (`LE_CEN_TIMEOUT` 600; up to 35: 2 s), **and its interval 28.75 ms**
+  (`LE_CEN_INTERVAL` 23; up to 35: 30 ms): not a multiple of a phone's 7.5, 15 or 30 ms, so the two links' events slide past
+  each other by 1.25 ms or more per event instead of overlapping for tens of seconds. The refusal follows it.
+- **A phone's link asked for 15 to 30 ms and 6 s**, 3 s after it is made, when it is faster or less tolerant
+  (`gap_request_connection_parameter_update`, within Apple's limits). `PQ n/rc` in the LE line: the requests and the library's
+  answer; the phone's own update then shows as `U n intv/lat/timeout`.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

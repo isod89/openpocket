@@ -118,8 +118,27 @@ static uint16_t le_ccc[LE_LINKS];
 /* ---- test build 28: the central role's state (bt_le_central.h: the advertisement filter and the ATT client) */
 #define LE_SCAN_INTERVAL 320u     /* 200 ms (0.625 ms units) */
 #define LE_SCAN_WINDOW 16u        /* 10 ms of it: 5 % of the radio's time, and only while the footswitch's link is down */
-#define LE_CEN_INTERVAL 24u       /* the footswitch's link: 30 ms at most (1.25 ms units), latency 0 */
-#define LE_CEN_TIMEOUT 200u       /* its supervision timeout, 2 s (10 ms units): a flash write's pause does not end it */
+#define LE_CEN_INTERVAL 23u       /* the footswitch's link: 28.75 ms at most (1.25 ms units), latency 0. Test build 36: 23 (up to 35:
+                                   * 24, 30 ms): not a multiple of a phone's 7.5, 15 or 30 ms, so the two links' events slide past
+                                   * each other by 1.25 ms or more per event, and an overlap lasts a couple of events, not tens of
+                                   * seconds (test build 35: both links ended together after 25 s side by side). A footswitch's
+                                   * request below it is refused (l2cap_connection_update_request_just) */
+#define LE_CEN_TIMEOUT 600u       /* its supervision timeout, 6 s (10 ms units; up to 35: 2 s). Test build 35: the Chocolate's link and
+                                   * a phone's ended together after 25 s side by side, by supervision timeout, no save made: the two
+                                   * links' events (the pedal's clock and the phone's) drift into each other; a longer timeout rides
+                                   * through it */
+/* test build 36: a phone's (or computer's) link, the pedal its peripheral: asked, LE_PH_ASK_MS after it is made, for 15 to 30 ms
+ * and a 6 s supervision timeout (an iPhone chose 7.5 ms and about 1 s: four of its events in each of the Chocolate's 30 ms,
+ * beside the music). Apple's limits: min >= 15 ms, min + 15 ms <= max, timeout 2 to 6 s. The library sends the L2CAP request
+ * (l2cap.c gap_request_connection_parameter_update); the phone's answer comes back as a connection update (the LE line's U) */
+#define LE_PH_ASK_MS 3000u
+#define LE_PH_INTV_MIN 12u
+#define LE_PH_INTV_MAX 24u
+#define LE_PH_TIMEOUT 600u
+extern int gap_request_connection_parameter_update(uint16_t con, uint16_t imin, uint16_t imax, uint16_t lat, uint16_t tmo);
+static uint16_t le_ph_h, le_ph_intv0, le_ph_tmo0;
+static uint32_t le_ph_ms, le_ph_asks;
+static uint8_t le_ph_ask, le_ph_rc;
 #define LE_CEN_INIT_MS 3000u      /* a connection not made in 3 s is cancelled, and the pedal scans again */
 #define LE_CEN_REQ_MS 5000u       /* an ATT request unanswered for 5 s, or pairing that encrypts nothing in 8 s: the link goes */
 #define LE_CEN_PAIR_MS 8000u
@@ -254,6 +273,14 @@ void ble_profile_loop(void)
         le_adv_kick = ble_ms();
         if (le_lk.adv) (void)ble_user_cmd_prepare(LE_CMD_ADV_ENABLE, 1, 1);
         else if (!le_adv_on()) le_lk.adv = 1;
+    }
+    if (le_ph_ask && ble_ms() - le_ph_ms >= LE_PH_ASK_MS) {    /* (test build 36: a phone's link, once, if it is still up and
+                                                                 * faster or less tolerant than asked) */
+        le_ph_ask = 0;
+        if (le_links_find(&le_lk, le_ph_h) >= 0 && (le_ph_intv0 < LE_PH_INTV_MIN || le_ph_tmo0 < LE_PH_TIMEOUT)) {
+            le_ph_rc = (uint8_t)gap_request_connection_parameter_update(le_ph_h, LE_PH_INTV_MIN, LE_PH_INTV_MAX, 0, LE_PH_TIMEOUT);
+            le_ph_asks++;
+        }
     }
     le_cen_poll(ble_ms());                                     /* (test build 28: the central role) */
 }
@@ -551,6 +578,10 @@ static void le_on_event(uint8_t type, uint16_t chan, uint8_t *p, uint16_t size)
                                                          * subscribed, LE_CEN_ADV_HOLD_MS, or the link ends: le_adv_release) */
                     le_cen_intv = (uint16_t)(q[0] | q[1] << 8);
                     attc_start(&le_ac, known ? le_cen_val : 0u, known ? le_cen_ccc : 0u);
+                } else {                                        /* (test build 36: a phone's: slower and more tolerant, asked
+                                                                 * LE_PH_ASK_MS later in ble_profile_loop) */
+                    le_ph_h = (uint16_t)h; le_ph_ms = ble_ms(); le_ph_ask = 1;
+                    le_ph_intv0 = (uint16_t)(q[0] | q[1] << 8); le_ph_tmo0 = (uint16_t)(q[4] | q[5] << 8);
                 }
                 le_adv_more();                                  /* (test build 27: the other link stays open to a central) */
             }
@@ -739,6 +770,8 @@ void bt_le_line(char *out)
         o = ble__put(o, " U"); o = bt__dec(o, le_upd_n); *o++ = ' ';
         o = bt__dec(o, le_upd_intv); *o++ = '/'; o = bt__dec(o, le_upd_lat); *o++ = '/'; o = bt__dec(o, le_upd_tmo);
     }
+    if (le_ph_asks) { o = ble__put(o, " PQ"); o = bt__dec(o, le_ph_asks); *o++ = '/'; o = bt__dec(o, le_ph_rc); }   /* (test build 36:
+                                                                 * a phone asked for 15-30 ms and 6 s: times / the library's answer) */
     if (le_phy_n) { o = ble__put(o, " PHY"); o = bt__dec(o, le_phy_n); *o++ = ' '; o = bt__dec(o, le_phy_tx); *o++ = '/'; o = bt__dec(o, le_phy_rx); }
     if (le_dl_n) { o = ble__put(o, " DL"); o = bt__dec(o, le_dl_n); *o++ = ' '; o = bt__dec(o, le_dl_tx); }
     o = le_drop_text(o);
