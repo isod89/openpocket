@@ -1113,12 +1113,43 @@ static int audio_nam_load(void)                        /* 1 = the preset needs a
 }
 /* call from the main loop, after the controls and before the screen: applies preset changes (40 ms debounce; v40.3: a
  * preset loaded, at once) */
+#if OP_BT_AUDIO && DSP_CPU1
+/* test build 19: the second core back after a fault or a misread, for the stage. Up to test build 18 one fault left the pedal on one
+ * core until power-off: test build 17's boot read an address that is not there (DBG bit 4 axi_rd_inv, AXI_RD_INV_ID 0x140 = CPU1,
+ * the SDK's cpu/wl82 debug.c and debug.h) at the start of the chain (px_engine_part+0x206, 2.5 s), test build 14's once at 6.5 s.
+ * Now, 300 ms after it was retired, CPU1 starts again (fm1_cpu1_start: its stack, mailbox and fault count afresh) and the engine
+ * is set up for two cores as after a NaN (audio_reset: the lanes and the layer split back, a short fade in from silence): the
+ * cost is that fade. At most 8 a boot, then one core as before. Not after CAB's one core (nothing retired) or a LATE (a core too
+ * slow for its block would come back too slow). The c1 regs line (bt/bt_a2dp.c) keeps the last fault's record and the count */
+static uint8_t a_c1_revives;
+static uint32_t a_c1_revive_ms;
+static void a_c1_revive(void)
+{
+    const uint32_t t = fm1_uptime_ms();
+    if (a_c1 || fm1_cpu1_on || a_c1_revives >= 8u) return;
+    if (fm1_cpu1_gave_up != FM1_CPU1_FAULT && fm1_cpu1_gave_up != FM1_CPU1_MISREAD) return;
+    if (!fm1_cpu1_gave_ms || t - fm1_cpu1_gave_ms < 300u) return;
+    fm1_cpu1_bar.barred = 0;                           /* (the retirement barred it for the boots after: lifted) */
+    if (fm1_cpu1_start() < 0) { a_c1_revives = 8u; return; }   /* (it did not come up: one core, as before) */
+    a_c1_revives++;
+    a_c1_revive_ms = t | 1u;
+    a_c1 = 1;
+    {   /* (not a NaN: not counted as one) */
+        const uint32_t n = a_nan_count;
+        audio_reset();
+        a_nan_count = n;
+    }
+}
+#endif
 static void audio_poll(uint32_t now, int at_once)
 {
     audio_prof(now);
     static uint32_t last_h, t_change, t_apply, t_ld, vol_shown = 1000u;
     static int pending, nam;
     if (a_nan) audio_reset();
+#if OP_BT_AUDIO && DSP_CPU1
+    a_c1_revive();
+#endif
     uint32_t h = ui_hash();
     if (h != last_h) { last_h = h; t_change = now; pending = 1; nam = audio_nam_load(); a_sw0 = fm1_ticks(); }
     if (pending && nam && !a_ld && now - t_change >= 20u) { a_ld = 1; t_ld = now; a_ldn++; }

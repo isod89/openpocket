@@ -236,9 +236,9 @@ export function wWords(c1) {
 // fm1_cpu1_echo: the echo of CPU1's fault / the late flag of a hold), after one the PC CPU0 was at; CN, the canary after the Bluetooth heap (words found
 // changed, the first one's value); after a fault of the second core (F count/cpu), its record's 9 words and X, the debug unit's
 // ten words. null for an earlier build's c1 line (no P)
-export const KEYS = ["none: two cores, nothing of the second core's in the radio's memory, the stock power setup from power-on as M-VAVE's V22, the last phone called back (test build 18; 17: the core supplies only, raised after the second core started)",
-  "CAB: one core, the second held (test builds 16-18; 15: the boot loader's supplies; 14: the stock ones)",
-  "DLY: without the rest of the stock power setup (the 1.3 V DC-DC, VDDIOM, the radio's regulator), as test build 17 (test build 18; 16-17: the radio's interrupts below the audio)", "REV: Bluetooth off"];
+export const KEYS = ["none: two cores, nothing of the second core's in the radio's memory, the stock power setup from power-on as M-VAVE's V22, the last phone called back, the second core started again after a fault (test build 19; 18 without the restart)",
+  "CAB: one core, the second held (test builds 16-19; 15: the boot loader's supplies; 14: the stock ones)",
+  "DLY: without the rest of the stock power setup (the 1.3 V DC-DC, VDDIOM, the radio's regulator), as test build 17 (test builds 18-19; 16-17: the radio's interrupts below the audio)", "REV: Bluetooth off"];
 const F_NAMES = ["DBG", "EMU", "PC", "RETS", "EMU1", "ms", "job handed", "job finished", "fn"];
 export function c1Words(c1) {
   const m = / KEY (\d+) P ([0-9A-F]{2})\/([0-9A-F]{2}) V (\d+) D (\d+) SE (\d+)@(\d+) E (\d+)\/(\d+)(?: ([0-9A-F]{8}))? CN (\d+)(?: ([0-9A-F]{8}))? S ([0-9A-F]{8}) F (\d+)\/(\d+)\b/i.exec(c1 || "");
@@ -273,10 +273,23 @@ export function c1Words(c1) {
 // (hci0, test builds 9-11), the phone's packets at the controller (a2dp, test build 12: "A2 ...") or the music's FIFO (fifo, from
 // test build 13: "FIFO ..."); isr, from test build 11: the interrupts' times against the audio's, and the DSP; c1, from test build
 // 12: the second core and its fault record, from test build 13 also W, the reverb loop's cuts
-export function diagFields([boot, last, ble, link, trace, hci, l6, isr, c1]) {
+// (test build 19: c1r, the tenth line, "C1R RV n@ms ...": the second core's revivals and its last fault's registers)
+export function diagFields([boot, last, ble, link, trace, hci, l6, isr, c1, c1r]) {
   const a2dp = l6 && l6.startsWith("A2") ? l6 : undefined, fifo = l6 && l6.startsWith("FIFO") ? l6 : undefined;
   const hci0 = l6 && !a2dp && !fifo ? l6 : undefined;
-  return { boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0, a2dp, fifo, isr, c1 };
+  return { boot: parseBoot(boot), lastBoot: parseLast(last), ble: parseBle(ble), link, trace, hci, hci0, a2dp, fifo, isr, c1,
+           c1r: c1r && c1r.startsWith("C1R") ? c1r : undefined };
+}
+// the c1 regs line in words (test build 19, firmware/bt/bt_a2dp.c bt_c1r_line)
+export function c1rWords(c1r) {
+  const m = /^C1R RV (\d+)@(\d+)(?: DBG ([0-9A-F]{8})@(\d+) PC ([0-9A-F]{8}) AX ([0-9A-F]+)\/([0-9A-F]+))?/i.exec(c1r || "");
+  if (!m) return null;
+  const rv = +m[1], parts = [rv ? `the second core was started again ${rv} time${rv > 1 ? "s" : ""} after a fault, the last at ${m[2]} ms` : "the second core was not started again"];
+  if (m[3]) {
+    const who = { "140": "CPU1", "100": "CPU0", "3FF": "none" };
+    parts.push(`its last fault: DBG ${m[3]} at ${m[4]} ms, PC ${m[5]}, the invalid AXI read by ${who[m[6].toUpperCase()] ?? m[6]}, write by ${who[m[7].toUpperCase()] ?? m[7]}`);
+  }
+  return parts.join("; ");
 }
 
 // one reading, at the deepest level the pedal answers
@@ -331,6 +344,11 @@ export function show(r, prev, say) {
     say(`isr        ${r.isr}`);
     const vm = vmWords(r.isr);
     if (vm) say(`           ${vm.text}`);
+  }
+  if (r.c1r) {
+    say(`c1 regs    ${r.c1r}`);
+    const w = c1rWords(r.c1r);
+    if (w) say(`           ${w}`);
   }
   if (r.c1) {
     say(`c1         ${r.c1}`);

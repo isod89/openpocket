@@ -120,6 +120,8 @@ static struct {
     uint32_t echoes, cpu, dbg, emu, pc, rets;
 #if FM1_CPU1_RECORD
     uint32_t emu1, ms, req, cmp, fn, dbgx[10];
+    uint32_t r[16], sp;                         /* test build 19: the faulting core's r0..r15 and sp, from the exception's frame
+                                                 * (fm1_vec.S: f[0..15], f[24]): which register held the address */
 #endif
 #if FM1_CPU1_ECHO
     volatile uint32_t t_in;
@@ -476,6 +478,9 @@ static int fm1_cpu1_fault_c(const uint32_t *f)
         fm1_cpu1_fault.fn = (uint32_t)(uintptr_t)fm1_cpu1_mb.fn;
         for (i = 0; i < 10u; i++)               /* (read only: the bus masters' ids of an invalid access, the error counts) */
             fm1_cpu1_fault.dbgx[i] = *(volatile uint32_t *)(0x1EEE358u + 4u * i);
+        for (i = 0; i < 16u; i++)               /* (test build 19: the registers at the fault) */
+            fm1_cpu1_fault.r[i] = f[i];
+        fm1_cpu1_fault.sp = f[24];
     }
 #endif
     fm1_cpu1_fault.count++;                     /* (before DBG_MSG clears: see the echo above) */

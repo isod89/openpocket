@@ -927,6 +927,27 @@ void bt_c1_line(char *out)
     bt_line_out(out, bt_line_t);
 }
 
+/* test build 19, the log's tenth line: "C1R RV 1@2811 DBG 00000010@2510 PC 01C6B0D6 AX 140/3FF SP 01C1FA40 R 1C20000 ... (r0..r15)":
+ * the second core's revivals (px_audio.h a_c1_revive: how many, the last when, ms since power-on) and its last fault's record, kept
+ * after a revival (fm1_cpu1_start clears the count the c1 line shows): the debug unit's message and when, the PC, AXI_RD_INV_ID /
+ * AXI_WR_INV_ID (0x140 = CPU1, 0x100 = CPU0, 0x3FF none: the SDK's debug.h), the stack pointer and r0..r15 at the fault */
+void bt_c1r_line(char *out)
+{
+    char *o = ble__put(bt_line_t, "C1R RV ");
+    uint32_t i;
+    o = bt__dec(o, a_c1_revives); *o++ = '@'; o = bt__dec(o, a_c1_revive_ms);
+    if (fm1_cpu1_fault.ms) {
+        o = ble__put(o, " DBG "); o = bt__hex(o, fm1_cpu1_fault.dbg, 8); *o++ = '@'; o = bt__dec(o, fm1_cpu1_fault.ms);
+        o = ble__put(o, " PC "); o = bt__hex(o, fm1_cpu1_fault.pc, 8);
+        o = ble__put(o, " AX "); o = ble__hex(o, fm1_cpu1_fault.dbgx[6]); *o++ = '/'; o = ble__hex(o, fm1_cpu1_fault.dbgx[7]);
+        o = ble__put(o, " SP "); o = bt__hex(o, fm1_cpu1_fault.sp, 8);
+        o = ble__put(o, " R");
+        for (i = 0; i < 16u; i++) { *o++ = ' '; o = ble__hex(o, fm1_cpu1_fault.r[i]); }
+    }
+    *o = 0;
+    bt_line_out(out, bt_line_t);
+}
+
 /* the interrupts against the audio (test builds 11, 12): "ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2905/3120 AI 1710/2620 EN 0/344/
  * 344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2/1/0/3 OVF 0 NAN 0". Times in microseconds: for the
  * baseband's two interrupts (40, 41) the longest in the last second, the longest since boot and the time they took in the last
