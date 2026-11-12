@@ -2,8 +2,10 @@
 /* Controller and host configuration of the Bluetooth audio test image: the values the JieLi SDK's own configuration files give a
  * classic-only build (fw-AC79_AIoT_SDK V1.2.0, Apache-2.0, see third_party/jieli-bt/: apps/common/config/log_config/
  * lib_btctrler_config.c, lib_btstack_config.c, apps/common/config/bt_profile_config.c), reduced to one classic link and an A2DP
- * sink: no Bluetooth LE, no calls, no TWS, no AAC, no inquiry of other devices, no test modes. Names, types and constness are the
- * library's (read from its declarations); a few values the SDK leaves to an application are the SDK's usual ones, marked so. */
+ * sink: no calls, no TWS, no AAC, no inquiry of other devices, no test modes. Since test build 23 Bluetooth LE beside it (BLE
+ * MIDI, bt_le_midi.c), and since test build 27 two LE links at once (the Chocolate and the web editor, bt_le_links.h). Names,
+ * types and constness are the library's (read from its declarations); a few values the SDK leaves to an application are the
+ * SDK's usual ones, marked so. */
 #include <stdint.h>
 
 enum { BT_MODULE_CLASSIC = 1u << 0, BT_MODULE_LE = 1u << 1 };   /* (test build 23: both, as the stock firmware) */
@@ -90,7 +92,8 @@ const uint64_t config_btctler_le_features = 1;                /* LE_ENCRYPTION (
 const int config_btctler_le_afh_en = 0;
 const int config_btctler_le_hw_ram_use_static = 1;
 const int config_multilink_support_esco_enalbe = 0;
-const int config_btctler_le_slave_multilink = 1;
+const int config_btctler_le_slave_multilink = 1;            /* (RF_ble.c: the multi-link scheduler places the links' events; test
+                                                             * build 27's two links use it) */
 const int config_btctler_le_rx_nums = 5;
 const int config_btctler_le_acl_packet_length = 27;
 const int config_btctler_le_acl_total_nums = 5;
