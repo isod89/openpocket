@@ -125,4 +125,5 @@ TAG(log_tag_const_i_HCI_LL) TAG(log_tag_const_i_LE5_BB) TAG(log_tag_const_i_LE_B
 TAG(log_tag_const_i_LL_ADV) TAG(log_tag_const_i_LL_AFH) TAG(log_tag_const_i_LL_E) TAG(log_tag_const_i_LL_INIT)
 TAG(log_tag_const_i_LL_PHY) TAG(log_tag_const_i_LL_RL) TAG(log_tag_const_i_LL_S) TAG(log_tag_const_i_LL_SCAN)
 TAG(log_tag_const_i_LL_WL) TAG(log_tag_const_w_LL_AFH)
+TAG(log_tag_const_e_LL_M) TAG(log_tag_const_i_LL_M)             /* (test build 28: ll_master.c's) */
 #undef TAG

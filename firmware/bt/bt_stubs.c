@@ -219,17 +219,17 @@ BT_STUB(int, le_enhanced_transmitter_test_handle)
 BT_STUB(int, le_receive_test_handle)
 BT_STUB(int, le_test_end_handle)
 BT_STUB(int, le_transmitter_test_handle)
-/* btctrler: ll_events.c, ll_init.c, ll_slave.c, ll_adv.c, ll_multiple_phys.c, le_low_power.c, link_layer.c (the master role,
- * extended advertising, Wi-Fi detection, TWS, low power: none of them used by a peripheral with legacy advertising) */
+/* btctrler: ll_events.c, ll_init.c, ll_slave.c, ll_adv.c, ll_multiple_phys.c, le_low_power.c, link_layer.c (extended
+ * advertising, Wi-Fi detection, TWS, low power: none of them used with legacy advertising; test build 28: the master role's
+ * two handlers, stood in here up to test build 27, are ll_master.c's own now) */
 BT_STUB(int, dut_hci_emit_le_meta_event)
-BT_STUB(int, master_rx_conn_post_handler)
-BT_STUB(int, conn_master_rx_post_handler)
 BT_STUB(int, ll_exit_ext_legacy_adv_status)
 BT_STUB(int, ll_ext_legacy_adv_scan_req_received)
 BT_STUB(int, ll_ext_handle_malloc)
 BT_STUB(int, ll_ext_rx_post_process)
 BT_STUB(int, ll_update_ch_done_wfdet_callback)
 BT_STUB(int, ll_wifi_detect_ext)
+BT_STUB_V(ll_master_rx_wifi_detect_report)                      /* (test build 28: ll_master.c's Wi-Fi detection report) */
 BT_STUB(int, ll_wifi_detect_init)
 BT_STUB(int, ll_wifi_detect_probe_process)
 BT_STUB(int, __slave_ll_send_vendor_wifi_detect_req)
