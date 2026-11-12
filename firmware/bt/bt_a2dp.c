@@ -411,6 +411,7 @@ static void bt_stall_fire(void)
 
 static void bt_stall_tick(int firing)
 {
+    ble_usr_tick();                                             /* (test build 37: the usr timeouts, every ms, ble/ble_os.c) */
     if (ble_busy_ticks <= BLE_STALL_TICKS - BT_STALL_WINDOW) { bt_stall_on = 0; return; }
     if (!bt_stall_on) { bt_stall_begin(); bt_stall_on = 1; }
     if (!firing) bt_stall_sample();
@@ -818,6 +819,19 @@ static void bt_tasks_line(char *out)
     }
     *o = 0;
 }
+/* test build 37: the timers (ble/ble_os.c), on the HCI line: " TS 6/9 TU 0/3 TF 0 TI 412 TR 405 TB 0", the sys table's slots in
+ * use / the most ever, the usr table's the same, the adds refused (a full table: that callback never came), the adds from an
+ * interrupt (both tables), the usr timeouts run, the times a due one waited a millisecond because the baseband's lock was
+ * taken (0 expected: ble_os.c usr_run) */
+static char *bt_timers_text(char *o)
+{
+    o = ble__put(o, " TS "); o = bt__dec(o, tm_used); *o++ = '/'; o = bt__dec(o, tm_peak);
+    o = ble__put(o, " TU "); o = bt__dec(o, usr_used); *o++ = '/'; o = bt__dec(o, usr_peak);
+    o = ble__put(o, " TF "); o = bt__dec(o, tm_fail + usr_fail);
+    o = ble__put(o, " TI "); o = bt__dec(o, tm_irq + usr_irq);
+    o = ble__put(o, " TR "); o = bt__dec(o, usr_fired);
+    o = ble__put(o, " TB "); return bt__dec(o, usr_held);
+}
 static char *bt_stacks_text(char *o)                            /* " F A3012/C2344/S1876": each task's stack never used */
 {
     ble_task_info_t t;
@@ -916,7 +930,8 @@ static char *bt_msg_text(char *o, const bt_msg_t *m)
 /* (test build 11: then WI, the waits refused inside an interrupt, WM, the waits the main loop asked for (a timer's callback:
  * it cannot wait), CNF, the pairing confirmations sent, END, the last link's end: 05:rr a Disconnection Complete and its reason
  * (13 the phone ended it, 08 supervision timeout, 22 LMP response timeout, 05 authentication failure), 03:ss a link that failed
- * to come up and its status; and as many of the newest messages as fit) */
+ * to come up and its status; test build 37: the timers, TS TU TF TI TR TB (bt_timers_text); and as many of the newest messages
+ * as fit) */
 void bt_hci_line(char *out)
 {
     char *o = ble__put(out, "HCI n ");
@@ -927,6 +942,7 @@ void bt_hci_line(char *out)
     o = ble__put(o, " WI "); o = bt__dec(o, bt_wait_irq); o = ble__put(o, " WM "); o = bt__dec(o, bt_wait_main);
     o = ble__put(o, " CNF "); o = bt__dec(o, bt_confirms);
     if (bt_end) { o = ble__put(o, " END "); o = bt__hex(o, bt_end >> 8, 2); *o++ = ':'; o = bt__hex(o, bt_end & 0xFFu, 2); }
+    o = bt_timers_text(o);                                      /* (test build 37: here, where the messages make room) */
     fit = o < out + 220 ? (uint32_t)(out + 220 - o) / 14u : 0u; /* (14 characters a message; the line holds 223) */
     m = k < BT_MSG_LAST ? k : BT_MSG_LAST;
     if (m > fit) m = fit;

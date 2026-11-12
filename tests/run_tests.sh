@@ -157,6 +157,8 @@ $CC -O1 -Wall -Wno-unused-function -o build/ble_status tests/test_ble_status.c &
 $CC -O1 -Wall -Wno-unused-function -o build/ble_vm tests/test_ble_vm.c && build/ble_vm
 $CC -O1 -Wall -Wno-unused-function -I tests/ble_shim -I firmware/ble -o build/test_ble_taskq tests/test_ble_taskq.c && build/test_ble_taskq
 $CC -O1 -Wall -Wno-unused-function -Wno-unused-variable -DOP_BT_AUDIO=1 -I tests/ble_shim -I firmware/ble -I firmware/bt -o build/test_bt_taskq tests/test_ble_taskq.c && build/test_bt_taskq
+# (test build 37: the usr timeouts run from ble_poll instead of the 10 kHz tick, ble_os.c BT_USR_IN_TICK 0)
+$CC -O1 -Wall -Wno-unused-function -Wno-unused-variable -DOP_BT_AUDIO=1 -DBT_USR_IN_TICK=0 -I tests/ble_shim -I firmware/ble -I firmware/bt -o build/test_bt_taskq0 tests/test_ble_taskq.c && build/test_bt_taskq0
 # (test build 27: the two LE links, which handle is which link and when to advertise)
 $CC -O1 -Wall -Wno-unused-function -I firmware/bt -o build/test_bt_le_links tests/test_bt_le_links.c
 build/test_bt_le_links > build/le_links.log || { grep FAIL build/le_links.log; exit 1; }; tail -1 build/le_links.log

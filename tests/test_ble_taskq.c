@@ -8,7 +8,9 @@
  * And the scheduler's clock across TIMER4's wrap (every 178.957 s): a periodic timer keeps firing, a one-shot armed before the wrap
  * fires after it, a task asleep across it wakes on time (up to test build 10 all three stopped for good at the first wrap).
  * Built a second time with OP_BT_AUDIO (the Bluetooth audio image's scheduler): inside one of the baseband's interrupts
- * (bt_isr_depth) cpu_in_irq() is 1 and no wait waits; each task's queue peak, stack depth and red zone. */
+ * (bt_isr_depth) cpu_in_irq() is 1 and no wait waits; each task's queue peak, stack depth and red zone; test build 37's timers
+ * (added from interrupts, the interrupts put back as they were, the usr timeouts run by the 10 kHz tick, never on a taken
+ * baseband lock). A third time with BT_USR_IN_TICK=0: the usr timeouts run from ble_poll. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,6 +43,14 @@ static int t_on_sys_stack;                              /* (test build 28: "the 
 #endif
 #include "../firmware/ble/ble_os.c"
 #if OP_BT_AUDIO
+static int fired37_sys, fired37_usr;                    /* (test build 37's timer callbacks) */
+static void cb37_sys(void *p) { (void)p; fired37_sys++; }
+static void cb37_usr(void *p) { fired37_usr += p ? (int)(intptr_t)p : 1; }
+uint8_t *bb_hdl;                                        /* (RF_ble.c's baseband handle: its lock byte at BB_LOCK_AT) */
+static uint8_t fake_bb[36];
+static int lib_runs, lib_off_at_entry;                  /* a callback as the library's own: a counted pair inside */
+static void cb37_lib(void *p) { (void)p; lib_runs++; lib_off_at_entry = cpu_irq_disabled(); local_irq_disable(); local_irq_enable(); }
+#define USR_RUNS() do { if (!BT_USR_IN_TICK) ble_poll(); } while (0)   /* (BT_USR_IN_TICK 0: they run from ble_poll) */
 static void bt_taskq_spy(const char *task, int type, int argc, const int *argv) { (void)task; (void)type; (void)argc; (void)argv; }
 void bt_isr_br(void) { }
 void bt_isr_slot(void) { }
@@ -205,6 +215,149 @@ int main(void)
         t_on_sys_stack = 0;
         CHECK(cpu_in_irq() == 0, "back on a task's or the main loop's stack: 0 again");
         cur = 0;
+    }
+    {   /* test build 37: timers added from an interrupt, and the usr timeouts run by the 10 kHz tick */
+        uint16_t id, ids[MAXTIMER + 1u], uid, uids[MAXUSR + 1u];
+        uint32_t u0, n0, f0, i0, x0;
+        cur = 0;
+        n0 = tm_used; i0 = tm_irq;
+        t_on_sys_stack = 1;                                     /* (in an interrupt) */
+        id = sys_timeout_add(0, cb37_sys, 50);
+        t_on_sys_stack = 0;
+        CHECK(id && timer_start[id - 1] && timers[id - 1].due == 0u && tm_irq == i0 + 1u && tm_used == n0 + 1u,
+              "a sys timeout added in an interrupt: no clock read there, it starts at the next ble_poll (counted)");
+        shim_t4 += 24000u * 7u; ble_poll();                     /* (7 ms later: its 50 ms count from here) */
+        CHECK(!timer_start[id - 1] && fired37_sys == 0, "the next ble_poll starts it");
+        shim_t4 += 24000u * 49u; ble_poll();
+        CHECK(fired37_sys == 0, "49 ms after that: not yet");
+        shim_t4 += 24000u; ble_poll();
+        CHECK(fired37_sys == 1 && tm_used == n0, "50 ms after that: once, and its slot free again");
+        for (i = 0, k = 0; i < MAXTIMER; i++) k += timers[i].used;
+        CHECK((uint32_t)k == n0, "the slots-in-use count matches the table (%u)", (unsigned)n0);
+        f0 = tm_fail;
+        for (k = 0; k < (int)(MAXTIMER - n0); k++) ids[k] = sys_timer_add(0, cb37_sys, 1000);
+        ids[k] = sys_timer_add(0, cb37_sys, 1000);
+        CHECK(ids[k - 1] && !ids[k] && tm_used == MAXTIMER && tm_peak == MAXTIMER && tm_fail == f0 + 1u,
+              "a full sys table: the add refused and counted");
+        for (k = 0; k < (int)(MAXTIMER - n0); k++) sys_timer_del(ids[k]);
+        CHECK(tm_used == n0, "deleted: the slots in use back to before");
+        id = sys_timer_add(0, cb37_sys, 30);                    /* (a periodic one, restarted from an interrupt) */
+        shim_t4 += 24000u * 20u; ble_poll();
+        t_on_sys_stack = 1;
+        sys_timer_re_run(id);
+        t_on_sys_stack = 0;
+        CHECK(timer_start[id - 1] && timers[id - 1].due == 0u, "sys_timer_re_run in an interrupt: no clock read, restarted at the next ble_poll");
+        k = fired37_sys;
+        shim_t4 += 24000u * 15u; ble_poll();                    /* (35 ms from its add: it would have fired) */
+        shim_t4 += 24000u * 29u; ble_poll();
+        CHECK(fired37_sys == k, "29 ms after that ble_poll: not yet");
+        shim_t4 += 24000u; ble_poll();
+        CHECK(fired37_sys == k + 1, "30 ms: fired");
+        sys_timer_del(id);
+        CHECK(tm_used == n0, "deleted");
+        id = sys_timer_add(0, cb37_sys, 1000);
+        shim_t4 += 24000u * 500u; ble_poll();
+        k = fired37_sys;
+        CHECK(sys_timer_modify(id, 40) == 0 && sys_timer_modify(0, 40) == -1, "sys_timer_modify: a timer in use changed, none refused");
+        shim_t4 += 24000u * 39u; ble_poll();
+        CHECK(fired37_sys == k, "39 ms after the change: not yet");
+        shim_t4 += 24000u; ble_poll();
+        CHECK(fired37_sys == k + 1, "40 ms: fired, its new period counted from the change");
+        sys_timer_del(id);
+        x0 = usr_fired; i0 = usr_irq;
+        t_on_sys_stack = 1;
+        uid = usr_timeout_add((void *)3, cb37_usr, 6, 1);
+        t_on_sys_stack = 0;
+        CHECK(uid > USR_ID0 && usr_used == 1u && usr_irq == i0 + 1u, "a usr timeout added in an interrupt: its own table (id %u)", (unsigned)uid);
+        u0 = usr_ms;
+        for (k = 0; k < 69; k++) ble_usr_tick();
+        USR_RUNS();
+        CHECK(fired37_usr == 0 && usr_ms - u0 >= 6u, "6.9 ms of ticks: not yet (it waits 6 ms whole, from any point in a ms)");
+        ble_usr_tick();
+#if !BT_USR_IN_TICK
+        CHECK(fired37_usr == 0 && usr_used == 1u, "BT_USR_IN_TICK 0: due, but the tick does not run it");
+        ble_poll();
+#endif
+        CHECK(fired37_usr == 3 && usr_fired == x0 + 1u && usr_used == 0u, "7 ms: run (%s), once, its slot free",
+              BT_USR_IN_TICK ? "by the tick" : "by the next ble_poll");
+        uid = usr_timeout_add(0, cb37_usr, 2, 1);
+        usr_timeout_del(uid);
+        for (k = 0; k < 50; k++) ble_usr_tick();
+        USR_RUNS();
+        CHECK(fired37_usr == 3 && usr_used == 0u, "deleted before it is due: never runs");
+        uid = usr_timeout_add(0, cb37_usr, 2, 1);
+        sys_timeout_del(uid);
+        CHECK(usr_used == 0u, "deleted through the sys call (an id from the other table): gone from the usr table");
+        f0 = usr_fail;
+        for (k = 0; k < (int)MAXUSR + 1; k++) uids[k] = usr_timeout_add(0, cb37_usr, 1000, 1);
+        CHECK(!uids[k - 1] && usr_fail == f0 + 1u && usr_peak == MAXUSR, "a full usr table: the add refused and counted");
+        for (k = 0; k < (int)MAXUSR; k++) usr_timeout_del(uids[k]);
+        CHECK(usr_used == 0u, "all deleted");
+        {   /* the interrupts put back as they were, never a bare enable: in an interrupt entered with them off (irq_nest 0),
+             * inside the library's own counted section (the LE handlers hold the baseband's lock in one), in the main loop */
+            uint16_t a, b, c;
+            int bad37 = 0;
+            t_on_sys_stack = 1; fm1_irq_off();
+            a = sys_timeout_add(0, cb37_sys, 10); bad37 += shim_ie != 0u;
+            b = usr_timeout_add(0, cb37_usr, 10, 1); bad37 += shim_ie != 0u;
+            c = sys_timer_add(0, cb37_sys, 10); bad37 += shim_ie != 0u;
+            sys_timer_re_run(c); bad37 += shim_ie != 0u;
+            bad37 += sys_timer_modify(c, 20) != 0 || shim_ie != 0u;
+            sys_timeout_del(b); bad37 += shim_ie != 0u;        /* (a usr id through the sys call) */
+            usr_timeout_del(a); bad37 += shim_ie != 0u;        /* (a sys id through the usr call) */
+            sys_timer_del(c); bad37 += shim_ie != 0u;
+            CHECK(bad37 == 0 && irq_nest == 0u && tm_used == n0 && usr_used == 0u,
+                  "in an interrupt entered with the interrupts off: every add, restart, change and delete leaves them off (%d)", bad37);
+            fm1_irq_on();
+            local_irq_disable();
+            a = usr_timeout_add(0, cb37_usr, 10, 1); usr_timeout_del(a);
+            a = sys_timeout_add(0, cb37_sys, 10); sys_timeout_del(a);
+            CHECK(shim_ie == 0u && irq_nest == 1u, "inside the library's counted section: still off, its count untouched");
+            local_irq_enable();
+            CHECK(shim_ie == 1u && irq_nest == 0u, "its own enable turns them on");
+            t_on_sys_stack = 0;
+            a = sys_timeout_add(0, cb37_sys, 10); b = usr_timeout_add(0, cb37_usr, 10, 1);
+            CHECK(shim_ie == 1u, "in the main loop: on after an add");
+            sys_timeout_del(a); usr_timeout_del(b);
+            CHECK(shim_ie == 1u && irq_nest == 0u && tm_used == n0 && usr_used == 0u, "and after a delete");
+        }
+        {   /* a callback as the library's (its own counted pair inside): run with the interrupts as found, and left so */
+            lib_runs = 0;
+            usr_timeout_add(0, cb37_lib, 1, 1);
+#if BT_USR_IN_TICK
+            t_on_sys_stack = 1; fm1_irq_off();                  /* (the tick's interrupt, entered with the interrupts off) */
+            for (k = 0; k < 30; k++) ble_usr_tick();
+            CHECK(lib_runs == 1 && lib_off_at_entry == 1 && shim_ie == 0u && irq_nest == 0u,
+                  "the tick entered with the interrupts off: the callback runs with them off, the tick leaves them off after its pair");
+            fm1_irq_on();
+            usr_timeout_add(0, cb37_lib, 1, 1);
+            for (k = 0; k < 30; k++) ble_usr_tick();
+            t_on_sys_stack = 0;
+            CHECK(lib_runs == 2 && lib_off_at_entry == 0 && shim_ie == 1u && irq_nest == 0u,
+                  "the tick entered with them on: the callback runs with them on, and they stay on");
+#else
+            for (k = 0; k < 30; k++) ble_usr_tick();
+            CHECK(lib_runs == 0, "BT_USR_IN_TICK 0: the tick runs no callback");
+            ble_poll();
+            CHECK(lib_runs == 1 && lib_off_at_entry == 0 && shim_ie == 1u && irq_nest == 0u, "ble_poll runs it, with the interrupts on");
+#endif
+        }
+        {   /* the baseband's lock taken: a due usr timeout waits, never spins on it. Byte 33 of the handle, from the library's
+             * own types (RF_ble.c: struct ble_hw_base, 32 bytes, an i8, then struct __spinlock), written here as a number so
+             * that BB_LOCK_AT is checked against it */
+            uint32_t h0 = usr_held, x1 = usr_fired;
+            bb_hdl = fake_bb; fake_bb[33] = 1u;
+            usr_timeout_add(0, cb37_usr, 1, 1);
+            for (k = 0; k < 30; k++) ble_usr_tick();
+            USR_RUNS();
+            CHECK(usr_fired == x1 && usr_used == 1u && usr_held > h0, "the lock taken: due, it waits (TB %u)", (unsigned)(usr_held - h0));
+            fake_bb[33] = 0u; fake_bb[32] = 0xFFu;              /* (free; the byte before it is not the lock) */
+            for (k = 0; k < 10; k++) ble_usr_tick();
+            USR_RUNS();
+            CHECK(usr_fired == x1 + 1u && usr_used == 0u, "the lock free again: it runs at the next millisecond");
+            bb_hdl = 0;
+        }
+        CHECK(irq_nest == 0u && shim_ie == 1u, "every interrupts-off paired with its interrupts-on");
     }
     {   /* each task's queue peak, stack depth and red zone */
         task_t *t = task_find("btstack");
