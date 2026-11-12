@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 24
+#define BT_TEST_BUILD 25
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -582,6 +582,7 @@ static const int8_t QDEC[16] = {0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0};
                  * footswitch and px_midi_io.h's CC 64 (the main loop: px_dsp.c only reads the two counters) */
 #define PX_PAD_PRESS() px_pad_press(&g_eng)
 #define PX_PAD_STOP() px_pad_stop(&g_eng)
+#define PX_EXP_SET(v) px_exp_set((int)(v))   /* test build 25: px_midi_io.h's CC 117, the expression pedal */
 #endif
 #include "ui.h"
 #include "px_lights.h"      /* the button lights follow the blocks (issue #8; px_leds.h drives them) */

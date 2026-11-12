@@ -622,6 +622,27 @@ What to check:
 What to check: the Chocolate connects over Bluetooth and its footswitches act; the music with a heavy NAM preset while
 changing pages and presets: `UND`, `GAP` and the drops stay low.
 
+## Test build 25: the expression pedal
+
+One expression pedal, on MIDI CC 117 (a Chocolate Plus with a pedal in its jack: CubeSuite's expression pedal page, CC 117,
+0 to 127), moves what the preset has on:
+
+- a **WHAMMY** (PIT): heel the note as played, toe its SHIFT (the interval, up or down), so SHIFT 75 is an octave up at the
+  toe; its GLIDE still smooths;
+- else an **AUTO WAH** (SFX): heel to toe the sweep CENTER makes, 350 Hz to 2.25 kHz (DEPTH 0 for a plain wah pedal; with
+  DEPTH, the LFO moves around the pedal);
+- else the **volume**, before the delay and the reverb, so closing it leaves their tails ringing (half way about -18 dB, the
+  heel silent).
+
+The position stays out of the preset: nothing to save, nothing redrawn, on every page. When the pedal comes back to the volume
+from another job (a wah turned off), the volume stays at unity until the pedal moves, so a wah left at the heel does not
+silence the next song. Until a first position comes the engine plays as before, bit for bit (`tests/ownfx_equiv.sh`). The
+volume is smoothed over 10 ms, the wah over 15 ms, the whammy over 15 ms and then its own GLIDE (`engine/px_dsp.c` `px_exp`,
+`tests/engine/exp.c`, `tests/midiio.c`).
+
+What to check: the pedal as the volume (swells, the delay's tails after it closes), a wah, a WHAMMY with a NAM preset (its
+pitch shifter runs as before: late blocks, `BYP`), and that turning a wah off at the heel keeps the sound.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

@@ -374,6 +374,10 @@ void px_engine_prepare(const px_engine *e, const px_preset_t *p);
 #if PX_OWN_FX
 void px_pad_press(px_engine *e);   /* PAD: catch the chord being played (the left footswitch, MIDI CC 64: firmware/ui.h) */
 void px_pad_stop(px_engine *e);    /* PAD: fade it out over RELEASE (the left footswitch held 0.7 s) */
+/* test build 25: the expression pedal (MIDI CC 117: firmware/px_midi_io.h), 0..127; -1 forgets it (the engine then plays as
+ * if none had come). It moves what the preset has on: the WHAMMY, else an AUTO WAH, else a volume before the delay */
+void px_exp_set(int v);
+int  px_exp_info(void);            /* the position (-1: none) | its job << 8 (0 volume, 1 wah, 2 whammy) | the hold << 10 */
 #endif
 void px_engine_process(px_engine *e, const float *in, float *out, int n);
 enum { PX_PART_ALL, PX_PART_PRE, PX_PART_NAM, PX_PART_POST };   /* v37: px_engine_part's stages (see px_dsp.c) */

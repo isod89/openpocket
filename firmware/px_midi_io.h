@@ -6,7 +6,8 @@
  * SysEx never takes this road: it goes to the update code (ota.c) and the editor (px_editor.h) only.
  * The including file provides px_midi.h, usb.c's rings, PRESET, cur_preset, load_preset, master_vol, ui_mode / ui_item /
  * ui_nitems (ui.h), st_midi, st_usb and st_commit (px_store.h), and ms_now; in the Bluetooth audio image (PX_OWN_FX) also
- * ui_pad_on (ui.h) and PX_PAD_PRESS (openpocket.c), for CC 64; CC 116 is a tap of the delay's tempo.
+ * ui_pad_on (ui.h) and PX_PAD_PRESS (openpocket.c), for CC 64; CC 116 is a tap of the delay's tempo; PX_EXP_SET (openpocket.c)
+ * for CC 117, the expression pedal.
  *
  * The ring must be emptied: usb.c leaves the host's USB packet unread (NAK) while the ring is nearly full, and the
  * editor's and installer's SysEx come in the same packets. Nothing drained it before this file.
@@ -44,6 +45,7 @@ static void px_midi_ble_write(const uint8_t *p, uint32_t n)
  * interval, the nearest TIME step as MIDI clock does; from the third tap on, to the mean of the last three intervals. A pause
  * of more than 2 s starts over. In this image TIME stops at 780 ms (REVERSE 390): a slower tap gives 780 */
 #define PXM_CC_TAP 116u
+#define PXM_CC_EXP 117u   /* test build 25: the expression pedal, 0..127 (engine/px_dsp.c px_exp: WHAMMY, AUTO WAH or volume) */
 static uint32_t tap_ms, tap_n, tap_iv[3];
 static void px_midi_tap(uint32_t ms, int *touched)
 {
@@ -90,6 +92,9 @@ static void px_midi_in(uint32_t pkt, uint32_t ms, int free_ui, int *touched)
         if (m.d2 >= 64u && ui_pad_on()) PX_PAD_PRESS();
     } else if (m.d1 == PXM_CC_TAP) {                   /* CC 116 at 64 and up: a tap of the delay's tempo (test build 24) */
         if (m.d2 >= 64u && free_ui) px_midi_tap(ms, touched);
+    } else if (m.d1 == PXM_CC_EXP) {                   /* CC 117: the expression pedal's position (test build 25). Not a
+                                                        * preset change: nothing to save, nothing redrawn, on every page */
+        PX_EXP_SET(m.d2);
 #endif
     } else {
         uint32_t mv = master_vol;

@@ -10,7 +10,8 @@
 #  - the Bluetooth audio image's engine (engine/px_dsp.h PX_OWN_FX): every existing model bit for bit as without it
 #    (tests/ownfx_equiv.sh, 5,460 runs); the engine tests built with that image's flags; its own effects (docs/OWN-FX.md):
 #    LOW OCTAVE (PIT), low notes get their octave, high ones and the dry signal stay as they are (tests/engine/lowoct.c);
-#    SYN PAD, a caught chord held steady, swell, crossing to a new chord, fade, stomp-then-strum, no clicks (tests/engine/pad.c)
+#    SYN PAD, a caught chord held steady, swell, crossing to a new chord, fade, stomp-then-strum, no clicks (tests/engine/pad.c);
+#    the expression pedal (test build 25): volume before the delay with its hold, wah sweep, whammy to SHIFT (tests/engine/exp.c)
 #  - changes without clicks (v38): knob changes glide to exactly where a full set goes, blocks on / off fade, fewer clicks
 #  - USER IR (v38): the partitioned FFT convolution against the direct FIR, slots, names
 #  - wet lanes (v39): the delay through its lane as inline bit for bit, the reverb's tail lag frames later, the pipeline
@@ -73,7 +74,7 @@ $CC -O2 $FX -Iengine tests/engine/pipe_test.c engine/px_dsp.c firmware/px_math.c
 $CC -O2 $FX -Iengine tests/engine/long.c engine/px_dsp.c firmware/px_math.c -lm -o build/long_fx && build/long_fx "LOW OCTAVE" PAD | tail -1
 echo "== the Bluetooth audio image's own effects: LOW OCTAVE (PIT) and SYN PAD (docs/OWN-FX.md)"
 for D in "$FX" "-DPX_OWN_FX=1"; do                     # as the image builds the engine, and with the host's defaults (PX_RUNS 1)
-  for t in lowoct pad; do
+  for t in lowoct pad exp; do                           # (exp: test build 25's expression pedal)
     $CC -O2 $D -Iengine tests/engine/$t.c engine/px_dsp.c firmware/px_math.c -lm -o build/$t
     build/$t > build/$t.log || { cat build/$t.log; exit 1; }; tail -1 build/$t.log
   done

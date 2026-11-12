@@ -3064,6 +3064,70 @@ static __attribute__((noinline)) void pad_flatten(int16_t *sl)
 }
 void px_pad_press(px_engine *e) { e->pad_press++; }   /* the UI and MIDI only: the audio side never writes these */
 void px_pad_stop(px_engine *e) { e->pad_stop++; }
+/* test build 25: one expression pedal for what the preset has on. The WHAMMY: heel the note as played, toe its SHIFT (the
+ * interval, up or down); else an AUTO WAH: heel to toe CENTER's sweep, 350 Hz to 2.25 kHz (its LFO, with DEPTH, around the
+ * pedal); else a volume before the delay and the reverb, so their tails ring on (audio taper: -18 dB at half way, the heel
+ * silent). The position stays out of the preset: not saved, no redraw. Once the pedal has another job and comes back to the
+ * volume, the volume stays at unity until the pedal moves (a wah left at the heel does not silence the next song). Until a
+ * first position comes the engine plays as before, bit for bit. Smoothed: the volume per sample (10 ms), the wah per
+ * sample (15 ms), the whammy per block (15 ms, then its own GLIDE). No table and no library call on the audio side: the
+ * second core may run these blocks (firmware/px_audio.h) */
+static struct {
+    volatile int32_t pos;                              /* 0..127, -1: none yet (written by the main loop only) */
+    volatile uint32_t seq;                             /* bumped by each position */
+    int tgt, hold;                                     /* the last block's job (0 volume, 1 wah, 2 whammy); the hold */
+    uint32_t seq0;                                     /* (the position count when the volume took over) */
+    float ps, ws, vg, vt;                              /* whammy and wah positions smoothed; the volume's gain, its target */
+} px_exp = {-1, 0u, 0, 0, 0u, 0.0f, 0.0f, 1.0f, 1.0f};
+void px_exp_set(int v)
+{
+    if (v < 0) { px_exp.pos = -1; px_exp.tgt = 0; px_exp.hold = 0; px_exp.vg = px_exp.vt = 1.0f; return; }
+    px_exp.pos = v > 127 ? 127 : v;
+    px_exp.seq++;
+}
+int px_exp_info(void) { return (px_exp.pos < 0 ? 0xFF : px_exp.pos) | px_exp.tgt << 8 | px_exp.hold << 10; }
+static inline __attribute__((always_inline)) float px_exp2(float x)   /* 2^x, |x| <= 2 (24 semitones): no table */
+{
+    float s = 1.0f;
+    while (x >= 0.5f) { x -= 1.0f; s *= 2.0f; }
+    while (x < -0.5f) { x += 1.0f; s *= 0.5f; }
+    const float y = x * 0.69314718f;                   /* e^y, |y| <= 0.35: 2.4e-6 at most (0.004 cents) */
+    return s * (1.0f + y * (1.0f + y * (0.5f + y * (0.16666667f + y * (0.041666667f + y * 0.0083333333f)))));
+}
+/* once a block, where the blocks before the amp run (PX_PART_ALL or PRE): the pedal's job, the hold, the volume's target,
+ * the whammy's ratio (over the one the WHAMMY's settings gave: px_engine_set and the knobs run between two blocks) */
+static inline __attribute__((always_inline)) void px_exp_block(px_engine *e, const px_preset_t *p, int wham, int wah, int n)
+{
+    const int pos = px_exp.pos;
+    if (pos < 0) return;
+    const uint32_t seq = px_exp.seq;
+    const float x = (float)pos * (1.0f / 127.0f);
+    const int tgt = wham ? 2 : wah ? 1 : 0;
+    if (tgt != px_exp.tgt) {
+        if (tgt == 0) { px_exp.hold = 1; px_exp.seq0 = seq; }
+        if (tgt == 1) px_exp.ws = x;
+        if (tgt == 2) px_exp.ps = x;
+        px_exp.tgt = tgt;
+    }
+    if (px_exp.hold && seq != px_exp.seq0) px_exp.hold = 0;
+    px_exp.vt = tgt == 0 && !px_exp.hold ? x * x * x : 1.0f;
+    if (tgt == 2) {
+        px_exp.ps += (x - px_exp.ps) * ((float)n / ((float)n + 661.0f));
+        const float st = (f01(p->p[PX_B_PITCH][0]) - 0.5f) * 48.0f;   /* SHIFT: the toe's interval, in semitones */
+        e->ps_rt = px_exp2(px_exp.ps * st * (1.0f / 12.0f));
+    }
+}
+/* the volume over a block of the chain (at its first DELAY or REVERB, else at its end) */
+static inline __attribute__((always_inline)) void px_exp_vol(float *xb, int n)
+{
+    float g = px_exp.vg;
+    const float t = px_exp.vt;
+    if (g == 1.0f && t == 1.0f) return;                /* (no pedal, or another job: the signal untouched) */
+    for (int k = 0; k < n; k++) { g += (t - g) * (1.0f / 441.0f); xb[k] *= g; }
+    if (t == 1.0f && g > 0.9999f) g = 1.0f;            /* (back at unity, exactly: the test above holds again) */
+    if (t == 0.0f && g < 1e-6f) g = 0.0f;              /* (no denormals at the heel) */
+    px_exp.vg = g;
+}
 static __attribute__((noinline)) void pad_step(px_engine *e, float a)   /* one sample at sr / 8 */
 {
     const uint32_t pp = e->pad_press, ps = e->pad_stop;
@@ -3877,6 +3941,14 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
         tr[ns] = e->btr[b];
         st[ns++] = (uint8_t)b;
     }
+#if PX_OWN_FX   /* test build 25: the expression pedal (px_exp above) */
+    const int ex_wham = p->on[PX_B_PITCH] && pit_t == PX_PIT_WHAMMY;
+    const int ex_wah = px_exp.pos >= 0 && !ex_wham && p->on[PX_B_SFX] && sfx_t == PX_SFX_LFOWAH;
+    if (part == PX_PART_ALL || part == PX_PART_PRE) px_exp_block(e, p, ex_wham, ex_wah, n);
+    const float ex_x = (float)px_exp.pos * (1.0f / 127.0f);
+    int ex_vi = ns;                                    /* where the volume goes: the first DELAY or REVERB, else the end */
+    for (int i = 0; i < ns; i++) if (st[i] == PX_B_DELAY || st[i] == PX_B_REVERB) { ex_vi = i; break; }
+#endif
     const float pg = e->patch_g;
     /* DRIVE right before AMP: one oversampled section for both (set A). Otherwise each its own: the amp keeps
      * set A, a drive elsewhere takes set B (set A when the amp does not oversample). */
@@ -3936,6 +4008,9 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
     for (int s = s_lo; s < s_hi; s++) {
         const int sblk = st[s];
         const float strim = tr[s];
+#if PX_OWN_FX
+        if (s == ex_vi) px_exp_vol(xb, n);
+#endif
         /* v38: a block fading in or out: its output mixed with its input, the mix ramped over the block */
         const uint32_t pt0 = px_clock ? px_clock() : 0u;   /* v38: each block's time (px_clock: the firmware's) */
         const float fa = e->bfa[sblk], fz = e->bf[sblk];
@@ -4158,7 +4233,13 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
                         t = 250.0f + t * t * e->sfx_d;
                     } else {
                         e->sfx_ph = wrap1(e->sfx_ph + e->sfx_inc);
+#if PX_OWN_FX   /* test build 25: the expression pedal in CENTER's place */
+                        float c0 = e->sfx_d;
+                        if (ex_wah) { px_exp.ws += (ex_x - px_exp.ws) * (1.0f / 661.0f); c0 = px_exp.ws; }
+                        t = c0 + e->sfx_c * 0.5f * lfo_sin(e->sfx_ph);
+#else
                         t = e->sfx_d + e->sfx_c * 0.5f * lfo_sin(e->sfx_ph);
+#endif
                         if (t < 0.0f) t = 0.0f;
                         if (t > 1.0f) t = 1.0f;
                         t = 350.0f + t * t * 1900.0f;
@@ -4337,6 +4418,9 @@ PX_HOT void px_engine_part(px_engine *e, const float *in, float *out, int n, int
         for (int k = 0; k < n; k++) d[k] = xb[k];
         continue;
     }
+#if PX_OWN_FX
+    if (ex_vi >= ns) px_exp_vol(xb, n);                /* (no DELAY or REVERB on: the volume at the chain's end) */
+#endif
     for (int k = 0; k < n; k++) {
         float x = xb[k];
         { float y = x - e->odc_x1 + 0.9990f * e->odc_y1; e->odc_x1 = x; e->odc_y1 = y; x = y; }

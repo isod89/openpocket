@@ -63,6 +63,8 @@ static uint32_t ms_now(void) { return 0; }
 static int ui_pad_on(void) { return PRESET.on[PX_B_SYN] && PRESET.type[PX_B_SYN] % PX_SYN_COUNT == PX_SYN_PAD; }
 static int pad_presses;
 #define PX_PAD_PRESS() (pad_presses++)
+static int exp_last = -1, exp_n;
+#define PX_EXP_SET(v) (exp_last = (int)(v), exp_n++)
 #endif
 #include "px_midi_io.h"
 
@@ -270,6 +272,17 @@ int main(void)
         ok(PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 780.0f) && PRESET.p[PX_B_DELAY][0] < 64,
            "a tap slower than 780 ms gives the shortened ring's top, 780 ms (TIME 63)");
 #endif
+    }
+    {   /* CC 117 is the expression pedal (test build 25): every value goes to the engine, on any page, and the preset stays */
+        reset();
+        px_preset_t before = PRESET; exp_n = 0; exp_last = -1;
+        midi_enqueue(cc(0, 117, 0), 1); midi_enqueue(cc(0, 117, 64), 2); midi_enqueue(cc(0, 117, 127), 3);
+        px_midi_service();
+        int all = exp_n == 3 && exp_last == 127 && !memcmp(&before, &PRESET, sizeof before);
+        ui_mode = M_TUNER;
+        midi_enqueue(cc(0, 117, 30), 4); px_midi_service();
+        ui_mode = M_BLOCK;
+        ok(all && exp_n == 4 && exp_last == 30, "CC 117 sends every position to the expression pedal (the tuner too), the preset unchanged");
     }
 #endif
     printf("\n%s\n", failed ? "MIDI glue tests FAILED" : "all MIDI glue tests passed");

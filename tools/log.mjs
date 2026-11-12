@@ -236,9 +236,9 @@ export function wWords(c1) {
 // fm1_cpu1_echo: the echo of CPU1's fault / the late flag of a hold), after one the PC CPU0 was at; CN, the canary after the Bluetooth heap (words found
 // changed, the first one's value); after a fault of the second core (F count/cpu), its record's 9 words and X, the debug unit's
 // ten words. null for an earlier build's c1 line (no P)
-export const KEYS = ["none: two cores, nothing of the second core's in the radio's memory, the stock power setup from power-on as M-VAVE's V22, the last phone called back, the second core started again after a fault, its per-block tables in RAM, LOW OCTAVE and SYN PAD, BLE MIDI beside the music, the music's queue doubled and decoded while the screen draws, the delay up to 780 ms, tap tempo on CC 116 (test build 24; 23: the queue half, the delay 2 s; 22 without BLE MIDI)",
-  "CAB: one core, the second held (test builds 16-24; 15: the boot loader's supplies; 14: the stock ones)",
-  "DLY: without the rest of the stock power setup (the 1.3 V DC-DC, VDDIOM, the radio's regulator), as test build 17 (test builds 18-24; 16-17: the radio's interrupts below the audio)", "REV: Bluetooth off"];
+export const KEYS = ["none: two cores, nothing of the second core's in the radio's memory, the stock power setup from power-on as M-VAVE's V22, the last phone called back, the second core started again after a fault, its per-block tables in RAM, LOW OCTAVE and SYN PAD, BLE MIDI beside the music, the music's queue doubled and decoded while the screen draws, the delay up to 780 ms, tap tempo on CC 116, the expression pedal on CC 117 (test build 25; 24 without the pedal; 23: the queue half, the delay 2 s; 22 without BLE MIDI)",
+  "CAB: one core, the second held (test builds 16-25; 15: the boot loader's supplies; 14: the stock ones)",
+  "DLY: without the rest of the stock power setup (the 1.3 V DC-DC, VDDIOM, the radio's regulator), as test build 17 (test builds 18-25; 16-17: the radio's interrupts below the audio)", "REV: Bluetooth off"];
 const F_NAMES = ["DBG", "EMU", "PC", "RETS", "EMU1", "ms", "job handed", "job finished", "fn"];
 export function c1Words(c1) {
   const m = / KEY (\d+) P ([0-9A-F]{2})\/([0-9A-F]{2}) V (\d+) D (\d+) SE (\d+)@(\d+) E (\d+)\/(\d+)(?: ([0-9A-F]{8}))? CN (\d+)(?: ([0-9A-F]{8}))? S ([0-9A-F]{8}) F (\d+)\/(\d+)\b/i.exec(c1 || "");
