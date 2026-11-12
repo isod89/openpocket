@@ -208,11 +208,57 @@ BT_STUB(int, user_client_search_profile_start)
 /* test build 23: the LE controller's BLE 5 command handler (hci_ll.c calls it for the LE 5 commands; its member is left out, as the
  * BLE image stands it in: ble/ble_stubs.c) */
 BT_STUB(int, le_controller_handler_for_ble5)
+/* test build 24: the rest of what the LE members call and no linked member or firmware file defines (their bitcode's symbols,
+ * checked on a computer against firmware/bt/members.txt and the firmware's own objects), stood in as the BLE image does
+ * (ble/ble_stubs.c). The library's linker stops at the first one (build 23: the handler above, 24: le_receive_test_handle):
+ * the bt_cfg.c constants folded into the members (tools/jlfold.py) leave most of them unreachable, these cost a few bytes */
+/* btctrler: hci_ll_cmds.c (the LE commands' table, the radio test mode) */
+BT_STUB(int, hci_add_cmd_handler)
+BT_STUB(int, le_enhanced_receiver_test_handle)
+BT_STUB(int, le_enhanced_transmitter_test_handle)
+BT_STUB(int, le_receive_test_handle)
+BT_STUB(int, le_test_end_handle)
+BT_STUB(int, le_transmitter_test_handle)
+/* btctrler: ll_events.c, ll_init.c, ll_slave.c, ll_adv.c, ll_multiple_phys.c, le_low_power.c, link_layer.c (the master role,
+ * extended advertising, Wi-Fi detection, TWS, low power: none of them used by a peripheral with legacy advertising) */
+BT_STUB(int, dut_hci_emit_le_meta_event)
+BT_STUB(int, master_rx_conn_post_handler)
+BT_STUB(int, conn_master_rx_post_handler)
+BT_STUB(int, ll_exit_ext_legacy_adv_status)
+BT_STUB(int, ll_ext_legacy_adv_scan_req_received)
+BT_STUB(int, ll_ext_handle_malloc)
+BT_STUB(int, ll_ext_rx_post_process)
+BT_STUB(int, ll_update_ch_done_wfdet_callback)
+BT_STUB(int, ll_wifi_detect_ext)
+BT_STUB(int, ll_wifi_detect_init)
+BT_STUB(int, ll_wifi_detect_probe_process)
+BT_STUB(int, __slave_ll_send_vendor_wifi_detect_req)
+BT_STUB(int, __slave_vendor_wifi_detect_done)
+BT_STUB(int, low_power_on)
+BT_STUB(int, power_is_poweroff_post)
+BT_STUB(int, tws_link_ble_slave_conn_establish_handler)
+BT_STUB(int, tws_link_ble_slave_conn_establish_probe_handler)
+BT_STUB(int, tws_link_get_ble_role_slave)
+BT_STUB(int, tws_phone_ble_link_connection)
+BT_STUB(int, tws_phone_ble_link_disconnection)
+/* btstack: att_send.c, att_db.c, sm.c (the GATT client side, never used by a server) */
+BT_STUB(int, gatt_client_read_long_value_of_characteristic_using_value_handle)
+BT_STUB(int, gatt_client_read_value_of_characteristic_using_value_handle)
+BT_STUB(int, gatt_client_request_can_send_now_event)
+BT_STUB(int, gatt_client_sync_mtu)
+BT_STUB(int, gatt_client_write_value_of_characteristic_extend)
+BT_STUB(int, gatt_client_write_value_of_characteristic_without_response)
+BT_STUB(int, user_client_gatt_event)
+BT_STUB(int, hci_le_set_own_address_type)
+/* ccm: aes.c, ccm_memory.c (the AES unit's lock: a no-op, as in the BLE image) */
+void aes_hw_lock(void) {}
+void aes_hw_unlock(void) {}
 
 /* data of the members left out (zero; sizes as the library's own objects, 32-bit) */
 uint8_t PSM_L2CAP_OBEX[4] __attribute__((aligned(4)));
 uint8_t fast_search_data[4] __attribute__((aligned(4)));
 /* le_param: test build 23, the LE controller's own (link_layer.c and the ll_* members, linked for BLE MIDI) */
+uint8_t ext_le_param[64] __attribute__((aligned(4)));          /* (test build 24: ll_multiple_phys.c's, as ble/ble_stubs.c) */
 uint8_t prbs9_table1[511] __attribute__((aligned(4)));
 uint8_t tws_conn[176] __attribute__((aligned(4)));
 uint8_t tws_link[80] __attribute__((aligned(4)));
