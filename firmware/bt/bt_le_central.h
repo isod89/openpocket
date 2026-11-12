@@ -19,25 +19,48 @@ static const uint8_t LE_UUID_MIDI_CHR[16] = {0xF3, 0x6B, 0x10, 0x9D, 0x66, 0xF2,
 /* ---- the advertisements: the host's GAP_EVENT_ADVERTISING_REPORT (0xE2, hci_vendor.c le_handle_advertisement_report):
  * [2] event type (0 connectable, 1 directed, 2 scannable, 3 not connectable, 4 scan response), [3] address type, [4..9] the
  * address as HCI gives it, [10] RSSI (dBm), [11] the data's length, [12..] the data (31 bytes at most). The footswitch is the
- * address that has shown, in its advertising data or its scan response (two reports), the BLE MIDI service UUID and a name
- * containing one of LE_CEN_NAMES, has advertised as connectable, and is heard at LE_CEN_RSSI or more. Once one has been linked
- * and subscribed, only that address is taken again (until power-off): another player's controller on stage is never taken */
+ * address that has shown, in its advertising data or its scan response (two reports), a name containing one of LE_CEN_NAMES,
+ * has advertised as connectable, and is heard at LE_CEN_RSSI or more. Test build 33: the BLE MIDI service UUID is no longer
+ * needed (the regular Chocolate in its "Manufacturer" mode, CubeSuite, advertised the name and not the UUID: test build 32
+ * heard 134 reports and took none); after the connection the ATT client looks for the MIDI service, and an address without
+ * it is not taken again this boot (le_cen_skip). Once one has been linked and subscribed, only that address is taken again
+ * (until power-off): another player's controller on stage is never taken */
 static const char *const LE_CEN_NAMES[] = {   /* (upper case, compared without case) */
     "FOOTCTRL",                               /* the regular Chocolate's name in its quick guide and in players' reports */
     "CHOCOLATE",                              /* ("M-VAVE Chocolate" in another of its manuals) */
 };
 #define LE_CEN_NAMES_N (sizeof LE_CEN_NAMES / sizeof LE_CEN_NAMES[0])
 #ifndef LE_CEN_RSSI
-#define LE_CEN_RSSI (-80)
+#define LE_CEN_RSSI (-85)         /* (test build 33: -85; up to 32: -80) */
 #endif
 #define LE_CEN_SEEN 6u
+#define LE_CEN_SKIP 4u
 enum { LE_SEEN_MIDI = 1, LE_SEEN_NAME = 2, LE_SEEN_CONN = 4 };
 typedef struct { uint8_t addr[6], type, flags; int8_t rssi; uint32_t ms; } le_seen_t;
 typedef struct {
     le_seen_t seen[LE_CEN_SEEN];  /* the addresses heard lately, what each has shown */
     uint8_t addr[6], type, known; /* the footswitch linked and subscribed (known: until power-off) */
     uint32_t reports, matches;    /* (the log's counts) */
+    /* test build 33: the filter's view, for the log; and the addresses that had no MIDI service */
+    uint32_t name_n, uuid_n, conn_n;          /* reports showing a footswitch's name, the MIDI UUID; connectable reports */
+    int8_t best, last_rssi;                   /* the best RSSI of a name-matched address; the last one's RSSI */
+    uint8_t best_set, last_flags;             /* (best set); what the last name-matched address has shown (LE_SEEN_*) */
+    uint8_t skip[LE_CEN_SKIP][6];             /* connected to, no MIDI service: not taken again this boot */
+    uint32_t skip_n;
 } le_cen_scan_t;
+static int le_cen_skipped(const le_cen_scan_t *s, const uint8_t *addr)
+{
+    uint32_t i;
+    for (i = 0; i < LE_CEN_SKIP && i < s->skip_n; i++) if (!memcmp(s->skip[i], addr, 6)) return 1;
+    return 0;
+}
+static void le_cen_skip(le_cen_scan_t *s, const uint8_t *addr)   /* (the oldest goes when four are kept) */
+{
+    if (le_cen_skipped(s, addr)) return;
+    memcpy(s->skip[s->skip_n % LE_CEN_SKIP], addr, 6);
+    s->skip_n++;
+    if (s->known && !memcmp(s->addr, addr, 6)) s->known = 0;   /* (the footswitch changed: any may be found again) */
+}
 
 static int le_cen_name_has(const uint8_t *v, uint32_t n, const char *w)   /* w (upper case) inside v, without case */
 {
@@ -79,6 +102,10 @@ static int le_cen_report(le_cen_scan_t *s, const uint8_t *p, uint32_t n, uint32_
     s->reports++;
     dn = p[11] < n - 12u ? p[11] : n - 12u;
     f = le_cen_ad(p + 12, dn) | (p[2] <= 1u ? LE_SEEN_CONN : 0u);
+    if (f & LE_SEEN_NAME) s->name_n++;
+    if (f & LE_SEEN_MIDI) s->uuid_n++;
+    if (f & LE_SEEN_CONN) s->conn_n++;
+    if (le_cen_skipped(s, p + 4)) return 0;             /* (test build 33: no MIDI service there, this boot) */
     if (s->known) {                                     /* the footswitch already linked once: its address only */
         if (memcmp(p + 4, s->addr, 6) || !(f & LE_SEEN_CONN)) return 0;
         *type = s->type; memcpy(addr, s->addr, 6);
@@ -96,7 +123,11 @@ static int le_cen_report(le_cen_scan_t *s, const uint8_t *p, uint32_t n, uint32_
     e->rssi = (int8_t)p[10];
     e->ms = ms ? ms : 1u;
     if (p[2] <= 1u) e->type = p[3];                     /* (the advertiser's own address type: its connectable reports') */
-    if ((e->flags & 7u) != 7u || e->rssi < LE_CEN_RSSI) return 0;
+    if (e->flags & LE_SEEN_NAME) {                      /* (test build 33: the log's view of the name-matched) */
+        if (!s->best_set || e->rssi > s->best) { s->best = e->rssi; s->best_set = 1; }
+        s->last_flags = e->flags; s->last_rssi = e->rssi;
+    }
+    if ((e->flags & (LE_SEEN_NAME | LE_SEEN_CONN)) != (LE_SEEN_NAME | LE_SEEN_CONN) || e->rssi < LE_CEN_RSSI) return 0;
     *type = e->type; memcpy(addr, e->addr, 6);
     s->matches++;
     return 1;
@@ -115,6 +146,7 @@ typedef struct {
     uint8_t busy;                 /* a request is out, its response awaited (the driver sets it once it has sent req) */
     uint8_t pair;                 /* pairing asked (once a link) */
     uint8_t err;                  /* the last ATT error code, or why it failed (0xF0 + the step) */
+    uint8_t fail_st;              /* (test build 33) the step it failed at */
     uint16_t next, end;           /* the range still to read */
     uint16_t val, ccc;            /* the MIDI characteristic's value and client configuration handles (0: not found) */
     uint8_t req[8], req_n;        /* the request to send (req_n 0: none) */
@@ -139,7 +171,19 @@ static void attc_start(attc_t *c, uint32_t val, uint32_t ccc)
     if (val && ccc) attc_ask_sub(c);
     else { c->next = 1; attc_ask_svc(c); }
 }
-static uint32_t attc_fail(attc_t *c, uint32_t why) { c->err = (uint8_t)why; c->st = ATTC_FAIL; c->req_n = 0; c->busy = 0; return ATTC_R_FAIL; }
+static uint32_t attc_fail(attc_t *c, uint32_t why)
+{
+    c->err = (uint8_t)why; c->fail_st = c->st; c->st = ATTC_FAIL; c->req_n = 0; c->busy = 0;
+    return ATTC_R_FAIL;
+}
+/* test build 33: a failure that means "no BLE MIDI here": its service, characteristic or client configuration not found (an
+ * Attribute Not Found error, or the range read to its end), not a refusal for security (05, 0F, 0C, 08 after pairing) */
+static int attc_not_midi(const attc_t *c)
+{
+    const uint32_t e = c->err;
+    if (c->st != ATTC_FAIL || e == 0x05u || e == 0x0Fu || e == 0x0Cu || e == 0x08u) return 0;
+    return c->fail_st == ATTC_SVC || c->fail_st == ATTC_CHR || c->fail_st == ATTC_DSC;
+}
 /* the range goes on after h, or the step has found nothing */
 static uint32_t attc_go_on(attc_t *c, uint32_t h, void (*ask)(attc_t *))
 {

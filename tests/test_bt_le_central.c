@@ -147,8 +147,10 @@ int main(void)
     ok(run(&c, 20) == ATTC_R_READY && c.val == 8 && c.ccc == 9, "client: a vendor characteristic before MIDI's in its service (layout 2)");
     table(3); attc_start(&c, 0, 0);
     ok(run(&c, 20) == ATTC_R_FAIL && c.err == 0xF0 + ATTC_SVC && !writes, "client: no MIDI service: fails, writes nothing");
+    ok(attc_not_midi(&c) && c.fail_st == ATTC_SVC, "client: no MIDI service: no BLE MIDI there (test build 33: skipped)");
     table(4); attc_start(&c, 0, 0);
     ok(run(&c, 20) == ATTC_R_FAIL && c.err == 0xF0 + ATTC_DSC && !writes, "client: no CCC before the next characteristic: fails, writes nothing");
+    ok(attc_not_midi(&c), "client: no CCC: no usable BLE MIDI either");
     table(0); need_enc = 1; attc_start(&c, 0, 0);
     ok(run(&c, 20) == ATTC_R_READY && enc && c.pair && ccc_val == 1 && writes == 2, "client: encryption asked: pairing once, the same write again, then on");
     table(0); need_enc = 1; attc_start(&c, 0, 0);
@@ -156,6 +158,17 @@ int main(void)
         uint8_t q[8], r[32]; uint32_t res = ATTC_R_NONE, rn;
         for (int i = 0; i < 20 && c.req_n && res != ATTC_R_FAIL; i++) { memcpy(q, c.req, c.req_n); rn = serve(q, c.req_n, r); c.req_n = 0; c.busy = 1; res = attc_rx(&c, r, rn); }
         ok(res == ATTC_R_FAIL && c.err == 0x0F, "client: still refused after pairing: fails");
+        ok(!attc_not_midi(&c), "client: a refusal for security is not \"no BLE MIDI\": not skipped");
+    }
+    {   /* (test build 33) the service search itself refused for security, after pairing: not skipped either */
+        uint8_t e5[5] = {0x01, 0x10, 0x01, 0x00, 0x05};
+        uint32_t r1, r2;
+        attc_start(&c, 0, 0); c.busy = 1; c.req_n = 0;
+        r1 = attc_rx(&c, e5, 5);
+        c.busy = 1; c.req_n = 0;
+        r2 = attc_rx(&c, e5, 5);
+        ok(r1 == ATTC_R_PAIR && r2 == ATTC_R_FAIL && c.fail_st == ATTC_SVC && !attc_not_midi(&c),
+           "client: services refused for security twice: fails at the service step, not \"no BLE MIDI\"");
     }
     table(0); attc_start(&c, 14, 15);
     ok(c.st == ATTC_SUB && run(&c, 3) == ATTC_R_READY && writes == 1, "client: the same footswitch again: straight to the notifications, one write");
@@ -226,6 +239,48 @@ int main(void)
         for (uint32_t k = 0; k < 9; k++) { uint8_t ad[6] = {(uint8_t)k, 7, 7, 7, 7, 7}; n = REPORT(0, 0, ad, adv, 21, -40); le_cen_report(&s, ev, n, 100 + k, &t, a); }
         n = REPORT(4, 0, (const uint8_t *)"\x08\x07\x07\x07\x07\x07", rsp, 11, -40);
         ok(le_cen_report(&s, ev, n, 200, &t, a) && a[0] == 8, "scan: nine advertisers, six kept: the latest are, the oldest go");
+    }
+    {   /* test build 33: the filter without the MIDI UUID, its view for the log, and the addresses skipped */
+        le_cen_scan_t s;
+        uint8_t t = 9, a[6], ev[64], fl[3] = {2, 0x01, 0x06}, rsp[16], uu[21];
+        static const uint8_t A1[6] = {1, 2, 3, 4, 5, 6}, A2[6] = {7, 7, 7, 7, 7, 7}, A3[6] = {3, 3, 3, 3, 3, 3};
+        uint32_t n;
+        #define REP(et, ad, data, dn, rssi) (ev[0] = 0xE2, ev[1] = (uint8_t)(10 + (dn)), ev[2] = (et), ev[3] = 0, memcpy(ev + 4, (ad), 6), \
+                                             ev[10] = (uint8_t)(rssi), ev[11] = (uint8_t)(dn), memcpy(ev + 12, (data), (dn)), (uint32_t)(12 + (dn)))
+        memset(&s, 0, sizeof s);
+        rsp[0] = 9; rsp[1] = 0x09; memcpy(rsp + 2, "FootCtrl", 8);
+        n = REP(0, A1, fl, 3, -70); le_cen_report(&s, ev, n, 10, &t, a);
+        n = REP(4, A1, rsp, 10, -71);
+        ok(le_cen_report(&s, ev, n, 20, &t, a) && !memcmp(a, A1, 6), "scan: FootCtrl without the MIDI UUID (Manufacturer mode), connectable: taken");
+        ok(s.name_n == 1 && s.uuid_n == 0 && s.conn_n == 1 && s.best_set && s.best == -71 && s.last_flags == 6 && s.last_rssi == -71,
+           "scan: the log's view: one name, no UUID, one connectable report, best -71, last flags 6 at -71");
+        memset(&s, 0, sizeof s);
+        n = REP(0, A2, fl, 3, -86); le_cen_report(&s, ev, n, 10, &t, a);
+        n = REP(4, A2, rsp, 10, -86);
+        ok(!le_cen_report(&s, ev, n, 20, &t, a) && s.best == -86 && s.last_flags == 6, "scan: at -86 dBm, below the floor: not taken, but seen");
+        n = REP(4, A2, rsp, 10, -85);
+        ok(le_cen_report(&s, ev, n, 30, &t, a), "scan: at -85 dBm: taken");
+        memset(&s, 0, sizeof s);
+        n = REP(4, A3, rsp, 10, -60); le_cen_report(&s, ev, n, 10, &t, a);
+        ok(!le_cen_report(&s, ev, n, 20, &t, a) && s.last_flags == 2, "scan: the name only in scan responses, never connectable: not taken (flags 2)");
+        uu[0] = 17; uu[1] = 0x07; memcpy(uu + 2, LE_UUID_MIDI_SVC, 16); uu[18] = 2; uu[19] = 0x01; uu[20] = 0x06;
+        n = REP(0, A3, uu, 21, -60);
+        ok(le_cen_report(&s, ev, n, 30, &t, a) && s.uuid_n == 1 && s.last_flags == 7, "scan: the same address connectable with the UUID: taken (flags 7)");
+        memset(&s, 0, sizeof s);
+        le_cen_skip(&s, A1);
+        n = REP(0, A1, fl, 3, -50); le_cen_report(&s, ev, n, 10, &t, a);
+        n = REP(4, A1, rsp, 10, -50);
+        ok(!le_cen_report(&s, ev, n, 20, &t, a) && s.skip_n == 1 && s.name_n == 1, "scan: an address skipped (no BLE MIDI there): never taken, still counted");
+        n = REP(0, A2, fl, 3, -50); le_cen_report(&s, ev, n, 30, &t, a);
+        n = REP(4, A2, rsp, 10, -50);
+        ok(le_cen_report(&s, ev, n, 40, &t, a) && !memcmp(a, A2, 6), "scan: another FootCtrl: taken");
+        le_cen_skip(&s, A1);
+        ok(s.skip_n == 1, "scan: the same address skipped twice counts once");
+        s.known = 1; memcpy(s.addr, A2, 6);
+        le_cen_skip(&s, A2);
+        ok(!s.known && s.skip_n == 2 && le_cen_skipped(&s, A2), "scan: the known footswitch skipped: no longer the only one taken");
+        for (uint32_t k = 0; k < 4; k++) { uint8_t ad[6] = {9, 9, 9, 9, 9, (uint8_t)k}; le_cen_skip(&s, ad); }
+        ok(s.skip_n == 6 && !le_cen_skipped(&s, A1) && !le_cen_skipped(&s, A2), "scan: four kept: the oldest skipped addresses come back");
     }
     printf("\n%s\n", failed ? "BLE central tests FAILED" : "all BLE central tests passed");
     return failed ? 1 : 0;

@@ -911,6 +911,19 @@ sent, the error responses (count, then the last one's request opcode, handle and
 (Exchange MTU), and the last four request > answer opcodes, oldest first (`10>11` read by group type answered, `08>01` read by
 type answered with an error, `0A>0B` a read). With the central role off the LE line ends after `CEN KEY` and the `HW` word.
 
+Test build 33 also changes the footswitch's side, after test build 32's log (`RH135 RAW135 ... R134 M0`: the scanner, alone,
+heard 134 reports and none passed the filter, the Chocolate in CubeSuite's "Manufacturer" mode, `CU` on its display; and an
+iPhone's link died by supervision timeout after 1 s, `D08@49526/1044`, with the scanner resumed beside it):
+
+- **No scanning while a phone's LE link is up** (`bt_le_links.h le_links_want_scan`): the footswitch first, then the phone.
+- **The filter without the MIDI UUID**: a name containing `FOOTCTRL` or `CHOCOLATE`, connectable, heard at -85 dBm or more
+  (`LE_CEN_RSSI`, -80 up to 32). After the connection the client looks for the BLE MIDI service; an address without it (no
+  service, characteristic or client configuration; not a refusal for security) is not taken again this boot (`SK` counts
+  them, four kept).
+- **Why `M` stays 0**, in the LE line after `M`: `NM` reports showing a footswitch's name, `UU` reports with the MIDI UUID,
+  `CN` connectable reports, `B` the best RSSI of a name-matched address, `LF flags/rssi` the last name-matched address (flags 1
+  the UUID, 2 the name, 4 connectable: 6 or 7 is taken), `SK` the addresses skipped.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

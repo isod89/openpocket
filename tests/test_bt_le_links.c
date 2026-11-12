@@ -64,8 +64,8 @@ int main(void)
        "central role: a phone connects: both links up, no advertising");
     ok(ended(&s, 0x61, 2) == 1 && asked == 2 && s.adv && !le_links_want_scan(&s), "central role: the phone goes: advertising again, the footswitch stays");
     ok(ended(&s, 0x60, 1) == 0 && le_links_want_scan(&s) && asked == 2, "central role: the footswitch goes: scanning again (advertising already on)");
-    ok(made_as(&s, 0x62, 12, 1, LE_ROLE_PERIPH) == 0 && !s.adv && !le_links_want_adv(&s) && le_links_want_scan(&s) && asked == 2,
-       "central role: a phone first: its link and scanning, no advertising for a second phone");
+    ok(made_as(&s, 0x62, 12, 1, LE_ROLE_PERIPH) == 0 && !s.adv && !le_links_want_adv(&s) && !le_links_want_scan(&s) && asked == 2,
+       "central role: a phone first: its link alone, no scanning (test build 33), no advertising for a second phone");
     ok(made_as(&s, 0x63, 24, 1, LE_ROLE_CENTRAL) == 1 && le_links_count(&s, LE_ROLE_CENTRAL) == 1 && le_links_count(&s, LE_ROLE_PERIPH) == 1,
        "central role: then the footswitch: one link of each role");
     s.cen = 0;

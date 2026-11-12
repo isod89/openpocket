@@ -78,8 +78,13 @@ static int le_links_want_adv(const le_links_t *s)
 {
     return !s->adv && (s->cen ? le_links_count(s, LE_ROLE_PERIPH) < LE_LINKS - 1u : le_links_up(s) < LE_LINKS);
 }
-/* test build 28: scanning for the footswitch is wanted: the central role is on and its link is not up */
-static int le_links_want_scan(const le_links_t *s) { return s->cen && !le_links_count(s, LE_ROLE_CENTRAL); }
+/* test build 28: scanning for the footswitch is wanted: the central role is on and its link is not up. Test build 33: and no
+ * phone's link either: in test build 32 an iPhone's link died by supervision timeout (D08, after 1 s) with the scanner resumed
+ * beside it. The order is the footswitch first, then the phone */
+static int le_links_want_scan(const le_links_t *s)
+{
+    return s->cen && !le_links_count(s, LE_ROLE_CENTRAL) && !le_links_count(s, LE_ROLE_PERIPH);
+}
 
 /* test build 28: the LE side's watchdog (bt_le_midi.c bt_le_watch, from the main loop). irqs is the LE baseband's interrupts
  * counted so far, on_air whether something should be on air (advertising, scanning or a link). 1 when they have not moved for

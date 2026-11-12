@@ -305,6 +305,9 @@ static void le_cen_poll(uint32_t now)
         le_cen_st = LE_CEN_SCAN;
         le_cen_ms = le_cen_kick = now;
         le_raw_kick = le_raw;
+    } else if (le_cen_st == LE_CEN_SCAN && !le_links_want_scan(&le_lk)) {
+        le_scan_on(0);                                         /* (test build 33: a phone's link came: no scanner beside it) */
+        le_cen_rest(now);
     } else if (le_cen_st == LE_CEN_SCAN && le_adv_held && now - le_cen_ms >= LE_ALONE_SCAN_MS) {
         le_scan_on(0);                                         /* (test build 31: advertising's turn) */
         le_cen_rest(now);
@@ -401,6 +404,8 @@ static void le_att_client(uint8_t type, uint16_t con, uint8_t *p, uint16_t n)
         le_cen_val = le_ac.val; le_cen_ccc = le_ac.ccc;
     } else if (r == ATTC_R_FAIL) {
         le_cen_val = le_cen_ccc = 0;
+        if (attc_not_midi(&le_ac)) le_cen_skip(&le_cs, le_cen_param.addr);   /* (test build 33: no BLE MIDI there: not taken
+                                                                 * again this boot, SK in the log) */
         le_cen_drop(con);
     }
 }
@@ -616,6 +621,11 @@ static char *le_hw_text(char *o)
     o = ble__put(o, " IE "); o = bt__hex(o, *(volatile uint32_t *)0x28030u & 0xFFu, 2);
     o = ble__put(o, " BB "); return bt__hex(o, *(volatile uint32_t *)0x28038u & 0xFFu, 2);
 }
+static char *le_dec_s(char *o, int32_t v)                      /* (a signed number: an RSSI) */
+{
+    if (v < 0) { *o++ = '-'; v = -v; }
+    return bt__dec(o, (uint32_t)v);
+}
 /* test build 28: the last LE link's end, "D08@31500": its reason (08 supervision timeout, 13 the central ended it, 16 the pedal
  * did, 3E it never came up) and when (ms since power-on, as SE and RC) */
 static char *le_drop_text(char *o)
@@ -715,6 +725,15 @@ void bt_le_line(char *out)
     o = le_hw_text(o);
     o = ble__put(o, " R"); o = bt__dec(o, le_cs.reports);
     o = ble__put(o, " M"); o = bt__dec(o, le_cs.matches);
+    /* test build 33: why M stays 0: reports showing a footswitch's name (NM), the MIDI UUID (UU), connectable ones (CN); the best
+     * RSSI of a name-matched address (B); the last one's flags (1 MIDI UUID, 2 name, 4 connectable: 6 is enough) and RSSI (LF);
+     * the addresses connected to that had no BLE MIDI (SK) */
+    o = ble__put(o, " NM"); o = bt__dec(o, le_cs.name_n);
+    o = ble__put(o, " UU"); o = bt__dec(o, le_cs.uuid_n);
+    o = ble__put(o, " CN"); o = bt__dec(o, le_cs.conn_n);
+    if (le_cs.best_set) { o = ble__put(o, " B"); o = le_dec_s(o, le_cs.best); }
+    if (le_cs.last_flags) { o = ble__put(o, " LF"); o = bt__dec(o, le_cs.last_flags); *o++ = '/'; o = le_dec_s(o, le_cs.last_rssi); }
+    if (le_cs.skip_n) { o = ble__put(o, " SK"); o = bt__dec(o, le_cs.skip_n); }
     o = ble__put(o, " T"); o = bt__dec(o, le_cen_tries);
     o = ble__put(o, " K"); o = bt__dec(o, le_cen_links);
     o = ble__put(o, " S"); o = bt__dec(o, le_cen_subs);
