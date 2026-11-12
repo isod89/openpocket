@@ -217,6 +217,16 @@ ok(parseBle("ADVERTISING?").state === "unknown", "a line this tool does not know
     show(r, null, (x) => out.push(x));
     ok(r.le === le && out.some((x) => x === `le         ${le}`), "build 28's LE line: kept and shown as the le row");
     ok(diagFields(lines()).le === undefined && diagFields(lines("TRACE 1 2 3")).le === undefined, "no LE line (up to build 27), or another line there: no le row");
+    // test build 33's twelfth line, the central role for the footswitch (until build 32 the LE line's end)
+    const le33 = "LE 2 L3 W134 P1 A4/0 C24 P12 AT 14/13 M185/23 10>11 08>09 08>01 0A>0B IRQ 812/97 ED 12/340 N0/1";
+    const cen = "CEN LINK T2 K2 S2 F0 MIDI 41 CL5/00 @A1B2C3D4E5F6 R310 M2 NM40 UU40 CN40 B-60 LF7/-62 RH320 RAW320 SO3 HW2 0:2/2 1:6/0 IE 03 BB 00";
+    const lines12 = (l12) => [...lines(le33), ...(l12 === undefined ? [] : [l12])];
+    const out12 = [], r12 = { time: "", level: "full", info, ...diagFields(lines12(cen)) };
+    show(r12, null, (x) => out12.push(x));
+    ok(r12.le === le33 && r12.cen === cen && out12.indexOf(`cen        ${cen}`) > 0 && out12.indexOf(`cen        ${cen}`) === out12.indexOf(`le         ${le33}`) + 1,
+       "build 33's twelfth line: kept and shown as the cen row, after the le row");
+    ok(diagFields(lines12()).cen === undefined && diagFields(lines12("TRACE 1 2 3")).cen === undefined && diagFields(lines(le)).cen === undefined,
+       "no twelfth line (up to build 32), or another line there: no cen row");
   }
 }
 b = parseBoot("UP 12345 SAFE 1 STAGE 7 RST 44 GUARD 1");

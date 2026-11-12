@@ -920,9 +920,20 @@ iPhone's link died by supervision timeout after 1 s, `D08@49526/1044`, with the 
   (`LE_CEN_RSSI`, -80 up to 32). After the connection the client looks for the BLE MIDI service; an address without it (no
   service, characteristic or client configuration; not a refusal for security) is not taken again this boot (`SK` counts
   them, four kept).
-- **Why `M` stays 0**, in the LE line after `M`: `NM` reports showing a footswitch's name, `UU` reports with the MIDI UUID,
+- **Why `M` stays 0**, on the `cen` line after `M`: `NM` reports showing a footswitch's name, `UU` reports with the MIDI UUID,
   `CN` connectable reports, `B` the best RSSI of a name-matched address, `LF flags/rssi` the last name-matched address (flags 1
   the UUID, 2 the name, 4 connectable: 6 or 7 is taken), `SK` the addresses skipped.
+- **The central role on a line of its own**, the DIAG's twelfth, `cen` in `make log` (`bt_le_cen_line`): with the GATT
+  server's and the filter's words the LE line passed the 223 characters a line holds, and its end, the footswitch's outcome,
+  was cut off. In order: the state (`AH` with it), the outcome (`T K S F MIDI PR CL @`), the filter's view (`R M NM UU CN B LF
+  SK`), the scanner's counts (`RH RAW SO`), the radio entities last (`HW ... IE BB`):
+  `CEN LINK T2 K2 S2 F0 MIDI 41 CL5/00 @A1B2C3D4E5F6 R310 M2 NM40 UU40 CN40 B-60 LF7/-62 RH320 RAW320 SO3 HW2 0:2/2 1:6/0 IE 03 BB 00`.
+
+A Mac's scan of the regular Chocolate in CubeSuite's "Manufacturer" mode, `CU` on its display (17 sightings): the name
+`FootCtrl`, connectable, -76 dBm, the 16-bit service `1812` (HID over GATT, as a Bluetooth keyboard), no MIDI UUID, and the
+manufacturer data `73696E636FD60508004A4C414953444B` ("sinco", then "JLAISDK": a JieLi chip as well). In that mode it is not a
+BLE MIDI device: test build 33 links it, finds no MIDI service and skips it (`SK1`) until the pedal is powered off. For the
+pedal the Chocolate goes in its MIDI mode, the one in which a phone lists it as "FootCtrl Bluetooth".
 
 ## Checked on a computer
 

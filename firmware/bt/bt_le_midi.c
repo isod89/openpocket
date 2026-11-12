@@ -662,20 +662,18 @@ static char *bt_le_ed_text(char *o)
     if (ed_bt_rx[0].drop + ed_bt_rx[1].drop) { o = ble__put(o, " SX"); o = bt__dec(o, ed_bt_rx[0].drop + ed_bt_rx[1].drop); }
     return o;
 }
-/* test build 28: the DIAG's eleventh line, the LE side in full:
- *   "LE 2 L3 W134 P1 A4/0 C24 P12 U2 24/0/200 D08@31500 IRQ 812/97 WD1@36000 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41
- *    @A1B2C3D4E5F6"
+/* test build 28: the DIAG's eleventh line, the LE side:
+ *   "LE 2 L3 W134 P1 A4/0 C24 P12 U2 24/0/200 D08@31500 IRQ 812/97 WD1@36000 ED 12/340 N0/1"
  * the links up and made, MIDI writes, Just Works pairings, advertising asked / its last answer, each link up as its role (C: the
  * pedal is its central, the footswitch; P: a phone or computer is) and interval (1.25 ms); when there are any, the connection
  * updates (U: count, the last one's interval, latency and supervision timeout, 10 ms), PHY updates (PHY: count, the last one's
  * transmit/receive PHY) and data length changes (DL: count, the last transmit octets), and the last link's end (D: reason and
- * ms since power-on); the LE baseband's interrupts, the watchdog's restarts (WD, bt_le_watch: count, the last one's time); the
- * editor's words; then the central role: OFF (DLY held at power-on: "CEN KEY"), SCAN, INIT (connecting), LINK, the advertising
- * reports read, the footswitch's matched, connections asked, links made, subscriptions, failures, MIDI notifications, pairings
- * asked (PR), the ATT client's step and last error (CL), and the footswitch's address once known */
+ * ms since power-on); the GATT server's words (AT, test build 33); the LE baseband's interrupts, the watchdog's restarts (WD,
+ * bt_le_watch: count, the last one's time); the editor's words. Up to test build 32 the central role's words followed here: with
+ * test build 33's GATT server and filter words the line passed the 223 characters a line holds (its end, the footswitch's
+ * outcome, cut off) and, with a phone's updates as well, the 300 of t: they have the twelfth line, bt_le_cen_line */
 void bt_le_line(char *out)
 {
-    static const char *const ST[5] = {"OFF", "SCAN", "INIT", "LINK", "PAUSE"};
     char t[300], *o = t;
     uint32_t i;
     o = ble__put(o, "LE "); o = bt__dec(o, le_links_up(&le_lk));
@@ -716,34 +714,51 @@ void bt_le_line(char *out)
     o = ble__put(o, " IRQ "); o = bt__dec(o, ble_cnt_irq_ev); *o++ = '/'; o = bt__dec(o, ble_cnt_irq_rx);
     if (le_wd_n) { o = ble__put(o, " WD"); o = bt__dec(o, le_wd_n); *o++ = '@'; o = bt__dec(o, le_wd_ms); }
     o = bt_le_ed_text(o);
-    o = ble__put(o, " CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st < 5u ? le_cen_st : 0u]);
-    if (!le_lk.cen) { o = le_hw_text(o); *o = 0; goto done; }  /* (test build 33: the role off, its counters are all 0) */
-    if (le_adv_held) o = ble__put(o, " AH");                   /* (test build 31: advertising held, the scanner alone) */
-    o = ble__put(o, " RH"); o = bt__dec(o, bt_le_rep_host);    /* (test build 31: reports posted to the host, bt_a2dp.c) */
-    o = ble__put(o, " RAW"); o = bt__dec(o, le_raw);
-    o = ble__put(o, " SO"); o = bt__dec(o, le_scan_opens);
-    o = le_hw_text(o);
-    o = ble__put(o, " R"); o = bt__dec(o, le_cs.reports);
-    o = ble__put(o, " M"); o = bt__dec(o, le_cs.matches);
-    /* test build 33: why M stays 0: reports showing a footswitch's name (NM), the MIDI UUID (UU), connectable ones (CN); the best
-     * RSSI of a name-matched address (B); the last one's flags (1 MIDI UUID, 2 name, 4 connectable: 6 is enough) and RSSI (LF);
-     * the addresses connected to that had no BLE MIDI (SK) */
-    o = ble__put(o, " NM"); o = bt__dec(o, le_cs.name_n);
-    o = ble__put(o, " UU"); o = bt__dec(o, le_cs.uuid_n);
-    o = ble__put(o, " CN"); o = bt__dec(o, le_cs.conn_n);
-    if (le_cs.best_set) { o = ble__put(o, " B"); o = le_dec_s(o, le_cs.best); }
-    if (le_cs.last_flags) { o = ble__put(o, " LF"); o = bt__dec(o, le_cs.last_flags); *o++ = '/'; o = le_dec_s(o, le_cs.last_rssi); }
-    if (le_cs.skip_n) { o = ble__put(o, " SK"); o = bt__dec(o, le_cs.skip_n); }
-    o = ble__put(o, " T"); o = bt__dec(o, le_cen_tries);
-    o = ble__put(o, " K"); o = bt__dec(o, le_cen_links);
-    o = ble__put(o, " S"); o = bt__dec(o, le_cen_subs);
-    o = ble__put(o, " F"); o = bt__dec(o, le_cen_fails);
-    o = ble__put(o, " MIDI "); o = bt__dec(o, le_cen_midi);
-    if (le_cen_pairs) { o = ble__put(o, " PR"); o = bt__dec(o, le_cen_pairs); }
-    if (le_cen_st == LE_CEN_LINK || le_ac.err) { o = ble__put(o, " CL"); o = bt__dec(o, le_ac.st); *o++ = '/'; o = ble__hex(o, le_ac.err); }
-    if (le_cs.known) { o = ble__put(o, " @"); for (i = 6; i--;) o = bt__hex(o, le_cs.addr[i], 2); }
     *o = 0;
-done:
+    for (i = 0; i < 223u && t[i]; i++) out[i] = t[i];
+    out[i] = 0;
+}
+/* test build 33: the DIAG's twelfth line, the central role for the footswitch (up to test build 32 the LE line's end):
+ *   "CEN LINK T2 K2 S2 F0 MIDI 41 CL5/00 @A1B2C3D4E5F6 R310 M2 NM40 UU40 CN40 B-60 LF7/-62 RH320 RAW320 SO3 HW2 0:2/2 1:6/0 IE 03
+ *    BB 00"
+ * its state: OFF (DLY held at power-on: "CEN KEY"), SCAN (AH: advertising held, the scanner alone, test build 31), INIT
+ * (connecting), LINK, PAUSE; what came of it, first: connections asked, links made, subscriptions, failures, MIDI notifications,
+ * pairings asked (PR), the ATT client's step and last error (CL), the footswitch's address once known; then the filter's view:
+ * the advertising reports read, the footswitch's matched, reports showing a footswitch's name (NM), the MIDI UUID (UU),
+ * connectable ones (CN), the best RSSI of a name-matched address (B), the last one's flags (1 MIDI UUID, 2 name, 4 connectable: 6
+ * is enough) and RSSI (LF), the addresses connected to that had no BLE MIDI (SK); then the scanner's: reports posted to the host
+ * (RH, test build 31, bt_a2dp.c), read (RAW), the scanner opened again (SO); the LE radio entities last (le_hw_text), the first
+ * words cut off should a line pass 223 characters. With the role off, "CEN KEY" and the radio entities */
+void bt_le_cen_line(char *out)
+{
+    static const char *const ST[5] = {"OFF", "SCAN", "INIT", "LINK", "PAUSE"};
+    char t[300], *o = t;
+    uint32_t i;
+    o = ble__put(o, "CEN "); o = ble__put(o, !le_lk.cen ? (le_cen_off ? "KEY" : "OFF") : ST[le_cen_st < 5u ? le_cen_st : 0u]);
+    if (le_lk.cen) {
+        if (le_adv_held) o = ble__put(o, " AH");
+        o = ble__put(o, " T"); o = bt__dec(o, le_cen_tries);
+        o = ble__put(o, " K"); o = bt__dec(o, le_cen_links);
+        o = ble__put(o, " S"); o = bt__dec(o, le_cen_subs);
+        o = ble__put(o, " F"); o = bt__dec(o, le_cen_fails);
+        o = ble__put(o, " MIDI "); o = bt__dec(o, le_cen_midi);
+        if (le_cen_pairs) { o = ble__put(o, " PR"); o = bt__dec(o, le_cen_pairs); }
+        if (le_cen_st == LE_CEN_LINK || le_ac.err) { o = ble__put(o, " CL"); o = bt__dec(o, le_ac.st); *o++ = '/'; o = ble__hex(o, le_ac.err); }
+        if (le_cs.known) { o = ble__put(o, " @"); for (i = 6; i--;) o = bt__hex(o, le_cs.addr[i], 2); }
+        o = ble__put(o, " R"); o = bt__dec(o, le_cs.reports);
+        o = ble__put(o, " M"); o = bt__dec(o, le_cs.matches);
+        o = ble__put(o, " NM"); o = bt__dec(o, le_cs.name_n);
+        o = ble__put(o, " UU"); o = bt__dec(o, le_cs.uuid_n);
+        o = ble__put(o, " CN"); o = bt__dec(o, le_cs.conn_n);
+        if (le_cs.best_set) { o = ble__put(o, " B"); o = le_dec_s(o, le_cs.best); }
+        if (le_cs.last_flags) { o = ble__put(o, " LF"); o = bt__dec(o, le_cs.last_flags); *o++ = '/'; o = le_dec_s(o, le_cs.last_rssi); }
+        if (le_cs.skip_n) { o = ble__put(o, " SK"); o = bt__dec(o, le_cs.skip_n); }
+        o = ble__put(o, " RH"); o = bt__dec(o, bt_le_rep_host);
+        o = ble__put(o, " RAW"); o = bt__dec(o, le_raw);
+        o = ble__put(o, " SO"); o = bt__dec(o, le_scan_opens);
+    }
+    o = le_hw_text(o);
+    *o = 0;
     for (i = 0; i < 223u && t[i]; i++) out[i] = t[i];
     out[i] = 0;
 }

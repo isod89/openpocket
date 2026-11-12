@@ -18,7 +18,7 @@
 #endif
 #define FELUCCA_ID "FM-1_900"
 /* the Bluetooth audio test build (docs/BT-AUDIO-TEST.md): its boot text and its id for the second core's bar (app_main) */
-#define BT_TEST_BUILD 32
+#define BT_TEST_BUILD 33
 #define BT_STR_(x) #x
 #define BT_STR(x) BT_STR_(x)
 #define BT_TEST_BUILD_TEXT BT_STR(BT_TEST_BUILD)
@@ -671,11 +671,12 @@ static void ir_changed(uint32_t s)   /* v38: a user IR was written or erased: th
 #if OP_BLE_TEST             /* the log channel (firmware/ble/ble_diag.h): only this image answers DIAG, the normal firmware does not change */
 #define ED_STATS 8u         /* PING also gives the Bluetooth heap's and tasks' lowest free bytes */
 #if OP_BT_AUDIO
-#define ED_DIAG_LINES 11u   /* (the Bluetooth audio image: the HCI conversation, the music's FIFO, the interrupts' times
+#define ED_DIAG_LINES 12u   /* (the Bluetooth audio image: the HCI conversation, the music's FIFO, the interrupts' times
                              * against the audio's, the second core, test build 19 its registers at a fault and its revivals,
-                             * bt/bt_a2dp.c; test build 28 the LE links, the editor and the central role, bt/bt_le_midi.c;
-                             * tools/log.mjs reads them by position) */
-#define ED_OUT_BYTES 2529u  /* (its eleven lines of up to 223 characters: 11 x 225 and the reply's head; px_editor.h's is 1,024) */
+                             * bt/bt_a2dp.c; test build 28 the LE links and the editor, test build 33 the central role on a
+                             * line of its own, bt/bt_le_midi.c; tools/log.mjs reads them by position) */
+#define ED_OUT_BYTES 2754u  /* (its twelve lines of up to 223 characters: 12 x 225 and the reply's head; px_editor.h's is 1,024;
+                             * test build 33: 2,529 for eleven) */
 #else
 #define ED_DIAG_LINES 5u
 #endif
@@ -733,7 +734,8 @@ static void ed_diag_line(uint32_t i, char *out)
     else if (i == 7u) bt_isr_line(out);
     else if (i == 8u) bt_c1_line(out);
     else if (i == 9u) bt_c1r_line(out);   /* (test build 19) */
-    else if (i == 10u) bt_le_line(out);   /* (test build 28: the LE links, the editor, the central role) */
+    else if (i == 10u) bt_le_line(out);   /* (test build 28: the LE links, the editor; up to 32 the central role too) */
+    else if (i == 11u) bt_le_cen_line(out);   /* (test build 33: the central role for the footswitch) */
 #endif
     else ble_trace_line(out);
 }
