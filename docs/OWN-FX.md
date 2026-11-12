@@ -1,0 +1,163 @@
+# LOW OCTAVE and SYN PAD: the Bluetooth audio image's own effects
+
+Two effects that only the **Bluetooth audio image** has ([BT-AUDIO-TEST.md](BT-AUDIO-TEST.md), `make bt`). The release
+firmware, the BLE MIDI image and the simulator do not have them: their engine is v42's, unchanged.
+
+| Block | Model | Settings | What it does |
+|---|---|---|---|
+| PIT | LOW OCTAVE (the 6th) | RANGE, OCT -1, DRY, GROWL, COMP | an octave under the low notes only, the rest of the guitar untouched |
+| SYN | PAD (the 12th) | ATTACK, RELEASE, TONE, MOTION, MIX | the chord you catch on the left footswitch, held as a smooth pad until the next one |
+
+Both come after their block's other models, so every preset keeps its meaning. A preset saved with one of them plays
+something else in the other images: there LOW OCTAVE becomes OCTAVER and PAD becomes ORGAN, with the same knob values (and a
+pedal running them refuses such a preset from the web editor). Over MIDI, the Control Change that picks PIT's model (54)
+divides 0-127 among 6 models in this image and 5 in the others, and SYN's (63) among 12 and 11, so a value stored in a
+controller may pick a different model in each image ([MIDI.md](MIDI.md)).
+
+The web editor shows both, with their settings in plain values: it reads the models from the pedal. It keeps each
+firmware's list under the version the pedal reports, so this image reports `v42 FX` (the editor's status line shows it),
+and the editor asks for its list instead of reusing the one of a v42 pedal it met before.
+
+## LOW OCTAVE
+
+An octave under the low notes, the rest of the guitar untouched, as the OC-3's and OC-5's POLY modes. RANGE shows the note
+where it stops: `A2` (20) the E string up to the 4th fret, `D3` (40) the E and A strings in open position, up to `G4` (100)
+(the table below). Of two notes below RANGE the lower one gets the octave, as a bass player would play the root of a power
+chord (clean: 96-99 % of the octave on it). RANGE at 0 is `LOWEST`, as on the OC-5: the octave of the lowest note of any
+chord, anywhere on the neck. OCT -1 at 50 plays the octave as loud as the note. DRY 100 leaves your signal exactly as it is
+(the block switched off gives the same samples). GROWL drives the octave alone through a soft clipper, as the OC-3's DRIVE
+mode, so that it carries on small speakers and a PA without subwoofers; at 0 the octave stays clean. COMP evens the
+octave's level, as a compressor in front of an octaver: at 100 a note 20 dB softer gets an octave only 2 dB softer, and the
+hum between notes is not raised.
+
+The octave comes about 14 ms after the note (the dry signal has no delay): it is made from the note's phase, turned half as
+fast, so nothing waits in a buffer; the time is the filters' that pick the note. The low band runs at 5.5 kHz. It splits by
+pitch, not by string: a note below RANGE gets the octave on whatever string you play it.
+
+Where the octave reaches on the neck, in standard tuning (a note right at the value shown gets it about 3 dB softer, a
+whole tone above about 12 dB softer: the edge is soft):
+
+| RANGE | Screen | Crossover | Gets the octave |
+|---:|---|---:|---|
+| 0 | `LOWEST` | 600 Hz | the lowest note of any chord, anywhere on the neck |
+| 1 | `D#2` | 80 Hz | the open low E (a little softer) |
+| 10 | `F#2` | 93 Hz | E 0-2 |
+| 20 | `A2` | 109 Hz | E 0-4 (the 5th fret and the open A softer) |
+| 25 | `A#2` | 118 Hz | E 0-6, A 0-1 |
+| 33 | `C3` | 135 Hz | E 0-8, A 0-3 |
+| 40 | `D3` | 151 Hz | E 0-10, A 0-5, the open D softer |
+| 50 | `F3` | 177 Hz | E 0-13, A 0-8, D 0-3 |
+| 60 | `G#3` | 209 Hz | E 0-16, A 0-11, D 0-6, G 0-1 |
+| 70 | `B3` | 246 Hz | E 0-18, A 0-13, D 0-8, G 0-3 |
+| 80 | `D4` | 289 Hz | E 0-21, A 0-16, D 0-11, G 0-6, B 0-2 |
+| 100 | `G4` | 400 Hz | E, A, D up to the 17th fret, G 0-12, B 0-8, e 0-3 |
+
+What the other settings show:
+
+| Setting | Screen |
+|---|---|
+| OCT -1 | the octave's level against the note: `OFF` at 0, `-6 DB` at 25, `0 DB` at 50, `+3 DB` at 70, `+6 DB` at 100 |
+| DRY | your signal's level: `OFF` at 0, `-6 DB` at 50, `0 DB` at 100 (untouched) |
+| GROWL | the drive into its clipper: `OFF` at 0, `+11 DB` at 10, `+19 DB` at 33, `+22 DB` at 50, `+28 DB` at 100 |
+| COMP | the compression ratio: `OFF` at 0, `1.4:1` at 33, `1.8:1` at 50, `3.6:1` at 80, `10:1` at 100 (a note 20 dB softer gets an octave 2 dB softer) |
+
+Settings to start from. They depend on what reproduces the bass and on the pickup, so tune them by ear (they were worked out
+on paper and with recordings, not yet on a stage):
+
+| Situation | RANGE | OCT -1 | DRY | GROWL | COMP | Why |
+|---|---|---|---|---|---|---|
+| PA or amp with a subwoofer | `D3` (40) | `0 DB` (50) | `0 DB` (100) | `OFF` | `1.4:1` (33) | the octave's fundamental (41 Hz under a low E) comes out: keep it a clean sine |
+| No subwoofer: small PA, combo amp, stage monitor | `D3` (40) | `+3 DB` (70) | `0 DB` (100) | `+19 DB` (33) to `+22 DB` (50) | `1.8:1` (50) | 41 Hz barely leaves a 10-12" speaker: GROWL's harmonics (3, 5 times the octave) let the ear hear it |
+| Headphones, in-ear monitors | `D3` (40) | `0 DB` (50) | `0 DB` (100) | `OFF` | `1.4:1` (33) | they reproduce the sub; GROWL only for the sound |
+| Piezo pickup (acoustic) | `C3` (33) | `-2 DB` (40) | `0 DB` (100) | `OFF` | `2.7:1` (70) | a piezo booms in the lows and slaps hard: a lower RANGE keeps the boom out, more COMP evens the slaps |
+| Magnetic pickup (electric, or a soundhole pickup) | `D3` (40) to `F3` (50) | `0 DB` (50) | `0 DB` (100) | to taste | `1.6:1` (40) | an even low end: little COMP needed |
+| Bass line that moves up the neck under chords | `LOWEST` (0) | `0 DB` (50) | `0 DB` (100) | as above | as above | the octave follows the lowest note wherever it is |
+
+## SYN PAD
+
+A smooth chord held under your playing, for as long as you want. Strum a chord and press the **left footswitch** (or press
+it, then strum: it waits for the strum and skips the pick): the pad catches 0.37 s of the ringing chord and swells it in over
+ATTACK, then holds it, steady, while you play over it. Press again on the next chord: the pad crosses over to it over the
+same ATTACK. **Hold** the footswitch 0.7 s to let the pad fade out over RELEASE. Your guitar itself goes through untouched.
+The pad plays the chord as your guitar sounded it (it is not an oscillator): a clean or lightly driven tone in front of it
+gives the smoothest pad. It runs at 5.5 kHz in the synth block's own memory.
+
+**The footswitches.** While the preset has a PAD on, the left footswitch is the pad's and no longer steps back a preset
+(the right one still steps forward); a catch never changes the preset's settings or the page you are on. Both footswitches
+together still open the tuner, as in v42: left then right within 0.15 s opens it and lets the pad go; right then left is
+v42's (the step back, then the tuner). On SAVE, MIDI, MOVE, the tuner and the diagnostics the left footswitch does what it
+did before. With the PAD off, or another SYN model, the left footswitch is the previous preset, as always.
+
+**A MIDI footswitch** can catch the chord too: Control Change 64 (sustain) at 64 or more, with a PAD on in the preset; 0 to
+63 does nothing. It catches on every page, as the footswitch did on v40.
+
+| Setting | Screen | What it sets |
+|---|---|---|
+| ATTACK | `0.1 S` (0) to `6.0 S` (100); `1.0 S` at 40, `1.6 S` at 50, `3.0 S` at 70 | the swell, and the crossing into a new chord |
+| RELEASE | `0.2 S` (0) to `10 S` (100); `1.8 S` at 40, `2.7 S` at 50, `5.0 S` at 70 | the fade when the footswitch is held |
+| TONE | `300 HZ` (0) to `2400 HZ` (100); `690 HZ` at 40, `850 HZ` at 50, `1290 HZ` at 70 | dark to open |
+| MOTION | `OFF` (0) to `15 CT` (100); `3 CT` at 20, `6 CT` at 40, `8 CT` at 50 | still, to a slow chorus (the grains' detune) |
+| MIX | `OFF` (0), `-6 DB` (25), `0 DB` (50), `+3 DB` (70), `+6 DB` (100) | the pad's level; at `0 DB` about as loud as the chord |
+
+Settings to start from (worked out from what the settings do, not yet tried on a stage):
+
+| Situation | ATTACK | RELEASE | TONE | MOTION | MIX |
+|---|---|---|---|---|---|
+| A chord held under a solo | `1.6 S` (50) | `2.7 S` (50) | `850 HZ` (50) | `6 CT` (40) | `0 DB` (50) |
+| Slow swells, ambient | `3.0 S` (70) | `5.0 S` (70) | `690 HZ` (40) | `9 CT` (60) | `-3 DB` (35) |
+| Following the song's chords | `0.3 S` (20) | `1.1 S` (30) | `1290 HZ` (70) | `3 CT` (20) | `0 DB` (50) |
+
+## What they cost, and where it comes from
+
+The Bluetooth image had almost no memory left (test build 14: 40 bytes free in the engine's own RAM region, the POOL, and
+an estimated 1 to 4 KB in the RAM code window). The two effects are paid for inside that image only (`engine/px_dsp.h`
+`PX_OWN_FX`, set by `firmware/build.sh` under `OP_BT`):
+
+- **The same sound in less code.** The drive and delay code no model reaches is left out: the delay's generic loop (each
+  delay type has its own), TAPE's and SPACE ECHO's loop without flutter (at WOW 0 the flutter is 0 and stays still), and
+  the drive modes none of the four drives uses (and MUFF's buffer, 1 KB). Every existing model gives the same output, bit
+  for bit (`tests/ownfx_equiv.sh`, 5,460 runs).
+- **The delay ring 456 ticks shorter.** The effects' state (912 bytes) sits where the delay ring ended, so the engine keeps
+  its size and every other part of it its place. The longest delay is still 2.0 s (TIME 100): every delay plays as before.
+- Their hot code runs from RAM, like the rest of the audio path.
+
+Estimates from a stand-in compiler (CI's build prints the real figures: `hi RAM`, `pool tail`, `RAM`): against test build
+14, RAM code 3.3 to 4.1 KB less (the effects about +3.8 KB, the code left out about -7.1 KB) and the RAM code window's data
+832 bytes less, so the window has 4 to 5 KB more free; the flash image about the same (the RAM code is stored in it too;
+the flash code grows by about 3 KB); the POOL, the main RAM and NOINIT as before (40 bytes free in the POOL).
+
+## On the pedal
+
+Not measured yet: the CPU they take there, and the second core's stack. On a computer LOW OCTAVE costs less than POLY
+OCTAVE (its low band runs every 8th sample) and a held PAD about as much as SITAR, the lightest SYN model; a PAD's catch
+does its one-off work in a single block.
+
+- `node tools/op.mjs dsp` with LOW OCTAVE (`LOWEST`, GROWL 100, COMP 100) in front of a NAM preset, the music playing: `DSP`
+  and late blocks against the same preset without it.
+- With a PAD on a non-NAM preset, after a catch: the log's c1 line, `K` (the second core's stack, of 2,816 bytes).
+- Around a catch with a heavy NAM preset: `PK` and late blocks.
+
+## Checked on a computer
+
+- `tests/engine/lowoct.c` (18 checks, as the image builds the engine and with the host's defaults, also under ASan and
+  UBSan): a low E gets its octave (41.2 Hz, 100 % of the output on it), a high E none; of two notes below RANGE the lower
+  one's octave (E5 98 %, A5 99 %, E + A 96 %); `LOWEST`: a G chord high on the neck 98 % on the G's octave; the octave's
+  attack at most 15.6 ms after the note's; the x8 upsampling's images 76 dB under the octave; COMP 100: a note 20 dB softer
+  gives an octave 2.0 dB softer, hum stays at -103 dB; a 30 Hz rumble 9.6 dB under; GROWL 100: 32 % third harmonic, about
+  the same level; the knobs glide; the screen texts.
+- `tests/engine/pad.c` (15 checks, the same builds): a caught chord held within 2.2 dB over 10 s, at the chord's level at
+  MIX 50, on its own notes; ATTACK 1.6 S: half the level after 0.92 s; a second press crosses over; RELEASE 2.7 S: -18 dB
+  after 1.8 s; pressed before the strum: the ringing chord, not the pick; no clicks (largest step 0.017 against 0.138); four
+  chords in quick succession; MIX and TONE turned while held; a press made before PAD was chosen is forgotten.
+- Both effects give v40's output bit for bit (LOW OCTAVE 48 runs, PAD 24: settings, block sizes 64, 48, 16 and 1, knob
+  turns, catches, a stop).
+- `tests/ownfx_equiv.sh`: every existing model in this image's engine against the same engine without `PX_OWN_FX`, 5,460
+  runs bit for bit (every block x model x 8 settings, random chains, NAM chains through the two cores' pipeline, the 52
+  factory presets, every delay over a TIME x FEEDBACK x TONE x WOW grid, turned while playing and at the top for 6 s, every
+  drive over 625 knob settings).
+- `tests/uisim.c` built for this image: v42's 48 screens byte for byte, the PAD's 16 footswitch gestures above, every value
+  text within its box, both pages drawn whole. `tests/midiio.c`: CC 64.
+- The engine's tests built as the image builds it: 2,551 configurations with no NaN, 243 long runs (the same 7 delays at
+  FDBK 100 hold on as without the effects), the two cores' pipeline.
+- Without `PX_OWN_FX`, `engine/px_dsp.c` and `firmware/openpocket.c` preprocess to v42's text for the release, the BLE and
+  the Bluetooth flags, and the simulator's WebAssembly sources too: those images are unchanged.

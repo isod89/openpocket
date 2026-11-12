@@ -119,7 +119,13 @@ static void ed_handle(const uint8_t *a, uint32_t n)   /* a: the args, after the 
     ed_begin(cmd);
     switch (cmd) {
     case ED_INFO:
+#if PX_OWN_FX   /* the Bluetooth audio image's own models (LOW OCTAVE, PAD): a version text of its own, "v42 FX", because the web
+                 * editor keeps each firmware's catalogue under its identity and version (docs/pxedit.js) and would otherwise
+                 * show a v42 pedal's, without them */
+        ed_b(ED_PROTO); ed_str(OP_VERSION " FX", 15); ed_str(FELUCCA_ID_PTR, 27);
+#else
         ed_b(ED_PROTO); ed_str(OP_VERSION, 15); ed_str(FELUCCA_ID_PTR, 27);
+#endif
         ed_b(PX_NBLK); ed_b(PX_NPAR); ed_b(ST_NSLOT); ed_b(ED_NAME_MAX);
         break;
     case ED_CAT_BLOCK:

@@ -21,6 +21,9 @@ It is a test image, its own build target (`make bt`). The normal firmware and th
   **before** the output's soft knee. The phone's own volume sets its level. It keeps playing in bypass and in the tuner.
 - **In since test build 14:** the pairing remembered after a power-off (a phone paired once connects again without being
   paired again), kept in two flash sectors of the pedal's own (below, "The pairing kept").
+- **Its own effects** ([OWN-FX.md](OWN-FX.md)): LOW OCTAVE, a 6th PITCH model (an octave under the low strings only), and
+  SYN PAD, a 12th SYN model (a chord caught on the left footswitch and held under you). Only this image has them; the
+  release's engine is unchanged.
 - **Not in:** Bluetooth MIDI (the BLE image's: there is not the room for both), stereo, play/pause from the pedal (AVRCP),
   a level setting on the pedal.
 
@@ -573,6 +576,33 @@ kept the pairing in RAM only for that boot (as builds 11 to 13); the next power-
    registers"). With the pairing kept, the third set's phone (its Bluetooth on and near) now connects during the start-up.
 6. The pairing kept: "How to test it" above.
 
+## Its own effects: LOW OCTAVE and SYN PAD
+
+On top of test build 14 the image has two effects of its own (their knobs, the PAD's footswitch and CC 64, settings to
+start from: [OWN-FX.md](OWN-FX.md)), built only here (`engine/px_dsp.h` `PX_OWN_FX`, which `firmware/build.sh` sets under
+`OP_BT`). Their room is paid for in this image: the drive and delay code no model reaches is left out (the same sound, bit
+for bit) and the delay ring is 456 ticks shorter (the longest delay is still 2.0 s). Every other model sounds as before.
+The web editor sees the image as `v42 FX`.
+
+What changes on the pedal:
+
+- PIT has a 6th model, LOW OCTAVE; SYN a 12th, PAD.
+- With a PAD on in the preset, the left footswitch catches the chord (it no longer steps back a preset there) and, held
+  0.7 s, fades it; both footswitches together still open the tuner. MIDI CC 64 at 64 or more catches the chord too.
+
+Before flashing, in CI's artifact: the `hi RAM`, `pool tail` and `RAM` lines of the build log (the RAM code window should
+have about 4 to 5 KB more free than test build 14; the pool tail 40 bytes left, as before), and `rv_block` in
+`listings/px_dsp.s`, which should read as build 14's apart from its labels' numbers (the effects' state keeps the reverb's
+fields where they were; in `linked.txt` its addresses move).
+
+What to check:
+
+1. LOW OCTAVE at `LOWEST`, GROWL and COMP at 100, in front of a NAM preset, the music playing: `node tools/op.mjs dsp`
+   against the same preset without it (late blocks, `BYP`).
+2. A PAD on a preset without NAM, after a catch: the c1 line's `K` (the second core's stack, of 2,816 bytes).
+3. Around a catch with a heavy NAM preset: `PK` and late blocks.
+4. By ear: the octave on the low strings only, the pad holding a chord steady, no clicks at a catch or a crossing.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate
@@ -613,5 +643,14 @@ kept the pairing in RAM only for that boot (as builds 11 to 13); the next power-
   never idles as `G 2` within 8 ms and a faulted core as `G 4`, and collects both (one core, nothing left queued, the next
   interrupt hands nothing over: before, it waited 8 ms and turned `G 4` into `G 2`); this image's callbacks' order fills an
   output-first block whose input comes up to 1,440 µs later and counts one at 1,460 µs in `OD`, with `OG` its time.
+  macros that compile to nothing and two leftovers of test build 11, the stall watch's exception to the second core's bar,
+  12 bytes, and the power-on key's record); `tools/jlfold.py fold` on the library's IR (the same 149 constants folded and 86
+  print helpers emptied as the probe in CI); v42's `tests/test_aorder.c` (the callbacks' order).
+- The image's own effects (tests/run_tests.sh, [OWN-FX.md](OWN-FX.md)): `tests/ownfx_equiv.sh`, every existing model with
+  `PX_OWN_FX` and without, 5,460 runs bit for bit; LOW OCTAVE (`tests/engine/lowoct.c`, 18 checks) and PAD
+  (`tests/engine/pad.c`, 15) as the image builds the engine and with the host's flags, also under ASan and UBSan, both
+  giving v40's output bit for bit; the PAD's footswitch against v42's tuner (`tests/uisim.c` built with `PX_OWN_FX`, 16
+  gestures, v42's 48 screens unchanged) and CC 64 (`tests/midiio.c`); without `PX_OWN_FX` the engine and `openpocket.c`
+  preprocess to v42's text for the release, BLE and Bluetooth flags.
 - The member set was chosen from the archives' symbol tables: what it references and does not define is supplied
   (`bt_glue.c`, `bt_cfg.c`) or stood in for (`bt_stubs.c`), with the library's own types.
