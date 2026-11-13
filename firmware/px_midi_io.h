@@ -5,7 +5,9 @@
  * midi_in_q (4-byte USB-MIDI event packets, with the millisecond they arrived) and sends what is put in midi_out_q.
  * SysEx never takes this road: it goes to the update code (ota.c) and the editor (px_editor.h) only.
  * The including file provides px_midi.h, usb.c's rings, PRESET, cur_preset, load_preset, master_vol, ui_mode / ui_item /
- * ui_nitems (ui.h), st_midi, st_usb and st_commit (px_store.h), and ms_now.
+ * ui_nitems (ui.h), st_midi, st_usb and st_commit (px_store.h), and ms_now; in the Bluetooth audio image (PX_OWN_FX) also
+ * ui_pad_on (ui.h) and PX_PAD_PRESS (openpocket.c), for CC 64; CC 116 is a tap of the delay's tempo; PX_EXP_SET (openpocket.c)
+ * for CC 117, the expression pedal.
  *
  * The ring must be emptied: usb.c leaves the host's USB packet unread (NAK) while the ring is nearly full, and the
  * editor's and installer's SysEx come in the same packets. Nothing drained it before this file.
@@ -25,15 +27,55 @@ static void midi_persist(void)                  /* the page's HOME: save the set
 
 #if OP_BLE_TEST
 /* what a Bluetooth write leaves here (px_midi_ble_write) goes through the same px_midi_in as USB. The writer is the Bluetooth
- * stack's task, which runs from the main loop (ble_poll), so nothing here races: a full ring only drops what does not fit. */
+ * stack's task, which runs from the main loop (ble_poll), so nothing here races: a full ring only drops what does not fit.
+ * With ED_BT (the Bluetooth audio image) the write's SysEx also goes to the web editor (px_editor.h ed_bt_write), which
+ * the including file has included before this one, kept for the LE link it came on (px_midi_ble_write_link: two links at once
+ * since test build 27). The musical messages of every link share one reader: a Chocolate's message starts with its timestamp
+ * and status, so it reads the same whatever another link left half done; only SysEx is kept between writes. */
 #include "px_ble_midi.h"
 #define BLE_MQ 32u
 static uint32_t ble_in_q[BLE_MQ], ble_in_w, ble_in_r;
 static px_blem_t ble_parse;
+#if ED_BT
+static void px_midi_ble_write_link(uint32_t link, const uint8_t *p, uint32_t n)   /* (link: the LE link it came on) */
+#else
 static void px_midi_ble_write(const uint8_t *p, uint32_t n)
+#endif
 {
     uint32_t pkt[BLE_MQ], got = px_blem_parse(&ble_parse, p, n, pkt, BLE_MQ), i;
     for (i = 0; i < got && ble_in_w - ble_in_r < BLE_MQ; i++) ble_in_q[ble_in_w++ % BLE_MQ] = pkt[i];
+#if ED_BT
+    ed_bt_write(link, p, n);   /* the Bluetooth audio image: the same write's SysEx, for the web editor (px_editor.h), kept for
+                                * its link: two links' writes may come in turns, the musical messages of both reach the pedal */
+#endif
+}
+#if ED_BT
+static void px_midi_ble_write(const uint8_t *p, uint32_t n) { px_midi_ble_write_link(0u, p, n); }   /* (the first link's) */
+#endif
+#endif
+
+#if PX_OWN_FX
+/* test build 24: tap tempo for the delay, from a controller's footswitch (the M-VAVE Chocolate over Bluetooth, or USB). CC 116
+ * at 64 and up is a tap (a footswitch's release, value 0, is not). Two taps 200 ms to 2 s apart set the delay's TIME to their
+ * interval, the nearest TIME step as MIDI clock does; from the third tap on, to the mean of the last three intervals. A pause
+ * of more than 2 s starts over. In this image TIME stops at 780 ms (REVERSE 390): a slower tap gives 780 */
+#define PXM_CC_TAP 116u
+#define PXM_CC_EXP 117u   /* test build 25: the expression pedal, 0..127 (engine/px_dsp.c px_exp: WHAMMY, AUTO WAH or volume) */
+static uint32_t tap_ms, tap_n, tap_iv[3];
+static void px_midi_tap(uint32_t ms, int *touched)
+{
+    const uint32_t d = ms - tap_ms;
+    uint32_t k, s = 0u, i;
+    int v;
+    if (!tap_n || d > 2000u) { tap_n = 1u; tap_ms = ms; return; }
+    if (d < 200u) return;                                       /* (a bounce, or a second message of one press) */
+    tap_ms = ms;
+    tap_iv[(tap_n - 1u) % 3u] = d;
+    tap_n++;
+    k = tap_n - 1u < 3u ? tap_n - 1u : 3u;
+    for (i = 0; i < k; i++) s += tap_iv[i];
+    v = px_dly_value_for_ms(PRESET.type[PX_B_DELAY], (float)s / (float)k);
+    if (PRESET.p[PX_B_DELAY][0] != v) { PRESET.p[PX_B_DELAY][0] = (uint8_t)v; *touched = 1; }
 }
 #endif
 
@@ -60,6 +102,15 @@ static void px_midi_in(uint32_t pkt, uint32_t ms, int free_ui, int *touched)
             if ((int)ui_item >= ui_nitems()) ui_item = 0;
             *touched = 1;
         }
+#if PX_OWN_FX
+    } else if (m.d1 == 64u) {                          /* CC 64 (a sustain pedal) at 64 and up: a SYN PAD catches the chord */
+        if (m.d2 >= 64u && ui_pad_on()) PX_PAD_PRESS();
+    } else if (m.d1 == PXM_CC_TAP) {                   /* CC 116 at 64 and up: a tap of the delay's tempo (test build 24) */
+        if (m.d2 >= 64u && free_ui) px_midi_tap(ms, touched);
+    } else if (m.d1 == PXM_CC_EXP) {                   /* CC 117: the expression pedal's position (test build 25). Not a
+                                                        * preset change: nothing to save, nothing redrawn, on every page */
+        PX_EXP_SET(m.d2);
+#endif
     } else {
         uint32_t mv = master_vol;
         int mset = 0;

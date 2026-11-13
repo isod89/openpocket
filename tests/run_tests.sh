@@ -7,11 +7,20 @@
 #  - NAM hand routines: their start-up check and dispatch with C stand-ins under the sanitizers; post5's assembly text
 #    against the C post through a model of its instructions (tests/test_post5.py)
 #  - (not run here, it needs the git history: tests/equiv.sh REF, this tree's engine against commit REF's, bit for bit)
+#  - the Bluetooth audio image's engine (engine/px_dsp.h PX_OWN_FX): every existing model bit for bit as without it
+#    (tests/ownfx_equiv.sh, 5,460 runs); the engine tests built with that image's flags; its own effects (docs/OWN-FX.md):
+#    LOW OCTAVE (PIT), low notes get their octave, high ones and the dry signal stay as they are (tests/engine/lowoct.c);
+#    SYN PAD, a caught chord held steady, swell, crossing to a new chord, fade, stomp-then-strum, no clicks (tests/engine/pad.c);
+#    the expression pedal (test build 25): volume before the delay with its hold, wah sweep, whammy to SHIFT (tests/engine/exp.c)
 #  - changes without clicks (v38): knob changes glide to exactly where a full set goes, blocks on / off fade, fewer clicks
 #  - USER IR (v38): the partitioned FFT convolution against the direct FIR, slots, names
 #  - wet lanes (v39): the delay through its lane as inline bit for bit, the reverb's tail lag frames later, the pipeline
 #  - NAM: engine/px_nam.c against tools/nam_a2.py with every factory model (needs numpy)
-#  - MIDI: the musical-MIDI code (firmware/px_midi.h) on a PC: decoder, CC map, messages sent, settings byte, clock
+#  - MIDI: the musical-MIDI code (firmware/px_midi.h) on a PC: decoder, CC map, messages sent, settings byte, clock; BLE MIDI
+#    (px_ble_midi.h): the Chocolate's writes, and (test build 27) the editor's SysEx kept across writes and its replies cut
+#    into notifications, 3,000 of them back whole through a reference reader
+#  - the Bluetooth audio image's controls (PX_OWN_FX): SYN PAD's left footswitch and the tuner on both (tests/uisim.c), CC 64
+#    (tests/midiio.c), the two effects' pages drawn whole
 #  - preset store: save / reload / power cut at every step of a save (firmware/px_store.h on a simulated flash)
 #  - the audio callbacks' order (v42, firmware/px_aorder.h): the I2S driver calls the output's callback before the
 #    input's when its interrupt enters late; every output block must still be the sound of that interrupt's guitar block
@@ -28,7 +37,12 @@
 #  - pedal skin: its input mapping (tools/sim/pedal-input.js)
 #  - sound: the WebAssembly engine on known signals, against the native build; the bundled loops against their manifest
 #  - Chocolate Plus files: tools/chocolate/fcp.py against a made-up export
-#  - editor: docs/pxedit.js against the simulated pedal (tests/edsim.c), PING's figures, and the editor's own logic
+#  - Bluetooth audio (docs/BT-AUDIO-TEST.md): the ring and its rate (tests/test_bt_ring.c), the radio pools' allocator
+#    (test_bt_lbuf.c), the compiler runtime it adds (test_bt_rt.c), SBC through Android's encoder and decoder (test_bt_sbc.c), the third-party sources (test_bt_sources.mjs),
+#    the pairing store in the flash with power cuts at every step (test_bt_ps.c, test build 14)
+#    and the Bluetooth images' task message queues (test_ble_taskq.c: messages of the library's sizes, whole, in order)
+#  - editor: docs/pxedit.js against the simulated pedal (tests/edsim.c), also over BLE MIDI as the Bluetooth audio image
+#    talks to it (test build 27), PING's figures, and the editor's own logic
 #    (docs/pxmidi.js: the Control Change map against docs/MIDI.md, learned controls; docs/pxlib.js: the model library)
 #  - pages: docs/index.html, docs/editor.html and the pedal skin in headless Chromium (needs Playwright: npm i playwright
 #    && npx playwright install chromium)
@@ -55,6 +69,23 @@ if python3 tests/test_post5.py "r6 = [sp+40]" "r6 = [sp+44]" > /dev/null 2>&1; t
 $CC -O2 -Iengine -Ifirmware tests/engine/change_test.c firmware/px_math.c -lm -o build/change_test && build/change_test | tail -1
 $CC -O2 -Iengine -Ifirmware tests/engine/ir_test.c firmware/px_math.c -lm -o build/ir_test && build/ir_test | tail -1
 $CC -O2 -Iengine tests/engine/wet_test.c engine/px_dsp.c firmware/px_math.c -lm -o build/wet_test && build/wet_test | tail -1
+echo "== the Bluetooth audio image's engine (PX_OWN_FX: the same sound in less code)"
+sh tests/ownfx_equiv.sh
+FX="-DPX_OWN_FX=1 -DPXN_LEAN=1 -DPXN_HOT_RAM=0 -DPX_RUNS=0 -DPX_LOOP_GUARD=1 -DPX_DLY_SHORT=1"   # (firmware/build.sh's DSPDEF under OP_BT)
+$CC -O2 $FX -Iengine tests/engine/sweep2.c engine/px_dsp.c firmware/px_math.c -lm -o build/sweep_fx && build/sweep_fx | tail -1
+$CC -O2 $FX -Iengine tests/engine/pipe_test.c engine/px_dsp.c firmware/px_math.c -lm -o build/pipe_fx && build/pipe_fx | tail -1
+$CC -O2 $FX -Iengine tests/engine/long.c engine/px_dsp.c firmware/px_math.c -lm -o build/long_fx && build/long_fx "LOW OCTAVE" PAD | tail -1
+echo "== the Bluetooth audio image's own effects: LOW OCTAVE (PIT) and SYN PAD (docs/OWN-FX.md)"
+for D in "$FX" "-DPX_OWN_FX=1"; do                     # as the image builds the engine, and with the host's defaults (PX_RUNS 1)
+  for t in lowoct pad exp nam_keep; do                  # (exp: test build 25's expression pedal; nam_keep: test build 28's
+                                                        # factory models left out, PXN_KEEP below)
+    $CC -O2 $D -Iengine tests/engine/$t.c engine/px_dsp.c firmware/px_math.c -lm -o build/$t
+    build/$t > build/$t.log || { cat build/$t.log; exit 1; }; tail -1 build/$t.log
+  done
+done
+# test build 28: the Bluetooth audio image's 4 factory NAM models (firmware/build.sh PXN_KEEP), the others playing a kept one
+$CC -O2 $FX -DPXN_KEEP=0x93u -Iengine tests/engine/nam_keep.c engine/px_dsp.c firmware/px_math.c -lm -o build/nam_keep_bt
+build/nam_keep_bt > build/nam_keep_bt.log || { cat build/nam_keep_bt.log; exit 1; }; tail -1 build/nam_keep_bt.log
 echo "== NAM (fixed point against the float reference, every factory model)"
 $CC -O2 -DPXN_EMUVEC -Iengine tests/engine/nam_test.c engine/px_nam.c -o build/nam_test
 if python3 -c "import numpy" 2>/dev/null; then mkdir -p build/nam; python3 tests/test_nam.py build/nam_test > build/nam/log.txt || { cat build/nam/log.txt; exit 1; }; tail -1 build/nam/log.txt; else echo "(numpy not installed: NAM comparison skipped)"; fi
@@ -76,12 +107,22 @@ echo "== screen (every page fully drawn)"
 mkdir -p build/ui && $CC -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/uisim tests/uisim.c engine/px_dsp.c firmware/px_math.c -lm
 build/uisim build/ui > build/ui/log.txt
 if grep -q "never drawn" build/ui/log.txt; then grep "never drawn" build/ui/log.txt; echo "screen: FAIL"; exit 1; else echo "screen: $(wc -l < build/ui/log.txt) pages ok (build/ui/*.ppm)"; fi
+# the Bluetooth audio image's screen (PX_OWN_FX): the same, then SYN PAD's left footswitch against v42's both-footswitch
+# tuner, and the two effects' pages
+mkdir -p build/ui_fx && $CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -Iengine -Ifirmware -o build/uisim_fx tests/uisim.c engine/px_dsp.c firmware/px_math.c -lm
+build/uisim_fx build/ui_fx > build/ui_fx/log.txt || { tail -3 build/ui_fx/log.txt; echo "screen (PX_OWN_FX): FAIL"; exit 1; }
+if grep -q "never drawn" build/ui_fx/log.txt; then grep "never drawn" build/ui_fx/log.txt; echo "screen (PX_OWN_FX): FAIL"; exit 1; else echo "screen (PX_OWN_FX): $(wc -l < build/ui_fx/log.txt) pages ok, SYN PAD's footswitch ok (build/ui_fx/*.ppm)"; fi
 echo "== MIDI (firmware/px_midi.h: decoder, Control Change map, what the pedal sends, settings, clock)"
 for t in midisim midiio; do
   $CC -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/$t tests/$t.c engine/px_dsp.c firmware/px_math.c -lm
   build/$t > build/$t.log || { grep FAIL build/$t.log; exit 1; }
   tail -1 build/$t.log
 done
+# (the Bluetooth audio image's: CC 64 catches a SYN PAD's chord, CC 116 taps the delay's tempo, TIME stops at 780 ms; test
+# build 27, a write's SysEx also goes to the web editor)
+$CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -DPX_DLY_SHORT=1 -DED_BT=1 -Iengine -Ifirmware -o build/midiio_fx tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm
+build/midiio_fx > build/midiio_fx.log || { grep FAIL build/midiio_fx.log; exit 1; }
+tail -1 build/midiio_fx.log
 echo "== LED map and the lights driver (LED_PROBE build, issue #8)"
 mkdir -p build/lp && $CC -O1 -Wall -Wno-unused-function -Ifirmware -o build/lpsim tests/lpsim.c && build/lpsim build/lp
 echo "== button lights in the normal firmware (px_lights.h, issue #8)"
@@ -102,9 +143,28 @@ echo "== hosted simulator (tools/sim.mjs)"
 node tests/test_sim.mjs
 echo "== Bluetooth test image sources (third_party/jieli-ble)"
 node tests/test_ble_sources.mjs
+echo "== Bluetooth audio image: its sources (third_party/jieli-bt, third_party/sbc-android), the ring, the radio pools, SBC, the pairings"
+node tests/test_bt_sources.mjs
+$CC -O1 -Wall -Wno-unused-function -o build/test_bt_ring tests/test_bt_ring.c -lm && build/test_bt_ring
+$CC -O1 -Wall -Wno-unused-function -o build/test_bt_lbuf tests/test_bt_lbuf.c && build/test_bt_lbuf
+$CC -O1 -Wall -Wno-unused-function -o build/test_bt_ps tests/test_bt_ps.c && build/test_bt_ps
+$CC -O2 -Wall -Wno-unused-function -o build/test_bt_rt tests/test_bt_rt.c -lm && build/test_bt_rt
+SBC=third_party/sbc-android
+$CC -O1 -w -I$SBC/decoder/include -I$SBC/encoder/include -Ifirmware/bt -o build/test_bt_sbc tests/test_bt_sbc.c firmware/bt/bt_sbc.c \
+    $SBC/decoder/srce/*.c $SBC/encoder/srce/*.c -lm && build/test_bt_sbc
 echo "== Bluetooth test image status codes"
 $CC -O1 -Wall -Wno-unused-function -o build/ble_status tests/test_ble_status.c && build/ble_status
 $CC -O1 -Wall -Wno-unused-function -o build/ble_vm tests/test_ble_vm.c && build/ble_vm
+$CC -O1 -Wall -Wno-unused-function -I tests/ble_shim -I firmware/ble -o build/test_ble_taskq tests/test_ble_taskq.c && build/test_ble_taskq
+$CC -O1 -Wall -Wno-unused-function -Wno-unused-variable -DOP_BT_AUDIO=1 -I tests/ble_shim -I firmware/ble -I firmware/bt -o build/test_bt_taskq tests/test_ble_taskq.c && build/test_bt_taskq
+# (test build 37: the usr timeouts run from ble_poll instead of the 10 kHz tick, ble_os.c BT_USR_IN_TICK 0)
+$CC -O1 -Wall -Wno-unused-function -Wno-unused-variable -DOP_BT_AUDIO=1 -DBT_USR_IN_TICK=0 -I tests/ble_shim -I firmware/ble -I firmware/bt -o build/test_bt_taskq0 tests/test_ble_taskq.c && build/test_bt_taskq0
+# (test build 27: the two LE links, which handle is which link and when to advertise)
+$CC -O1 -Wall -Wno-unused-function -I firmware/bt -o build/test_bt_le_links tests/test_bt_le_links.c
+build/test_bt_le_links > build/le_links.log || { grep FAIL build/le_links.log; exit 1; }; tail -1 build/le_links.log
+# (test build 28: the pedal as a footswitch's central, the advertisement filter and the ATT client against a simulated GATT server)
+$CC -O1 -Wall -Wno-unused-function -I firmware/bt -o build/test_bt_le_central tests/test_bt_le_central.c
+build/test_bt_le_central > build/le_central.log || { grep FAIL build/le_central.log; exit 1; }; tail -1 build/le_central.log
 echo "== Chocolate Plus files (tools/chocolate/fcp.py)"
 python3 tests/test_fcp.py
 echo "== pedal skin input"
@@ -114,6 +174,12 @@ node tests/test_audio.mjs
 echo "== editor"
 $CC -O1 -Wall -Wno-unused-function -o build/edsim tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 node tests/test_editor.mjs
+# the Bluetooth audio image's editor over BLE MIDI (test build 27, px_editor.h ED_BT): the same tests, the SysEx in BLE MIDI
+# writes and notifications (tests/test_editor.mjs EDSIM_BLE), on two LE links as the image (the Chocolate's writes between the
+# editor's, a second editor on the other link, one link lost)
+$CC -O1 -Wall -Wno-unused-function -DED_BT=1 -DED_BT_LINKS=2u -o build/edsim_bt tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
+EDSIM_BLE=1 node tests/test_editor.mjs > build/editor_ble.log || { grep "FAIL" build/editor_ble.log; exit 1; }
+grep "^BLE:" build/editor_ble.log; tail -1 build/editor_ble.log
 node tests/test_ping.mjs
 node tests/test_editor_logic.mjs
 echo "== log channel (tools/op.mjs log)"

@@ -8,28 +8,116 @@
 <style>
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0d0f0e;color:#ececea;
   font:15px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px;box-sizing:border-box}
-p{max-width:34em;text-align:center}
+main{inline-size:min(34em,100%);display:grid;gap:12px;justify-items:center}
+p{margin:0;text-align:center}
 a{color:#ffa600}
+h1{margin:0;font-size:1.125rem;text-align:center}
+.dim{color:#a4a6a2}
+.err{color:#ff8a7a}
+.list{inline-size:100%;display:grid;gap:6px}
+.mrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid #2a2e2b;border-radius:8px}
+.mrow span{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+button,.btn{font:inherit;font-weight:700;min-block-size:44px;padding:0 16px;border-radius:8px;border:1px solid #3a3f3b;
+  background:#1c201d;color:#ececea;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+button.primary{background:#ffa600;border-color:#ffa600;color:#1a1200}
+button:disabled{opacity:.45;cursor:default}
+.row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
 </style>
 </head>
 <body>
-<p id="m">Back to the OpenPocket editor…</p>
+<main id="m" aria-live="polite">
+<p id="msg">Back to the OpenPocket editor…</p>
+</main>
 <script>
-// TONE3000's Select flow comes back here (redirect_uri): the answer goes to the editor that opened this window
-// (same origin only), which checks the state and finishes the sign-in. Nothing is kept here.
+// TONE3000's Select flow comes back here (redirect_uri). Opened as the editor's pop-up: the answer goes to the editor that
+// opened this window (same origin only), which checks the state and finishes the sign-in, and nothing is kept here.
+// Opened in the editor's own tab (a browser with no second window, pxt3k.js t3kSelectHere): the module below finishes.
 (function () {
   var q = new URLSearchParams(location.search), d = { t3k: 1 };
   ["code", "state", "tone_id", "canceled", "error", "error_description"].forEach(function (k) { if (q.get(k)) d[k] = q.get(k); });
+  history.replaceState(null, "", location.pathname);
   if (window.opener && !window.opener.closed) {
     window.opener.postMessage(d, location.origin);
     setTimeout(function () { window.close(); }, 300);
-    document.getElementById("m").textContent = "Done: you can close this window.";
+    document.getElementById("msg").textContent = "Done: you can close this window.";
   } else {
-    document.getElementById("m").innerHTML = "This page only passes TONE3000's answer back to the editor. Open the " +
-      '<a href="editor.html#models">OpenPocket editor</a> and choose “Browse TONE3000” there.';
+    window.__t3kAnswer = d;
   }
-  history.replaceState(null, "", location.pathname);
 })();
+</script>
+<script type="module">
+// In the editor's tab: the answer checked against the request this tab kept (state, code verifier), the sign-in, the tone's
+// A2 captures (the one there is, or the ones chosen here) made ready for the pedal, and back to the editor with them. The
+// access token stays in this page's memory: it ends when the page goes back.
+import { t3kHere, t3kSignIn, t3kSignOut, t3kTone, t3kModels, t3kDownload, t3kSource, t3kNote } from "./pxt3k.js";
+import { namEntry, readDi } from "./pxnam.js";
+
+const box = document.getElementById("m");
+const el = (tag, attrs, ...kids) => { const e = document.createElement(tag); Object.assign(e, attrs || {}); e.append(...kids.filter((k) => k !== null && k !== undefined)); return e; };
+const show = (...kids) => box.replaceChildren(...kids);
+const line = (text, cls = "") => el("p", { className: cls, textContent: text });
+const b64 = (bytes) => { let s = ""; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
+
+const q = window.__t3kAnswer;
+if (q) here(q);
+
+async function here(q) {
+  const r = t3kHere(q);
+  if (!r) {
+    show(el("p", {}, "This page only passes TONE3000's answer back to the editor. Open the ",
+      el("a", { href: "editor.html#models", textContent: "OpenPocket editor" }), " and choose “Browse TONE3000” there."));
+    return;
+  }
+  const home = (note) => { t3kSignOut(); t3kNote(note); location.replace(r.back); };
+  const backBtn = (label, note = { error: "cancelled" }) => el("button", { type: "button", textContent: label, onclick: () => home(note) });
+  if (r.error) { show(line(r.error === "cancelled" ? "No tone chosen: back to the editor…" : r.error)); home({ error: r.error }); return; }
+  let tone = null;
+  const failed = (e) => show(el("h1", { textContent: "TONE3000" }), line(e.message.replace(/^./, (c) => c.toUpperCase()), "err"),
+    backBtn("Back to the editor", { error: e.message }));
+  async function get(list, buttons) {
+    for (const b of buttons) b.disabled = true;
+    try {
+      const di = readDi(await (await fetch("nam_di.wav")).arrayBuffer());
+      const captures = [];
+      for (const m of list) {
+        const name = m.name || tone.title || "the capture";
+        show(el("h1", { textContent: tone.title || "TONE3000" }), line(`Getting ${name}…`, "dim"));
+        const text = await t3kDownload(m);
+        show(el("h1", { textContent: tone.title || "TONE3000" }), line(`Measuring the level of ${name}…`, "dim"));
+        await new Promise((res) => setTimeout(res, 20));        // (the line shows before the work)
+        const made = namEntry(text, `${m.name || tone.title || "MODEL"}.nam`, di);
+        captures.push({ name: made.name, bytes: b64(made.bytes), detail: made.detail, source: t3kSource(tone, m) });
+      }
+      show(line(`Back to the editor with ${captures.map((c) => c.name).join(", ")}…`));
+      home({ captures });
+    } catch (e) { failed(e); }
+  }
+  try {
+    show(line("Signing in to TONE3000…", "dim"));
+    await t3kSignIn(r);
+    show(line("Reading the tone…", "dim"));
+    let models;
+    [tone, models] = await Promise.all([t3kTone(r.tone_id), t3kModels(r.tone_id)]);
+    if (!models.length) {
+      show(el("h1", { textContent: tone.title || "TONE3000" }), line("This tone has no A2 capture, and the pedal plays A2 only. Choose another tone.", "err"),
+        backBtn("Back to the editor", { error: "that tone has no A2 capture, and the pedal plays A2 only: choose another one" }));
+      return;
+    }
+    if (models.length === 1) { await get(models, []); return; }
+    const buttons = [];
+    const rows = models.map((m) => {
+      const b = el("button", { type: "button", className: "primary", textContent: "Get", ariaLabel: `Get ${m.name || "this capture"}`, onclick: () => get([m], buttons) });
+      buttons.push(b);
+      return el("div", { className: "mrow" }, el("span", { textContent: m.name || `Capture ${m.id}` }), b);
+    });
+    const all = el("button", { type: "button", textContent: `Get all ${models.length}`, onclick: () => get(models, buttons) });
+    const back = backBtn("Back without a capture");
+    buttons.push(all, back);
+    show(el("h1", { textContent: tone.title || "TONE3000" }),
+      line(`${models.length} A2 captures: the ones you get go into the editor's library, ready to send to the pedal.`, "dim"),
+      el("div", { className: "list", id: "t3kpick" }, ...rows), el("div", { className: "row" }, all, back));
+  } catch (e) { failed(e); }
+}
 </script>
 </body>
 </html>

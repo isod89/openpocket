@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // OpenPocket — the web editor's own logic, without a browser or a pedal: the Control Change map and the learned
 // controls (docs/pxmidi.js) against docs/MIDI.md, and the model library and slot arithmetic (docs/pxlib.js) against
-// the engine's rule (engine/px_dsp.c px_nam_model / px_nam_knob). Run by tests/run_tests.sh.
+// the engine's rule (engine/px_dsp.c px_nam_model / px_nam_knob); TONE3000's key by site and its same-tab bookkeeping
+// (docs/pxt3k.js), in a stand-in page address and session storage. Run by tests/run_tests.sh.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { webcrypto } from "node:crypto";
 import { ccParam, ccOn, ccToggle, ccType, ccTarget, toCc, fromCc, typeToCc, typeFromCc, decode, learn, resolve, action, cleanMappings, NBLK, NPAR } from "../docs/pxmidi.js";
 import { knobIndex, indexKnob, slotRef, presetSlot, retarget, usage, packedName, renamePacked, cleanSlotName, Library, pedalKey, planMove } from "../docs/pxlib.js";
 
@@ -147,4 +149,57 @@ await check("moving a slot's file: to an empty slot, two changing places, and wh
   assert.ok(planMove(0, 2, held, used).error, "nor change places with one it does not hold");
   assert.deepEqual(planMove(0, 0, held, used).writes, []);
 });
+// ---- TONE3000 (docs/pxt3k.js): the key by site, and what the editor's tab keeps for t3k.html when no second window opens ----
+{
+  if (!globalThis.crypto) globalThis.crypto = webcrypto;
+  const store = new Map();
+  globalThis.sessionStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); }, removeItem: (k) => { store.delete(k); } };
+  const at = (href) => { const u = new URL(href); globalThis.location = { href: u.href, origin: u.origin, pathname: u.pathname, assigned: null, assign(x) { this.assigned = x; } }; };
+  const FORK = "t3k_pub_dlDUT4gBuF5xAs0MpjZHnU7EeQ09DESn", EDITOR = "https://steponme82.github.io/openpocket/editor.html#models";
+  at(EDITOR);
+  const t = await import("../docs/pxt3k.js");
+  const ask = (o) => sessionStorage.setItem("openpocket-t3k", JSON.stringify({ state: "S1", verifier: "V1", client: FORK, back: EDITOR, at: Date.now(), ...o }));
+  await check("TONE3000: the fork's site uses its own key, every other site the project's", () => {
+    assert.equal(t.t3kClientFor("https://steponme82.github.io"), FORK);
+    for (const o of ["https://isod89.github.io", "http://127.0.0.1:8765", "http://localhost:8765", "https://steponme82.github.io.example.com"]) assert.equal(t.t3kClientFor(o), t.T3K_CLIENT_ID);
+    assert.equal(t.t3kRedirect(), "https://steponme82.github.io/openpocket/t3k.html", "the redirect registered for the fork's key");
+  });
+  await check("TONE3000 in this tab: the Select page with this site's key, the S256 of the verifier kept", async () => {
+    await t.t3kSelectHere(EDITOR);
+    const u = new URL(location.assigned), p = JSON.parse(sessionStorage.getItem("openpocket-t3k"));
+    assert.equal(u.origin + u.pathname, "https://www.tone3000.com/api/v1/oauth/authorize");
+    assert.equal(u.searchParams.get("client_id"), FORK);
+    assert.equal(u.searchParams.get("redirect_uri"), "https://steponme82.github.io/openpocket/t3k.html");
+    assert.equal(u.searchParams.get("prompt"), "select_tone");
+    assert.equal(u.searchParams.get("state"), p.state);
+    assert.equal(u.searchParams.get("code_challenge_method"), "S256");
+    const s256 = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(p.verifier))).toString("base64url");
+    assert.equal(u.searchParams.get("code_challenge"), s256);
+    assert.equal(p.client, FORK);
+    assert.equal(p.back, EDITOR);
+  });
+  await check("t3k.html in that tab: the answer checked against the request, which is used once", () => {
+    const p = JSON.parse(sessionStorage.getItem("openpocket-t3k"));
+    at("https://steponme82.github.io/openpocket/t3k.html");
+    assert.deepEqual(t.t3kHere({ code: "C", state: p.state, tone_id: "42" }), { code: "C", tone_id: "42", verifier: p.verifier, client: FORK, back: EDITOR });
+    assert.equal(sessionStorage.getItem("openpocket-t3k"), null);
+    assert.equal(t.t3kHere({ code: "C", state: p.state, tone_id: "42" }), null, "no request: the page was opened some other way");
+  });
+  await check("t3k.html: a wrong state, an old request, a cancel, no tone: nothing signed in, back to the editor", () => {
+    ask(); assert.match(t.t3kHere({ code: "C", state: "S2", tone_id: "42" }).error, /did not send/);
+    assert.equal(sessionStorage.getItem("openpocket-t3k"), null, "a wrong state uses the request up too");
+    ask({ at: Date.now() - 31 * 60000 }); assert.match(t.t3kHere({ code: "C", state: "S1", tone_id: "42" }).error, /old one/);
+    ask(); assert.equal(t.t3kHere({ state: "S1", error: "access_denied" }).error, "cancelled");
+    ask(); assert.equal(t.t3kHere({ code: "C", state: "S1", canceled: "true" }).error, "cancelled");
+    ask(); assert.equal(t.t3kHere({ state: "S1" }).error, "no tone was chosen");
+    ask(); assert.equal(t.t3kHere({ state: "S1", error: "server_error" }).error, "TONE3000: server_error");
+    ask({ back: "https://example.com/x" }); assert.equal(t.t3kHere({ code: "C", state: "S1", tone_id: "1" }).back, EDITOR, "back only to this site");
+    ask({ verifier: 7 }); assert.equal(t.t3kHere({ code: "C", state: "S1", tone_id: "1" }), null, "a damaged request is no request");
+  });
+  await check("t3k.html's note to the editor: read once", () => {
+    t.t3kNote({ captures: [{ name: "PLEXI", bytes: "AA==", detail: "", source: { from: "tone3000" } }] });
+    assert.equal(t.t3kNoteRead().captures[0].name, "PLEXI");
+    assert.equal(t.t3kNoteRead(), null);
+  });
+}
 console.log("editor logic test passed");

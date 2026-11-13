@@ -17,7 +17,8 @@
  *
  * Controls (ui_buttons, ui_turn and ui_action below: the main loop and the simulator both use them):
  * KNOB = select / adjust; PUSH = open / edit / confirm; HOME = back to PLAY, on PLAY the preset list (v42), hold 0.7 s =
- * tuner, held on = diagnostics; FOOTSWITCHES = next / previous preset, both together = tuner (v42);
+ * tuner, held on = diagnostics; FOOTSWITCHES = next / previous preset, both together = tuner (v42); in the Bluetooth audio
+ * image (PX_OWN_FX), with a SYN PAD on, the left one is the pad's: a press catches the chord, held 0.7 s it fades;
  * AMP CAB DLY REV MOD = that block's page (press again = on/off); FX = the next of DRV, SFX, SYN, PIT, CMP, GT, EQ in the
  * preset's chain order (v42). Hold PUSH = SAVE (into one of the 52 slots, in flash). Hold FX = MIDI.
  * Double-click PUSH on PLAY = MOVE the selected block: KNOB moves it along the chain, PUSH drops it, HOME puts it back.
@@ -596,7 +597,12 @@ static void save_confirm(void)
         if (rc) { b[7] = (char)('0' + (uint32_t)(-rc) % 10u); b[8] = 0; }
         ft_box(0, 186, 240, rc ? b : "SAVED", &FT_MD, rc ? RED : GRN, UI_BG, 1);
     }
+#ifdef UI_IDLE      /* test build 26, the Bluetooth audio image: the radio served while "SAVED" stays (openpocket.c: the music
+                     * stopped for the whole 0.7 s, and its queue overflowed) */
+    { const uint32_t t0 = UI_MS(); while (UI_MS() - t0 < 700u) { fm1_wdt_feed(); UI_IDLE(); } }
+#else
     for (int i = 0; i < 7; i++) { fm1_wdt_feed(); fm1_delay_ms(100); }
+#endif
     save_close();
 }
 /* ===================================================== MIDI page ======== */
@@ -703,6 +709,19 @@ static void ui_goto(uint32_t n)
     }
 }
 static int ui_stepped;                 /* the last footswitch's step (+1, -1; 0: none): both footswitches take it back */
+#if PX_OWN_FX
+/* SYN PAD (the Bluetooth audio image's own effects, PX_OWN_FX): with a PAD on in the preset the left footswitch is the
+ * pad's, not the previous preset: a press catches the chord being played (it never changes the preset), held 0.7 s it
+ * fades the pad out; both footswitches still open the tuner, the pad let go (ui_action, ui_press, ui_buttons). The
+ * includer gives the engine's two calls (openpocket.c: px_pad_press / px_pad_stop on g_eng) */
+#ifndef PX_PAD_PRESS
+#define PX_PAD_PRESS() ((void)0)
+#endif
+#ifndef PX_PAD_STOP
+#define PX_PAD_STOP() ((void)0)
+#endif
+static int ui_pad_on(void) { return PRESET.on[PX_B_SYN] && PRESET.type[PX_B_SYN] % PX_SYN_COUNT == PX_SYN_PAD; }
+#endif
 static void ui_preset_step(int dd)
 {
     int n = px_preset_count();
@@ -1028,10 +1047,16 @@ enum { UA_SAVE = UB_N, UA_MOVE, UA_TUNER, UA_MIDI, UA_FEET };   /* the gestures 
 #define UI_HOLD_FX   800u              /* hold FX: MIDI */
 #define UI_CLICK2    350u              /* PUSH again within this, after a click opened a block from PLAY: MOVE that block */
 #define UI_FEET      150u              /* the other footswitch within this: both, the tuner */
+#if PX_OWN_FX
+#define UI_HOLD_PAD  700u              /* hold the left footswitch, a SYN PAD on: the pad fades */
+#endif
 static struct {
     uint32_t held, t[UB_N], clk_t, fs_t;
     uint8_t fired[UB_N], clk, clk_blk;
     int8_t fs, fs_dir;                 /* the last footswitch pressed (-1: none) and the step it made */
+#if PX_OWN_FX
+    uint8_t fs_pad;                    /* it caught a PAD's chord (ui_action): held on, it fades the pad; the other one: the tuner */
+#endif
 } ug = {.fs = -1};
 static void ui_action(int a)
 {
@@ -1045,7 +1070,11 @@ static void ui_action(int a)
     }
     switch (a) {
     case UB_FSUP: ui_preset_step(+1); break;
+#if PX_OWN_FX
+    case UB_FSDN: if (ui_pad_on()) { ug.fs_pad = 1; PX_PAD_PRESS(); } else ui_preset_step(-1); break;   /* SYN PAD: the pad's */
+#else
     case UB_FSDN: ui_preset_step(-1); break;
+#endif
     case UB_PUSH: if (ui_mode == M_LIST) list_load(); else ui_push(); break;
     case UB_HOME: if (ui_mode == M_CHAIN) list_open(); else if (ui_mode == M_LIST) list_close(); else ui_home(); break;
     case UB_FX: ui_fx_cycle(); break;
@@ -1075,9 +1104,15 @@ static void ui_press(int b, uint32_t now)   /* a button's plain press: at its pr
             int d = ug.fs_dir;
             ug.fs = -1;
             if (d) { ui_preset_step(-d); ui_action(UA_FEET); }
+#if PX_OWN_FX
+            else if (ug.fs_pad) { ug.fs_pad = 0; PX_PAD_STOP(); ui_action(UA_FEET); }   /* the first caught a chord: let go */
+#endif
             return;
         }
         ug.fs = (int8_t)b; ug.fs_t = now; ui_stepped = 0;
+#if PX_OWN_FX
+        ug.fs_pad = 0;
+#endif
         ui_action(b);
         ug.fs_dir = (int8_t)ui_stepped;
         return;
@@ -1112,4 +1147,7 @@ static void ui_buttons(uint32_t now, uint32_t held)   /* every pass: which butto
         }
         if ((up >> b & 1u) && timed && !ug.fired[b]) ui_press(b, now);
     }
+#if PX_OWN_FX
+    if (ug.fs_pad && (held >> UB_FSDN & 1u) && now - ug.t[UB_FSDN] >= UI_HOLD_PAD) { ug.fs_pad = 0; PX_PAD_STOP(); }   /* held: fade */
+#endif
 }

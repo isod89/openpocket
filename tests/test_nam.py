@@ -18,7 +18,8 @@ os.makedirs(out, exist_ok=True)
 src = open(os.path.join(ROOT, "engine", "px_nam_factory.h")).read()
 names = re.search(r"PXN_FNAME\[PX_NAM_NFACT\] = \{(.*?)\};", src).group(1)
 names = re.findall(r'"([^"]*)"', names)
-body = src[src.index("PXN_FW[PX_NAM_NFACT][PXN_NW] = {"):]
+body = src[re.search(r"PXN_FW\[\w+\]\[PXN_NW\] = \{", src).start():]   # (since test build 28 PXN_NROWS: every model is still in the
+                                                                        # text, each inside its #if PXN_KB(i))
 models = [np.array([float(v.rstrip("f")) for v in re.findall(r"[-+0-9.eE]+f", m)], np.float32)
           for m in re.findall(r"\{([^{}]*)\}", body)]
 w = wave.open(os.path.join(ROOT, "docs", "nam_di.wav"))

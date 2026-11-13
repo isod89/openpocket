@@ -3,7 +3,9 @@
  * screen mode and the store stubbed: what a host's Program Change, Control Change and clock do to the sound, when the
  * pedal must ignore them, that the input ring is always emptied (usb.c stops reading the host's packets when it is
  * nearly full, and the editor's SysEx arrives in the same packets), and what the pedal sends back.
- *   cc -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/midiio tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm && build/midiio */
+ *   cc -O1 -Wall -Wno-unused-function -Iengine -Ifirmware -o build/midiio tests/midiio.c engine/px_dsp.c firmware/px_math.c -lm && build/midiio
+ * With -DPX_OWN_FX=1 (the Bluetooth audio image's): CC 64 catches a SYN PAD's chord, and only that. With -DED_BT=1 (that image's
+ * too, test build 27): a Bluetooth write's SysEx also goes to the web editor, and its musical messages to the pedal as before. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +60,19 @@ static uint32_t ft_box(uint32_t x, uint32_t y, uint32_t w, const char *s, const 
 #define UI_BG 0
 #define OP_BLE_TEST 1
 static uint32_t ms_now(void) { return 0; }
+#if PX_OWN_FX                                            /* SYN PAD (the Bluetooth audio image): as ui.h, and a counter */
+static int ui_pad_on(void) { return PRESET.on[PX_B_SYN] && PRESET.type[PX_B_SYN] % PX_SYN_COUNT == PX_SYN_PAD; }
+static int pad_presses;
+#define PX_PAD_PRESS() (pad_presses++)
+static int exp_last = -1, exp_n;
+#define PX_EXP_SET(v) (exp_last = (int)(v), exp_n++)
+#endif
+#if ED_BT                                                /* the Bluetooth audio image (-DED_BT=1): the web editor's SysEx, kept
+                                                        * across writes as px_editor.h keeps it (its ed_bt_write, one line) */
+#include "px_ble_midi.h"
+static px_blem_sx_t ed_bt_rx[2];                         /* (two LE links, test build 27) */
+static void ed_bt_write(uint32_t link, const uint8_t *p, uint32_t n) { if (link < 2u) px_blem_sysex(&ed_bt_rx[link], p, n); }
+#endif
 #include "px_midi_io.h"
 
 static uint32_t cc(uint32_t ch, uint32_t n, uint32_t v) { return 0xBu | (0xB0u | ch) << 8 | n << 16 | v << 24; }
@@ -225,6 +240,94 @@ int main(void)
         px_midi_service();
         ok(PRESET.on[PX_B_DRIVE] == !was, "after a preset change the toggle flips what the new preset has");
     }
+#if ED_BT
+    {   /* the web editor over Bluetooth (test build 27): every write also gives its SysEx to the editor, kept across writes,
+         * and the musical messages of the same writes reach the pedal as before */
+        reset();
+        uint8_t w1[] = {0x80, 0x81, 0xF0, 0x7D, 0x4F, 0x50, 0x12}, w2[] = {0x80, 0x82, 0xF7, 0x83, 0xC0, 9};
+        uint8_t on[] = {0x80, 0x80, 0xB0, 24, 127};
+        px_midi_ble_write(w1, sizeof w1);
+        px_midi_service();
+        ok(!ed_bt_rx[0].ready && cur_preset == 5, "a write that starts an editor SysEx: kept, nothing for the pedal yet");
+        px_midi_ble_write(w2, sizeof w2);
+        px_midi_service();
+        ok(ed_bt_rx[0].ready && ed_bt_rx[0].n == 4 && ed_bt_rx[0].buf[3] == 0x12 && cur_preset == 9,
+           "the next write ends it (the editor's PING, whole) and its Program Change still loads preset 10");
+        ed_bt_rx[0].ready = 0;
+        PRESET.on[PX_B_DRIVE] = 0;
+        px_midi_ble_write(on, sizeof on);
+        px_midi_service();
+        ok(PRESET.on[PX_B_DRIVE] == 1 && !ed_bt_rx[0].ready && !ed_bt_rx[0].in, "the Chocolate's Control Change: as before, nothing for the editor");
+        ok(pop_out() == 0, "and nothing is sent back over USB");
+        /* two LE links at once (test build 27): the editor on link 1 sends a SysEx over three writes while the Chocolate on
+         * link 0 presses in between; both are understood, neither spoils the other */
+        uint8_t e1[] = {0x80, 0x81, 0xF0, 0x7D, 0x4F, 0x50}, e2[] = {0x80, 0x12, 0x01}, e3[] = {0x80, 0x82, 0xF7};
+        uint8_t off[] = {0x80, 0x8E, 0xB0, 24, 0}, pc3[] = {0x80, 0x8E, 0xC0, 3};
+        px_midi_ble_write_link(1, e1, sizeof e1);
+        px_midi_ble_write_link(0, off, sizeof off);
+        px_midi_service();
+        int mid = PRESET.on[PX_B_DRIVE] == 0 && ed_bt_rx[1].in && !ed_bt_rx[1].ready;
+        px_midi_ble_write_link(1, e2, sizeof e2);
+        px_midi_ble_write_link(0, pc3, sizeof pc3);
+        px_midi_ble_write_link(1, e3, sizeof e3);
+        px_midi_service();
+        ok(mid && cur_preset == 3 && ed_bt_rx[1].ready && ed_bt_rx[1].n == 5 && ed_bt_rx[1].buf[4] == 0x01 && !ed_bt_rx[0].ready,
+           "two links in turns: the Chocolate's switch and preset act, the editor's SysEx on the other link comes whole");
+        ed_bt_rx[1].ready = 0;
+    }
+#endif
+#if PX_OWN_FX
+    {   /* CC 64 (sustain) catches the PAD's chord: at 64 and up, with a PAD on; nothing else changes */
+        reset();
+        px_preset_t before;
+        PRESET.type[PX_B_SYN] = PX_SYN_PAD; PRESET.on[PX_B_SYN] = 1; before = PRESET; pad_presses = 0;
+        midi_enqueue(cc(0, 64, 127), 1); midi_enqueue(cc(0, 64, 0), 2); midi_enqueue(cc(0, 64, 64), 3); midi_enqueue(cc(0, 64, 63), 4);
+        px_midi_service();
+        int on = pad_presses == 2 && !memcmp(&before, &PRESET, sizeof before);
+        PRESET.on[PX_B_SYN] = 0; pad_presses = 0;
+        midi_enqueue(cc(0, 64, 127), 5); px_midi_service();
+        int off = pad_presses == 0;
+        PRESET.on[PX_B_SYN] = 1; PRESET.type[PX_B_SYN] = PX_SYN_STRINGS; pad_presses = 0;
+        midi_enqueue(cc(0, 64, 127), 6); px_midi_service();
+        ok(on && off && pad_presses == 0, "CC 64 at 64 and up catches the PAD's chord (PAD on only), the sound unchanged");
+    }
+    {   /* CC 116 taps the delay's tempo (test build 24): two taps set TIME to their interval, a release (0) is no tap, a bounce
+         * under 200 ms is ignored, the last three intervals are averaged, a pause of more than 2 s starts over */
+        reset();
+        tap_n = 0;
+        PRESET.type[PX_B_DELAY] = PX_DLY_DIGITAL;
+        midi_enqueue(cc(0, 116, 127), 1000); midi_enqueue(cc(0, 116, 0), 1100); midi_enqueue(cc(0, 116, 127), 1500);
+        px_midi_service();
+        int two = PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 500.0f);
+        midi_enqueue(cc(0, 116, 127), 1550); px_midi_service();
+        int bounce = PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 500.0f);
+        midi_enqueue(cc(0, 116, 127), 1900); midi_enqueue(cc(0, 116, 127), 2350); px_midi_service();
+        int avg = PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 450.0f);   /* (500 + 400 + 450) / 3 */
+        int was = PRESET.p[PX_B_DELAY][0];
+        midi_enqueue(cc(0, 116, 127), 5000); px_midi_service();
+        int pause = PRESET.p[PX_B_DELAY][0] == was;
+        midi_enqueue(cc(0, 116, 127), 5600); px_midi_service();
+        int restart = PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 600.0f);
+        ok(two && bounce && avg && pause && restart,
+           "CC 116 taps the delay's TIME (release and bounce ignored, three intervals averaged, a pause starts over)");
+#if PX_DLY_SHORT
+        midi_enqueue(cc(0, 116, 127), 9000); midi_enqueue(cc(0, 116, 127), 10000); px_midi_service();
+        ok(PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 780.0f) && PRESET.p[PX_B_DELAY][0] < 64,
+           "a tap slower than 780 ms gives the shortened ring's top, 780 ms (TIME 63)");
+#endif
+    }
+    {   /* CC 117 is the expression pedal (test build 25): every value goes to the engine, on any page, and the preset stays */
+        reset();
+        px_preset_t before = PRESET; exp_n = 0; exp_last = -1;
+        midi_enqueue(cc(0, 117, 0), 1); midi_enqueue(cc(0, 117, 64), 2); midi_enqueue(cc(0, 117, 127), 3);
+        px_midi_service();
+        int all = exp_n == 3 && exp_last == 127 && !memcmp(&before, &PRESET, sizeof before);
+        ui_mode = M_TUNER;
+        midi_enqueue(cc(0, 117, 30), 4); px_midi_service();
+        ui_mode = M_BLOCK;
+        ok(all && exp_n == 4 && exp_last == 30, "CC 117 sends every position to the expression pedal (the tuner too), the preset unchanged");
+    }
+#endif
     printf("\n%s\n", failed ? "MIDI glue tests FAILED" : "all MIDI glue tests passed");
     return failed ? 1 : 0;
 }

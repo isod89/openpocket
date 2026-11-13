@@ -12,6 +12,12 @@ gets exactly one reply with the same header and the same `<cmd>`; a request the 
 reply. Every data byte is 7 bit. Send the next request only after the reply to the previous one (the pedal keeps
 one incoming frame at a time). While the editor watches (`WATCH`), the pedal also sends `STATE` frames by itself.
 
+The Bluetooth audio test image (test build 27, [BT-AUDIO-TEST.md](BT-AUDIO-TEST.md)) also takes the same frames over
+Bluetooth MIDI: as SysEx in the BLE MIDI writes, with the replies and the `STATE` frames as notifications of the MIDI
+characteristic (BLE MIDI packets of at most 20 bytes), on either of its two LE links. A reply goes back the way its request
+came (USB, or the LE link it came on); the `STATE` frames go the way the last request came. Requests longer than 160 bytes (no command has one) are dropped there, and so are replies
+longer than 1,024 bytes (only `DIAG`'s).
+
 | Item | Encoding |
 | --- | --- |
 | byte | one 7-bit byte |

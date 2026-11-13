@@ -16,7 +16,8 @@
  * the note is dropped, so a block is never filled while the output plays it.
  *
  * The including file provides a_block(data, len), the guitar's block (its sound started on the second core, or made),
- * a_send(d, n), an output block of n frames filled with that sound, A_ORDER_TICKS and fm1_ticks (px_audio.h);
+ * a_send(d, n), an output block of n frames filled with that sound, A_ORDER_TICKS and fm1_ticks (px_audio.h), and may
+ * define A_ORDER_SEEN(filled), told of each noted block when an a_enc comes (the Bluetooth audio image counts them);
  * tests/test_aorder.c runs this file on a PC.
  */
 #pragma once
@@ -37,6 +38,9 @@ static void a_enc(void *priv, uint8_t *data, int len, uint8_t ch)     /* guitar 
     uad_enc(fm1_ticks());
 #endif
     int32_t *const d = a_dq && fm1_ticks() - a_dqt < A_ORDER_TICKS ? a_dq : 0;
+#ifdef A_ORDER_SEEN
+    if (a_dq) A_ORDER_SEEN(d != 0);             /* (an image that counts them: a noted block filled, or its note dropped) */
+#endif
     a_dq = 0;
     a_block(data, len);
     if (d) a_send(d, a_dqn);

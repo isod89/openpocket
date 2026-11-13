@@ -1,0 +1,1108 @@
+# Bluetooth audio test image (A2DP: the phone's music through the pedal)
+
+An optional build of OpenPocket that makes the pedal a **Bluetooth speaker**, as the stock BlackBox firmware is: it shows up on a
+phone as **`OpenPocket`**, pairs with no PIN, and the phone's music plays **mixed into the pedal's output**, with the guitar.
+
+It is a test image, its own build target (`make bt`). The normal firmware and the installer's packages are unchanged.
+
+> **Status: test build 27** (the web editor over Bluetooth, below). Up to test build 14: builds 1 to 10 ran on a pedal: the
+> radio starts, a phone sees the pedal and links, but no phone
+> could pair, and the guitar crackled. Build 11 paired an iPhone (below, "Test build 11"), but no music came out, and the guitar
+> still crackled with Bluetooth on. Build 12 takes the phone's packets where the controller first shows them, sends the output
+> in two slots against the crackles, and records the second core's fault (below, "Test build 12"); on some power-ons it
+> crashed in the reverb, 2 s after power-on. Build 13 stops the reverb's loop at its block's end and counts it, and shows the
+> registers of a crash (below, "Test build 13"). Build 14 is the same image on OpenPocket v42, with v42's own fix of the
+> crackles' cause and the Bluetooth library folded at build time to make the room, and it keeps the pairing across power-offs
+> (below, "Test build 14"). Every part that can be checked on a computer is checked (see "Checked on a computer").
+
+## What is in it, and what is not
+
+- **In:** classic Bluetooth (BR/EDR) with Secure Simple Pairing ("Just Works", no PIN), the A2DP sink with SBC, as the stock
+  firmware. The music is summed to **mono** (the pedal's output is mono), at **-6 dB**, added **after** the MASTER volume and
+  **before** the output's soft knee. The phone's own volume sets its level. It keeps playing in bypass and in the tuner.
+- **In since test build 14:** the pairing remembered after a power-off (a phone paired once connects again without being
+  paired again), kept in two flash sectors of the pedal's own (below, "The pairing kept").
+- **Its own effects** ([OWN-FX.md](OWN-FX.md)): LOW OCTAVE, a 6th PITCH model (an octave under the low strings only), and
+  SYN PAD, a 12th SYN model (a chord caught on the left footswitch and held under you). Only this image has them; the
+  release's engine is unchanged.
+- **In since test build 24:** Bluetooth MIDI (BLE MIDI) beside the music, for a Chocolate (below, "Test build 24"); since
+  test build 27 the web editor over Bluetooth too, on a second LE link beside the Chocolate's (below, "Test build 27: the web
+  editor over Bluetooth"); since test build 28 the regular Chocolate too, the pedal as its central (below, "Test build 28").
+- **Not in:** stereo, play/pause from the pedal (AVRCP), a level setting on the pedal.
+
+## Build
+
+```
+make bt           # firmware/openpocket-bt.bin and build/bt/PocketX_942.fwsc, BlackBox_942.fwsc, manifest.json
+```
+
+(`node tools/op.mjs bt` is the same; `OP_BT=1 sh firmware/build.sh` inside the container.) CI builds it on every pull request:
+the artifact `openpocket-bt-audio` holds the packages (`build/bt/`), the image, its symbol table and its link map.
+
+## Flash it
+
+Your pedal must already run OpenPocket.
+
+1. `make serve-bt` opens the offline installer on `http://localhost:8765/` with `build/bt/` as its package folder (Chrome or Edge,
+   USB cable). Or copy the artifact's `build/bt/*.fwsc` and `manifest.json` into `docs/firmware/` and use `python3 tools/serve.py`.
+2. **Connect**, **Install**. The start-up screen reads `v42 BT AUDIO TEST 14` (the number is the test build's).
+   Before pairing with a phone that saw an earlier build, forget the pedal there first (iPhone: **Settings > Bluetooth**, the
+   **i** next to `OpenPocket` or `Accessorio`, **Forget This Device**). Builds up to 13 kept no pairing, so the phone holds a
+   key the pedal does not have. From build 14 on the pedal keeps it, across power-offs and across installs of later test builds:
+   forget the pedal once, when you first pair with build 14.
+3. **Back to normal:** `make serve` (the release packages) and **Install** again. The SD-card recovery (`make appimage`) works
+   as before. Installing writes only the application area, as any update does. This image itself also writes its pairing store
+   (two 4 KB sectors at `0xEE000`, just below the presets) when a phone pairs; the release firmware never reads or writes them,
+   and an update leaves them as they are.
+
+## What you should see
+
+| Step | On the pedal (status area, bottom right) | On the phone |
+| --- | --- | --- |
+| 1. start-up, a few seconds | `BT START 2`, `3`, `4`: the radio starting (the stages are the BLE image's; the digit can be cut off on the play screen, the log's bluetooth line has it) | |
+| 2. ready | `BT VISIBLE`, then the visible line scrolls (below) | **Settings > Bluetooth**: `OpenPocket` appears under other devices |
+| 3. tap it | `BT LINK`, the link line scrolls | paired and connected, **no PIN asked** |
+| 4. play music | `BT PLAY` | the music plays **from the pedal's output**, with the guitar |
+| 5. pause / disconnect | `BT LINK` / `BT VISIBLE` again | |
+
+**A/B key, held while switching the pedal on, until the start-up screen has gone** (for that boot only; the log's `c1` line
+shows `KEY`). Switch off for real (USB out too, 10 s) before each boot you compare:
+
+| Key | That boot |
+| --- | --- |
+| **REV** | Bluetooth off (`BT OFF`): the same image with the radio off, to compare the sound with and without Bluetooth by ear |
+
+(CAB and DLY held at power-on do nothing since test build 13: the c1 line only shows `KEY 1` or `KEY 2`. Test build 12's DLY
+key, the output in one slot as build 11 sent it, is gone: its A/B is settled. Since build 14 the output is sent as v42 sends
+it, in place of the two slots (below, "Test build 14"). A CAB key for the stock firmware's supply levels did not fit in the
+flash.)
+
+`FAILED s c` means the start failed: the line that scrolls says which step and stage (the BLE image's codes,
+[BLE-TEST.md](BLE-TEST.md#reading-the-status-text)). The stall watch, the crash screen and the `LAST START FAILED` report (v42's
+name; up to test build 13 `LAST BOOT FAILED`) work as in the BLE image, and after a failed boot Bluetooth stays off for that
+boot, so the pedal can always be re-flashed. Since test build 13 this image's report shows the registers of a crash (`R1` `R6`,
+then `R12` `SP`) where the BLE image shows `DSP CODE AT`; the lines below them move one line down, and v42's `PHOTO THIS FOR A
+BUG REPORT` is the screen's last line. Photograph both screens (below, "Test build 13").
+
+### If it stalls (`VEC 3F`, then a safe-mode boot)
+
+The stall watch ends a Bluetooth task that runs for 4 s without giving the processor back: the crash screen, `VEC 3F`, then a
+boot in safe mode with Bluetooth off. The `PC` and `RETS` on that crash screen are whatever the watch's 10 kHz tick interrupted,
+which with sound running is mostly the audio interrupt (`fm1_cpu1_wait`, `a_collect`): not the stuck code. This image keeps a
+**stall record** instead: during the last second before the watch fires, the tick samples the stuck task's own PC and RETS (from
+the interrupt stack), and when it fires the record takes the rest. The safe-mode boot shows it, on the log's last three lines,
+until Bluetooth starts again:
+
+```
+bluetooth  STALL btctrler S8 BB 00000107 0000FE02 00000000 0000FFFF 00000001 CLKN 00001234 00001240 L 3/3 PW 00000400 00000000 0000C000
+link       STALL HEAP 9120 MIN 8800 MF 0 0 IRQ 0/0 EV 0 STUB 0 CR rf replay, rf replay done, btctrler, request_irq 40, request_irq 41, low_power_get
+trace      STALL PC 02012345/02011111*9876 N 10000+0 D 28-160 SP 01C7BF80
+```
+
+| Field | Meaning |
+| --- | --- |
+| `STALL btctrler S8` | the task that was running and the start-up stage (the BLE image's stages: 3 = the radio replay, 7 = after it, 8 = the baseband asked for its interrupts) |
+| `BB` | the classic baseband's registers 0x20000, 0x2000C, 0x20014, 0x20018 and 0x2001C (1 there: a clock latch the library asked for never completed) |
+| `CLKN a b` `L x/y` | the classic baseband's native clock latched twice, 1 ms apart, and the reads each latch took (65535: it never completed: the clock does not run) |
+| `PW` | 0x2FC40, 0x2FC6C (the Bluetooth domain's power and clock words the classic code waits on) and 0x10010 |
+| `HEAP` `MIN` `MF n size` | the Bluetooth heap free now and at its lowest, failed allocations and the last one's size (the library stops in a loop on one) |
+| `CR` | the last calls the library made into the firmware, oldest first |
+| `PC pc/rets*n` | the stuck code: each PC and RETS sampled, and how often (look them up in `build-bt/symbols.txt` of the same CI run) |
+| `N` `D` `SP` | samples taken (+ those that fit no slot), the interrupt stack's depth at the samples, the crash's stack pointer |
+
+### The visible line
+
+`BT VIS IRQ 40:1234 41:56789 EV 4 RDY SCAN 1 V F BD 0B0B ADDR 024F1A2B3C4D UID 1 HEAP 9120 STUB 0 Q40 0 KICK 0 TX 0/592/2032 F0 RX 0/0/12272 F0`
+
+| Field | Meaning |
+| --- | --- |
+| `IRQ 40` `41` | the classic baseband's interrupts (packets, the alarm) and the slot timers: they rise when the radio runs |
+| `EV` | events from the stack; `RDY`: it said it is ready (`NORDY`: it did not, the pedal made itself visible anyway after 2 s) |
+| `SCAN` | times "visible and connectable" was sent to the controller |
+| `V` | the stored radio calibration: found records (`F` = all four; since test build 14 the BLE image's flags in full: `10` and `20`, VM 106 or 107 missing and v41's defaults given in its place, `400` the calibration measured, `100` and `200` its scan or trim failed), the VM area (flash / 4096), the crystal trim (as the BLE image) |
+| `ADDR` | this pedal's Bluetooth address, made from the flash chip's unique ID (`UID 1`; `UID 0`: not read, the fixed BLE address is used) |
+| `HEAP` | the Bluetooth heap's lowest free bytes |
+| `STUB` | calls of the stand-ins (functions this image leaves out) and the last one's name (the trace line lists them in order) |
+| `Q40` | seconds since IRQ 40 last rose. While a phone is searching it stays near 0; a large number means the scans have stopped |
+| `KICK` | times the pedal asked for its scans again because IRQ 40 had been silent for 5 s while visible (test build 4); since test build 28 30 s while an LE link is up, and `@` the last one's time (ms since power-on) |
+| `TX` `RX` | the radio's send and receive pools: bytes in use / the most ever in use / the pool's size, and `F` failed allocations. While a phone is linked, `RX` must rise: the phone's packets wait there (test builds 1 to 5 never used it, see below) |
+
+(Test build 11 also had `RNG a/b`, the random source the pairing's keys come from: it worked, and build 12 drops it.)
+
+While no phone is linked, the link line shows the Bluetooth tasks instead (test build 8): `TASKS btapp S 01C0A1B0=0 q0 F3012
+P0, btctrler Q q0 F2344 P3, btstack R q2 F1876 P7`, each task's state (`R` ready, `Q` waiting for a message, `S` waiting
+on the semaphore or mutex at that address, `=` its count, `D` sleeping, `X` ended) and `q` its queued messages. A task that
+stays `S` while its `q` grows is the stuck one: look its address up in `build-bt/symbols.txt`. Since test build 11 also `F`,
+the bytes of its stack (4 KB) never used, `P`, the most messages it ever had queued, and `OVF` if it came within 64 bytes of
+its stack's end.
+
+The `hci` line (test build 9) is the HCI conversation between the controller and the host, which in this integrated stack
+travels through the tasks' queues: the newest 11 messages (test builds 9 to 11 also had `hci0`, the first 12 since boot; build
+12's a2dp line took its place, and build 13's FIFO line took the a2dp line's). `n` all messages posted to a task, `ACL` data packets to the host and `NCP` Number of Completed Packets events
+(only counted), `Q` the deepest a task's queue has been and `LOST` the posts refused because a queue was full (the library
+tries some of them again after a short sleep, so not each one is a message lost). Each entry: the task
+(`S` the host, btstack; `C` the controller, btctrler; `E` btencry; `A` btapp), the message's type digit, then its first 5
+bytes in hex. `S1` is an event to the host: the event code, the parameters' length, the parameters (`S1:0E04010C03`: Command
+Complete, 1 command allowed, opcode 0x0C03; `S1:04..` Connection Request; `S1:03..` Connection Complete, status next; `S1:05..`
+Disconnection Complete; `S1:31` IO Capability Request; `S1:33` User Confirmation Request; `S1:36` Simple Pairing Complete).
+`C2` / `C3` are commands to the controller as its task receives them. Since test build 11 the `hci` line also has `WI`, waits
+the library asked for inside the baseband's interrupt and was refused (each one a message or an allocation the library then
+dropped), `WM`, waits asked by the main loop (a software timer's callback, which cannot wait), `CNF`, the pairing
+confirmations the pedal sent, and `END cc:rr`, how the last link ended: `05:rr` a Disconnection Complete with its reason
+(`13` the phone ended it, `08` the link was lost, `22` an LMP response timed out, `05` authentication failed), `03:ss` a link
+that failed to come up and its status. A successful pairing walks `S1:31`, `S1:32`, `S1:33`, then a `C3` message (the
+confirmation), `S1:36 00` (Simple Pairing Complete), `S1:18` (the link key) and `S1:08 00` (encryption on).
+
+The trace line ends with `CR`, the last calls the library made into the firmware, oldest first (the stand-ins by name,
+`request_irq 40`, `low_power_get`, `kick: scan again`, `send pool full`...).
+
+### The link line
+
+`BT PLAY n1 ENC 1 A2DP 1 PLAY 1 SBC 44100 2CH BP53 FR 51234 ER 0 PK 7345 BUF 98+52 MS UND 0 RATE -0.04% DISC 0 FQ 6 F A3012/C2344/S1876`
+
+| Field | Meaning |
+| --- | --- |
+| `n` `ENC` `A2DP` `PLAY` | links so far, encrypted links, A2DP channels, times the music started |
+| `SBC 44100 2CH BP53` | the stream: its rate, channels, bitpool (53: the usual "high quality") |
+| `FR` `ER` `PK` | SBC frames decoded, frames refused, packets decoded (test build 11 stayed at one a session: no music) |
+| `BUF a+b MS` | the music waiting: still encoded in the FIFO (a) and decoded (b); it keeps about 150 ms in all |
+| `UND` | times the decoded music ran out (an underrun: a short gap) |
+| `RATE` | how much the pedal is speeding up or slowing the music to follow the phone's clock (about -0.04 % is normal) |
+| `DISC` | disconnections |
+| `FQ` | the phone's packets waiting in the FIFO (test build 12; 16 at most, about 6 to 10 while it plays). Test build 11 had `PD` here |
+| `F` | each Bluetooth task's stack never used, in bytes, after its initial: `A` btapp, `C` btctrler, `S` btstack (`!`: it nearly overflowed) |
+
+### The isr line (since test build 11)
+
+`ISR 40:12/310/1450 41:4/40/90 T5 9/31 AG 2144/2935 AI 846/942 EN 0/344/344/0/0 OC 0/3 OD 0 OG 12/240 C1 1 G 0 NAM 1 LD 42 PK 55/97 XR 3 CL 0 WC 0 BYP 0 TM 1234 VM 4/2/1/0/1 OVF 0 NAN 0`
+
+What the interrupts cost the audio, and the DSP's state, for the crackles. Times are in microseconds.
+
+| Field | Meaning |
+| --- | --- |
+| `40:a/b/c` `41:a/b/c` | the classic baseband's two interrupts: the longest in the last second, the longest since boot, and the time they took in all in the last second. They run above the audio |
+| `T5 a/b` | the 10 kHz timer (USB, the stall watch), also above the audio: the longest in the last second / since boot |
+| `AG a/b` | the longest gap between two audio interrupt entries (last second / since boot). 2,902 when one entry serves a period; less (2,144 in build 11's log): two entries a period, the input's and then the output's, so AG is the period less the input's stay; more: an entry came late. A preset change or a flash write is not counted |
+| `AI a/b` | the audio interrupt's longest stay (last second / since boot), the DSP and its wait for the second core included |
+| `EN a/b/c/d/e` | (test build 12) the audio interrupt's entries in the last second, by the flags they found: none / the output's only / the input's only / both / another channel's. About 344 a second each is two entries a period; `d` counts the periods whose output callback ran first; `e` must be 0 |
+| `OC a/b` | (test build 14) the output blocks the driver asked for before their input's, in the last second / since boot (v42's `firmware/px_aorder.h`, `a_swaps`). Up to test build 11 each one repeated a 2.9 ms block and skipped the next: a click on any sounding note; builds 12 and 13 sent the block before (their `OC a/b c/d` counted the changes of order); since build 14 each such block is filled as soon as its input's block is made, in the same entry, with no latency more, unless its input's callback comes too late (`OD`). Each full preset change and each flash write (the audio interrupt held) adds one by itself |
+| `OD` | (test build 14) of those, the ones whose input's callback came more than half a block (1,451 µs) after the output's, since boot (`px_audio.h` `A_ORDER_TICKS`): each one a click, that half of the output playing its old block again. It must stay 0 |
+| `OG a/b` | (test build 14) the longest from an output callback that came first to its input's callback (last second / since boot): the radio's interrupts (`40`, `41`) and `T5` running between the two. `OD` rises once it reaches 1,451 µs |
+| `C1` | 1: the second core runs; 0: the whole DSP is on one core (heavy presets then go to `BYP`) |
+| `G` | why the second core is off: 0 it is not; 1 it misread shared memory, 2 a job was not back within 8 ms, 4 it faulted (1, 2 and 4: retired in this boot, and barred at every start until a power-off); 3 barred at start (by such a retirement, or by a crash of the first core while it ran, in an earlier boot of the same build); 5 it did not answer at start. The c1 line has the rest |
+| `NAM` | 1: the preset's NAM amp is one that runs on both cores; 0: not (test build 12: whatever `C1` is) |
+| `LD` `PK a/b` | the DSP load, and its peak since the last full preset change / since boot, % of a block's time |
+| `XR` `CL` `WC` `BYP` | late blocks (each one a likely crackle), clipped blocks, the delay and reverb lane's cut blocks (clicks in the tails; since build 12 kept across a retirement or a reset), bypassed |
+| `TM` `OVF` | the library's software timers that fired, task stacks that nearly overflowed |
+| `VM r/w/s/f/q` | the pairing store (test build 14; builds 11 to 13 had `VM r/w`): `r` and `w` the library's reads and writes of its records; `s` the copies saved to the flash since power-on; `f` the save rounds that failed (the first two tried again 1 s later; from the third on only a new change tries again); `q` the flash copy's sequence number: at power-on that of the copy loaded (0: none), then one more for each slot a save tries. `q` 0 with `f` 3: the flash read differently the second time at power-on and was left alone, the pairing in RAM only for that boot. `node tools/op.mjs log` says it in words |
+| `NAN` | (test build 12) the engine's resets after a NaN, since boot: each one 15 to 50 ms of silence |
+
+### The FIFO line (test build 13)
+
+`FIFO 000004D2 00000000 00000005 00000002`: the music path's counts since boot, 4 words in hex (`node tools/op.mjs log` prints
+them a second time with their names). It is the log's seventh line, in place of test build 12's a2dp line (`A2` and 23 words:
+the controller's own A2DP state for each packet, and a 10 kHz watch over it). That probe is gone in build 13, to make room for
+the reverb's cut and the crash report; the music plays from the FIFO whatever the controller's state says, and the heal stays.
+
+| Word | Meaning |
+| --- | --- |
+| 1 | packets the FIFO took (about 70 a second while the music plays) |
+| 2 | packets it could not take: full in the low half, too big in the high half (`00010003`: 3 full, 1 too big) |
+| 3 | packets the library handed the pedal, given back undecoded (the FIFO already has them) |
+| 4 | heals: the receiving connection's two A2DP fields written back when found wrong, on the connection the host opened only |
+
+### The c1 line (test builds 12, 13)
+
+`C1 1 G 0@0 K 2232 KEY 0 S 00000000 F 0/0 W 0`; after a cut of the reverb's loop, 4 words in hex after `W`'s count; after a
+fault of the second core, 19 more words in hex.
+
+| Field | Meaning |
+| --- | --- |
+| `C1` `G g@t` | the second core runs; why it is off (as in the isr line) and when it was retired (ms; wraps every 179 s) |
+| `K` | how deep the second core's stack has gone, in bytes (of 2,816) |
+| `KEY` | the key held at power-on: 0 none, 1 CAB and 2 DLY (nothing in this build), 3 REV |
+| `S` | where Bluetooth was when the main loop first saw a fault: stage << 28 \| state << 24 \| DSP held << 23 \| 1 << 22 \| IRQ 40's count |
+| `F n/c` | the second core's faults, and which core took the exception (0: the first, the usual case) |
+| `W` | (test build 13) the reverb loop's cuts at its block's end in this boot; after one, `n` and `k` at the latest cut, the time the main loop first saw a cut (ms since power-on, wraps every 179 s) and the `S` word then (how to read them: "Test build 13") |
+| then | DBG (the debug unit's message: bits 16-18 a bus error, 10 a PC limit), the taking core's EMU_MSG, PC, RETS (the first core's when it took the exception), the second core's own EMU_MSG, the time (ms), the job handed and the job finished (different: one was running), its function, and the debug unit's ten words from `0x1EEE358` (the bus masters' ids of an invalid access, the write-limit error counts) |
+
+The line holds 223 characters: with a cut and a fault of the second core in the same boot, the debug unit's last four or so
+words are cut off.
+
+## Please report
+
+- What happened at each step of the table, the phone (model, iOS / Android version), and a photo of the status area at the
+  furthest step reached (or of `FAILED ...`).
+- `node tools/op.mjs log --follow` while you try it (USB cable): it reads the same lines over USB, so no one has to read the
+  scrolling text. Send its output.
+- With the music playing: `node tools/op.mjs dsp --presets 1,14,18,19,20,21,24 --seconds 8`, and the same with the music
+  paused. The question this image is for: does a streaming radio push heavy presets into `BYP` or late blocks?
+- By ear: clicks or gaps in the music (and whether `UND` rises), hum or buzz in the guitar sound while the music plays.
+- For crackles: the `isr` line while they happen, and the same preset with Bluetooth off (REV held at power-on). If they are
+  there with Bluetooth off too, the radio is not the cause. If they come only with Bluetooth on and nothing is playing (a
+  high-gain preset, the guitar's volume at zero), ticks at the scans' rhythm point to the radio's supply or RF reaching the
+  analog side, which no firmware change can fix.
+- After any boot whose c1 line shows `G 4` or a `W` other than `W 0`: the c1 line as it is (its words, looked up in
+  `build-bt/symbols.txt` of the same CI run, say where the second core faulted). A red crash screen: a photo of it (PC, RETS,
+  VEC, DBG), before switching off, and one of the `LAST START FAILED` report that follows it (since test build 13: the registers).
+
+## Known limits and risks
+
+0. **The radio's interrupts run above the audio's** (test build 4): the classic baseband's handlers have slot deadlines
+   (625 µs), and OpenPocket's audio interrupt runs its DSP work in blocks of 128 frames, up to 2.9 ms (stock runs its dry chain
+   in its audio interrupt too, but in blocks of 64 frames, with the radio below it). A heavy preset may run late more often
+   while Bluetooth is busy: the `isr` line (test build 11) shows each interrupt's cost and whether the audio started late.
+   Since test build 5
+   they enter through OpenPocket's own interrupt entry (`firmware/bt/bt_isr.S`, flags saved first, `csync` before `rti`) and
+   C bodies that follow the library's two handlers (`firmware/bt/bt_irq.c`): the library's own handlers end without `csync`,
+   and in test build 4, above the audio, the DSP they interrupted faulted (the reverb, `VEC 1`, 0.5 s after the DSP started).
+
+1. **A pairing is saved 1 s after the library's last change to it** (test build 14; builds 11 to 13 kept it in RAM until
+   power-off). A power-off within that second, or during the save, loses that pairing: the phone then says it cannot connect,
+   and must forget `OpenPocket` and pair again. A power-off at any other moment loses nothing (the previous copy stays until the
+   new one is complete).
+2. **Saving a preset while the music plays** gives a short gap (interrupts are off while the flash is written). Saving a pairing
+   does too, about 25 ms, once per pairing (the audio held as for a preset).
+3. **The decoded music, the SBC decoder's state and the mix buffer sit in 7.5 KB of SRAM** (`0x01C06000..0x01C07E00`) that
+   OpenPocket never used before. If anything else writes there, you would hear clicks or noise in the music, nothing worse.
+4. **The flash window is larger in this image** (the package's whole app slot, `0x9D740` bytes, instead of `0x8DFBC`): the classic
+   stack is bigger than the LE one. The packages and the update loader already used that slot size.
+5. **Pedals that ran BlackBox_021** before OpenPocket may have lost part of their stored radio calibration (021 kept it at
+   `0x9F000`, inside the area OpenPocket rewrites); the `V` field shows what was found. Classic Bluetooth is stricter about the
+   crystal trim than BLE.
+6. **Regulation:** the pedal was certified with the stock firmware. This image uses the library's own power table; it is a hobby
+   experiment, not a product.
+
+## How it works
+
+```
+openpocket.c (OP_BT_AUDIO)   the BLE test image's hooks: ble_test_start() after the screen, ble_test_poll() in the main loop
+firmware/bt/bt_a2dp.c        the app: start (a task runs btstack_init), the stack's events, the music: packets -> SBC -> ring
+firmware/bt/bt_sbc.c         Android's SBC decoder behind three calls: the packet's first frame, one frame, mono
+firmware/px_bt_ring.h        the decoded music's ring and its rate, read by px_audio.h dsp_out (in RAM, on either core)
+firmware/bt/bt_glue.c        what the stack needs from the system: the radio pools' allocator (bt_lbuf.h), low power, the
+                             address (the flash's unique ID), the name, the SDP record (the library's own A2DP sink record)
+firmware/bt/bt_ps.h          the pairing records: the library's VM file in RAM, and its copy in the flash (test build 14)
+firmware/bt/bt_cfg.c         the stack's configuration: classic only, one link, an A2DP sink (the SDK's values, Apache-2.0)
+firmware/bt/bt_stubs.c       empty stand-ins for what the image leaves out (LE, TWS, calls, other profiles), counted
+firmware/bt/app-bt.ld        the memory map: the classic stack's sections, its pools, the ring
+firmware/bt/members.txt      the JieLi objects compiled (third_party/jieli-ble + third_party/jieli-bt)
+tools/jlfold.py              since test build 14 they are compiled folded: their configuration constants known (bt_cfg.c)
+firmware/ble/                shared with the BLE image: the scheduler and heap, the radio start-up, the stall watch, DIAG
+```
+
+- **The Bluetooth stack is the stock firmware's:** JieLi's classic controller and host from the AC79 SDK (Apache-2.0, LLVM
+  bitcode, the archives `third_party/jieli-ble` already pins). The SDP record the phone reads is the library's own, byte for byte
+  the stock firmware's (`JL_A2DP`).
+- **The SBC decoder is Android's** (`third_party/sbc-android`, Apache-2.0), fixed point, about 2 % of one core.
+- **The music path:** the radio's receive pool (12 KB) holds the phone's packets as they arrive; where the controller shows each
+  media packet to the A2DP code, the pedal copies it into a 16-packet FIFO (test build 12: the controller's own hand-over to the
+  application failed from the second packet of each session); the main loop decodes the FIFO into a 58 ms ring of mono samples;
+  the audio path reads the ring at a rate the main loop steers, so the pedal follows the phone's clock (the two differ by about
+  0.04 %) with a backlog of 150 ms, by linear interpolation. Nothing of the stack runs in the audio interrupt: it only reads the
+  ring.
+- **Memory** (beyond the BLE image's): three task stacks of 4 KB in NOINIT (test builds 1 to 10: four of 2.75 KB, the fourth
+  never used), the baseband's table (4.2 KB) and the receive pool in the SRAM below the RAM, the ring, the decoder's state and
+  the mix buffer above it, the pairing store (684 bytes of RAM; since test build 14 its copy in two flash sectors), the FIFO
+  (10.8 KB of the Bluetooth heap); in the RAM code window's free end, the output block (512 bytes; builds 12 and 13: two, 1 KB)
+  and, since test build 14, the engine's buffers that v42 moved below the RAM (14.6 KB: there they would take the baseband's
+  table and the receive pool's place).
+- **The baseband's 64 KB window.** The classic baseband reaches memory as 16-bit offsets from its table (`bd_base`, register
+  0x2FC44): everything the library hands it must lie less than 64 KB above `bd_base`, and the library asserts it (a failed
+  assertion stops in a loop). So the send pool (2 KB, also the page and inquiry scan buffers), the controller's own variables
+  and the Bluetooth heap come first in the RAM, as the SDK keeps them next to `bd_base` (its `btctler_lib_bss.ld`), and the link
+  checks it (`firmware/bt/app-bt.ld`). Test build 1 had the send pool at the end of the RAM, 118 KB above: its assertion was
+  the stall at 5.5 s.
+- **The radio pools' allocator** (`firmware/bt/bt_lbuf.h`) keeps each pool's header at the pool's first byte: the library
+  hands `lbuf_init` the pool and then uses the pool's own address as the pool, never the value returned. Test builds 1 to 5
+  aligned the header to 16 bytes; the receive pool (0x01C02DE4) is only 4-byte aligned, so every allocation from it failed and
+  a phone's link died after a few seconds (`RX 0/0`).
+
+## Test build 11
+
+Builds 1 to 10 got the radio up and a phone linked, then each failed further along. A review of the whole path, against the
+library's own code, found four walls between "linked" and "paired", one behind the other, so all four are fixed together:
+
+1. **The host ignored the link.** It tells a classic link from an LE one by comparing the handle with `get_ble_link_handle()`,
+   and that was a stand-in returning 0: no handle was classic, so every packet of the phone's was dropped and L2CAP, SDP and
+   A2DP never heard of the link. It returns 0x50 now, the library's own value (`bt_glue.c`).
+2. **Nobody confirmed the pairing.** "Just Works" still asks the host to confirm (HCI 0x33); this host leaves the answer to the
+   application, and the pedal never gave it, so the phone's timer ran out. The pedal confirms now (`bt_a2dp.c`), as the SDK's
+   demo does.
+3. **The phone's SDP question was never answered.** The SDP server waited, for a phone whose maker it does not know, for its own
+   SDP client, which this image does not have. It answers at once now (`bt_cfg.c`, `bt_stubs.c`).
+4. **After a failed link the pedal stayed invisible.** The controller turns the scans off when it makes a link and leaves it to
+   the host to turn them on again; the pedal now does at every link's end (`bt_a2dp.c`).
+
+Also: the scheduler's clock no longer wraps every 179 s (every timer and sleep pending at the wrap used to stop for good); no
+wait is made inside the baseband's interrupt any more (the library asks, and was always told "not in an interrupt"); three task
+stacks of 4 KB with their high-water marks; the pairing kept in RAM until power-off; the music packet held at a stop given back.
+
+For the crackles: since test build 4's crash, the second core was most likely **barred** on this pedal: that crash set the bar,
+and every test build after it had the same id, so the bar stayed until a real power-off, and the whole DSP ran on one core,
+with the radio's interrupts on top. Each test build now has its own id, and the stall watch's own crash no longer bars it: the
+first boot of build 11 runs on two cores (`C1 1` in the `isr` line; the screen shows the cores only where it shows the load:
+in bypass, `BYP C1 ...`, for 2 s after a late block, `C1 42%!`, and with Bluetooth off by REV, `BT OFF C1`; while Bluetooth
+is on, the status area scrolls the Bluetooth line instead). Then the
+`isr` line measures what the radio costs the audio, and REV at power-on gives the same image without the radio, to compare by
+ear. A preset change now also waits for silence to reach the output before it holds the audio interrupt (up to build 10 the
+output buzzed at 172 Hz for the length of the recompute, in every image), and the phone's music fades with the guitar.
+
+## Test build 12
+
+Build 11 paired an iPhone and the phone streamed (about 70 packets a second), but the pedal played nothing (`PK 1`), and the
+guitar still crackled with Bluetooth on, never with it off (REV). A review of the build-11 log against the library's code found:
+
+1. **No music.** The controller decides, for each media packet, whether it goes to the application or to the host: it keeps it
+   for the application only if the packet's channel is the one the application opened. In build 11 only the first packet of
+   each session was kept (the one the channel's open marked itself); every later one failed that test and went to the host,
+   which has nothing to play it with. No code in the library could have undone the open; why the test fails is not settled. So
+   the pedal now copies every media packet where the controller first shows it to the A2DP code, before that test, into a
+   FIFO, and plays from there, whatever the test then decides. The new a2dp line measures the test's inputs for each packet,
+   writes them back when wrong (`H`), and watches them 10,000 times a second, to settle the cause. (Build 13 keeps the
+   writing back and drops the rest: the FIFO line.)
+2. **Crackles.** The audio interrupt's driver (the SDK's) calls the output callback and the input-and-DSP callback each when it
+   finds its own flag up. Build 11's isr line shows two entries a period, input first (`AG 2144` = the period less the DSP's
+   stay), and seconds where the order flipped (`AG` just under the period): a few microseconds of extra latency (the radio's
+   interrupts, a cold cache line) flip it. With one output buffer each flip played one 2.9 ms block twice and skipped the
+   next: a step on any sounding note, with no late block, more often with Bluetooth on. The output now has two slots: the
+   output callback always sends the block before the newest, whatever the order (2.9 ms more latency). `EN` and `OC` in the
+   isr line count the entries and the flips; DLY at power-on brought build 11's single buffer back, to confirm by ear (gone in
+   build 13: the two slots stay).
+3. **The second core's fault.** It faulted (`G 4`) in every Bluetooth-on boot of build 11 and never with Bluetooth off. Its
+   record is now kept and printed (the c1 line): the debug unit's message and bus-master ids, CPU1's own exception word, the
+   time, the job, the stack's depth, and where Bluetooth was. (A CAB key for the stock firmware's supply levels, the cheap test
+   of the "misreads under load" the board's notes describe, did not fit in the flash: the record decides whether it is needed.)
+
+Also: Bluetooth's flash reads (the radio records, the address) run before the audio starts, and the radio's start-up burst and
+the flash reads wait for the second core's job in flight (the flash path is off meanwhile); `WC` survives a retirement; the
+log's ninth line; the build checks the library's static tables are where the a2dp line reads them (in build 13, where the
+heal reads `channel`), and keeps the compiled controller code (`listings/` in the artifact) to compare with the library's IR.
+
+## Test build 13
+
+Build 12 played the phone's music. But on some power-ons with Bluetooth on it crashed about 2 s after power-on, while the radio
+started: the red crash screen showed `VEC 1`, `DBG 00002000` (the first core wrote into a guard band) and a `PC` in `rv_block`,
+the reverb. The photos and the compiled code tell how, not yet why:
+
+- The reverb's loop runs over a chunk of 16 frames (the wet lane) or a block of 64 (the chain). In build 12's code the compiler
+  made its end test "stop when k equals n", so a k that once got past n never stopped: the loop's store marched 13 KB through
+  the RAM, until the guard band at `0x01C74000` stopped it.
+- Why k got past n is open: something wrote over n or k on the loop's stack (A), or one read of n, or one branch, went wrong
+  on the first core during the radio's start-up (B).
+
+What changed:
+
+1. **The reverb's loop stops at 64 frames, whatever its end says, and counts it**: `W` in the log's c1 line, with n as the loop
+   read it and k. No caller passes more than 64, so in normal running `W` stays 0. A cut costs a click instead of a crash:
+   up to 48 frames are still written past a 16-frame chunk, into the chunks after it, the lane's other buffer or the drive and
+   amp's oversampling buffer, so the click can be in the reverb or, for one block, in the amp's sound. (The delay's loop has
+   the same form; its cut did not fit in the flash.) In the code CI built (run 43039170246, `listings/px_dsp.s`), the cut also
+   brought the end test back to "k below n": the loop now has two exits, and the compiler no longer rewrites it. A k that
+   gets past n now just ends the loop. So a cut means that n was read too large, and a k that jumps is no longer counted.
+2. **The `LAST BOOT FAILED` report shows the crash's registers**: `R1` and `R6`, then `R12` and `SP`, in place of `DSP CODE AT`;
+   the lines below move down, and its `PLEASE TAKE A PHOTO` line is gone (the red screen before it asks already).
+3. **The room for them:** build 12's a2dp line (its probe of every packet and its 10 kHz watch) and the DLY key are gone. The
+   heal stays, and the log's seventh line is now the FIFO line.
+
+### What to do
+
+Switch off for real between boots (USB out too, 10 s). After each boot, once the pedal has started (about 10 s), read the
+log once: `node tools/op.mjs log --count 1`. `W` starts from 0 at every boot, so a single reading at the end would show the
+last boot only. Send all the readings.
+
+| Boots | Phone | Key at power-on |
+| --- | --- | --- |
+| 5 | any | REV held (Bluetooth off) |
+| 5 | its Bluetooth off until the pedal shows `BT VISIBLE` | none |
+| 5 | its Bluetooth on and near | none |
+
+If a boot crashes: a photo of the red crash screen, then one of the `LAST START FAILED` report that follows (it stays 12 s),
+then the log reading. That reading is of the safe-mode boot, whose DSP is off: it cannot show the crashed boot's `W`.
+
+Before the third set, pair the phone with the pedal once in this build (step 3 of "What you should see"), and do not forget
+`OpenPocket` on the phone between these boots: it must still list the pedal. The pedal forgets the pairing at power-off, but a
+phone that remembers it may try to connect while the pedal starts. That is part of the test. Note with each reading which set
+it belongs to: the log tells the REV boots (`KEY 3`) from the others, but not the second set from the third.
+
+### Reading W
+
+`W 0`: no cut of the reverb's loop was counted in this boot. After a cut: `W count n k time S`, the count in decimal, the
+rest in hex. `node tools/op.mjs log` names them and says which line of this table applies. The cut is taken when k reaches 64
+(40 in hex), and it records that k.
+
+| W shows | It means |
+| --- | --- |
+| `n` 10 (16) and `k` 40 (64) | n was read too large once, and was 16 again when the cut read it: a one-off wrong read of n on the first core (B) |
+| `n` 40 and `k` 40 | the same in the chain's call (a block of 64), not in a lane's chunk |
+| `n` anything else, `k` 40 | n's word on the stack was written over (A): its value is the writer's fingerprint |
+| `k` above 40 | not expected with this end test: k jumped while n was also read too large. `0020xxxx` is the second core's known misread |
+| `k` below 40 | a k below 64 cannot pass the cut's own check: that check misfired once (B), or k's register changed |
+| the time and `S` | when the main loop first saw the cut (ms since power-on, wrapping every 179 s like `UPTIME`) and where Bluetooth was then, the same word as the c1 line's `S`. The main loop does not run during the radio's start-up replay (stage 3): a cut there is seen only once the replay has returned, at stage 7 or a step after it (the numbers are not in time order: 4, ready, comes after 7), and later than the cut itself (build 12 crashed at 1,971 ms) |
+
+`W 0` does not rule out everything: a k that got past n ends the loop without a cut (this build's end test), and an n written
+over with a value up to 64, or a k thrown back, still ends the loop late (up to 48 frames past the chunk) without a cut.
+
+Many cuts in one boot, or cuts long after the start-up, are worth saying: the crash was a one-off at the radio's start-up.
+
+### Reading the registers (if it still crashes)
+
+The cut covers what a wrong n or k did in build 12 (above). If the crash comes back, something else went wild, and the
+report's registers say what. Read `DBG` first (on the `UPTIME` line): `00002000` (bit 13) is the first core writing into a
+guard band, as in build 12, and the rows below apply. `00200000` (bit 21) is a bus error flagged on the first core, most
+likely the delayed flag of holding the second core (build 4's crash): the `PC` and the registers are then only where the first
+core happened to be, and R1, R6 and R12 say nothing about the loop.
+
+| The report shows | It means |
+| --- | --- |
+| `R1 -  R6 -` and `R12 -  SP -` | the saved registers are not this crash's (not expected: every crash of the first core saves them; a fault of the second core retires it, `G 4` in the log, and makes no report) |
+| `PC` in `rv_block` | not expected: with its end test and the cut, build 13's loop cannot reach a guard band. Its registers moved too (CI listing): n is reloaded into r0, k is in r6 (r7 in the other three variants) and the store's pointer in r5, so `R1`, `R6` and `R12` are not the loop's n, k and pointer here. Send the photo: the developer reads them with the listing |
+| `SP` | the stack at the crash: about `01C7BE2C`..`01C7BE40` when the audio interrupt came from the main loop |
+| another `PC` | the registers are that code's: look the PC up in `build-bt/symbols.txt` of the same CI run |
+
+**Checked before flashing build 13** (CI run 43039170246, `rv_block` in `listings/px_dsp.s`, the compiler's assembly):
+
+- the four loop heads each copy k through the empty asm and branch to one shared cut path with an unsigned
+  `if (r0 >= 64)`;
+- each loop's end test is `ifs (k < r0)` with n reloaded from `[sp+128]` on every sample (build 12's was an equality), and
+  the cut path records n from that same word and the k it compared;
+- the frame is build 12's: `sp += -192`, n at `[sp+128]`, k saved at `[sp+88]` around the call to `rv_front`;
+- the registers moved: n reloads into r0, k is in r6 (r7 in the other variants) and the store's pointer in r5. `rn` in
+  `firmware/openpocket.c` was left at r1, r6 and r12: with this end test the loop cannot reach a guard band, so a crash
+  report from build 13 is about some other code, and its registers are read with that code's listing.
+
+**Again for build 14**: v42 puts `rv_front` inside `rv_block`, so its code and frame change. Before flashing, check the same
+points in build 14's `listings/px_dsp.s`: the loop heads' unsigned compare and shared cut path, the end test `k < n` reloading
+n on every sample, the frame, and which registers hold n, k and the store's pointer.
+
+## Test build 14
+
+The same image on OpenPocket v42 (v41: the NAM network split between the cores by a worker that stays on the second core,
+the NAM's hand routines rdm6, rdm15 and post5; v42: the pedal's controls and screens, the audio callbacks' order, USB audio,
+which is not in this image). What changed for Bluetooth:
+
+1. **The crackles' cause, fixed as v42 fixes it.** v42 found the same fault from the other side (`firmware/px_aorder.h`): the
+   10 kHz timer, above the audio interrupt, makes it enter late, both callbacks are due, and the output's runs first. An output
+   block asked for before its input's is now filled as soon as that input's block is made, in the same interrupt, so the
+   block goes out with no latency more. Builds 12 and 13's two slots (one block, 2.9 ms, more latency) are gone, and `OC` in
+   the isr line counts these blocks. What can still click is the time between the two callbacks of one entry, where the
+   radio's interrupts and the 10 kHz timer, above the audio's, can run for longer than v42 measured: an input's callback that
+   comes later than the window after its output's (`px_audio.h A_ORDER_TICKS`: half a block, 1,451 µs, in this image; v42's
+   725 µs elsewhere) is taken for another entry's, and that output block is left as it was (a click). `OD` counts those,
+   `OG` the longest that time got (`AI` is the whole stay, the DSP included, and does not show it). Two costs of filling the
+   block in its own entry, which builds 12 and 13 did not have: in every period the audio interrupt waits there for the
+   second core's block (its job or the layer split's blocks after the amp), so the main loop, which decodes the music and runs
+   the Bluetooth tasks, gets less of the first core's time; and the block must be ready within the period, the entry's
+   lateness included, where the slots had a whole period more.
+2. **The second core's worker.** While a NAM preset plays, v41's layer split keeps one job running on the second core. The
+   radio's start-up burst and the flash reads (`ota_fread`), which switch the flash path off, waited for the second core's job
+   to end; this one never ends, and that wait would retire the core after 8 ms (`G 2`, then `BYP` on NAM presets until
+   power-off). They now wait until the worker idles in its loop (RAM code) with nothing left to do (`px_audio.h
+   a_cpu1_quiet`), within the same 8 ms. A core retired there (it never idled, or it faulted) is collected there at once, as
+   v42's own retirements are: one core from then on, the engine reset (15 to 50 ms of silence, `NAN`), and `G` keeps why
+   (`4` for a fault). Left to the next audio interrupt, that interrupt would have handed network blocks to the stopped core,
+   waited 8 ms for them, and retired it again as `G 2`.
+3. **The library folded at build time** (`tools/jlfold.py fold`, the folding probe's variant B): the configuration constants
+   the firmware gives it folded in, the print helpers the firmware leaves empty dropped: 94.7 KB less flash. v41's and v42's
+   firmware does not fit the app slot without it. The code is JieLi's IR compiled again with its constants known, not the
+   published objects: pairing and the music must be checked again. In the container, `OP_BT=1 OP_BT_FOLD=0 sh
+   firmware/build.sh` builds the library as before (the image then does not fit). The probe still runs: its `B` must give
+   "the real image's bytes".
+4. **Memory.** v40.4 moved the engine's buffers (14.6 KB) to the SRAM below the RAM, where this image keeps the baseband's
+   table and the receive pool: here they stay in the RAM code window, as in builds 12 and 13 (`firmware/bt/app-bt.ld`). To make
+   that room, the NAM's hot routines (rdm6, rdm15, post5) run from the flash, as in the release (the BLE image keeps them in
+   RAM, `firmware/build.sh PXN_HOT_RAM`). How they run from the flash with the radio's code also running from it is not
+   measured: compare `LD` and `PK` of a NAM preset with build 13's.
+5. **v42's screens**: `LAST START FAILED`, and an overload shows a red banner. The status area still shows the Bluetooth state
+   (scrolling while visible or linked); v42's load text replaces it only after a late block (`DSP 88%!`) or in bypass, and
+   beside `BT OFF` or `BT START` it is cut off: the isr line has `LD` and `C1`. HOME on the play screen opens the preset list;
+   HOME held opens the tuner, then the diagnostics; both footswitches together open the tuner. A new id for the second core's
+   bar, so a bar left by build 13 does not carry over.
+6. **The visible line's `V`** shows the BLE image's flags in full (`F` stays `F`): v41 gives a pedal whose VM 106 or 107 is
+   missing the Pocket X backup's values instead of zeros (`10`, `20`), so the crystal trim beside it may be that default.
+7. **The pairing kept** (below, "The pairing kept").
+
+### The pairing kept
+
+Up to build 13 the pedal kept the phone's pairing in RAM: after a power-off the phone still had its key, the pedal did not, and
+the phone could connect only after **Forget This Device** and a new pairing. Build 14 keeps it in the flash
+(`firmware/bt/bt_ps.h`):
+
+- **What is kept:** the Bluetooth library's own pairing records (21 records of 32 bytes: the link keys of the phones that paired
+  and what it learnt about them), exactly as the library writes them.
+- **Where:** two 4 KB sectors at `0xEE000` and `0xEF000`, just below the presets, which OpenPocket never used (the stock
+  firmware kept cabinets there). Each holds 5 copies of the records; a copy carries a sequence number and a CRC, and its mark is
+  written last, so a copy cut short by a power-off is never taken for a good one. At power-on the newest good copy is loaded.
+- **When:** 1 s after the library's last change, from the main loop, with the audio held as for a preset save (about 25 ms of
+  silence). The library changes the records when a phone pairs, when a phone it knows connects after another one, when a
+  phone's key fails, and the first time it learns a phone's type; not when the same phone connects again. So a save comes with
+  a pairing, not with every connection.
+- **Wear:** a sector is erased once every 5 saves, at a power-on (before the audio and the radio start), or during a save in a
+  session of more than 5. At the 100,000 erases a NOR flash sector is commonly rated for, about a million pairings.
+- **Not kept:** a pairing made less than 1 s before a power-off, or one whose save is cut by it (the copy before it stays).
+  The BLE image keeps nothing of this, and the release firmware never touches the two sectors.
+
+How to test it:
+
+1. On the phone, forget `OpenPocket` if it paired with an earlier build. Pair it with the pedal (step 3 of "What you should
+   see") and play some music.
+2. `node tools/op.mjs log`: the isr line's `VM` shows a copy saved, e.g. `VM 4/2/1/0/1` (`s` 1); the tool says "1 saved to
+   the flash since power-on".
+3. Switch the pedal off for real (USB out too), wait 10 s, switch it on.
+4. Once the pedal shows `BT VISIBLE`, the phone connects by itself, or after a tap on `OpenPocket` in its Bluetooth list, **with
+   no Forget This Device and no new pairing**. Play music: it comes through the pedal.
+5. `node tools/op.mjs log` again: `VM` shows `q` 1 or more with `s` 0, e.g. `VM 4/0/0/0/1` ("a copy loaded from the flash at
+   power-on"). If the phone did not connect: this reading, and whether the phone listed `OpenPocket` as connected, failed, or
+   not at all.
+6. The same after pairing a second phone (or the same phone again, after forgetting the pedal on it): each pairing raises `s`
+   and `q`, `f` stays 0, and after a power-off the phone paired last connects.
+
+A power-on whose `VM` shows `q` 0 and `f` 3 found the copies reading differently on a second look: it left the flash alone and
+kept the pairing in RAM only for that boot (as builds 11 to 13); the next power-on reads it again. Report such a reading.
+
+### What to check
+
+1. "What you should see", steps 1 to 5, with the phone that paired with build 13 (forget the pedal there first): the folded
+   library pairs and plays.
+2. The crackles: with the music playing, the guitar through CHURCH ORGAN and a heavy NAM preset. `OC` rising (beyond one for
+   each preset change and flash write) with `OD` at 0 and no clicks is the fix working, and `OG` says how close those entries
+   came to the window (1,451 µs); with clicks, the isr line (`OD`, `OG`, `40`, `41`, `T5`, `XR`) while they happen. Clicks with
+   `OD` 0 and `XR` 0 point at a block not ready within its period: build 13's two slots are the way back.
+3. The load: `node tools/op.mjs dsp --presets 1,14,18,19,20,21,24 --seconds 8` with the music playing and paused, against build
+   13's figures (the NAM routines from the flash, item 4).
+4. The music's decoding: with the music playing for a few minutes, the link line's `UND` and `BUF` on a heavy preset without NAM
+   (`C1 1`, a high `LD`) and on a heavy NAM preset, against build 13. `UND` rising where build 13's stayed at 0 is the first
+   core's new wait in each period (item 1) leaving the main loop too little time.
+5. The crash at the radio's start-up (about 1.96 s): the same 15 boots as build 13 ("What to do"), with `W` and `G` of each.
+   Build 12's record showed the second core trapping at that moment in every Bluetooth boot; v41's worker keeps it busy through
+   the whole start-up on a NAM preset. Before flashing, check `rv_block` in the listings as for build 13 ("Reading the
+   registers"). With the pairing kept, the third set's phone (its Bluetooth on and near) now connects during the start-up.
+6. The pairing kept: "How to test it" above.
+
+## Its own effects: LOW OCTAVE and SYN PAD
+
+On top of test build 14 the image has two effects of its own (their knobs, the PAD's footswitch and CC 64, settings to
+start from: [OWN-FX.md](OWN-FX.md)), built only here (`engine/px_dsp.h` `PX_OWN_FX`, which `firmware/build.sh` sets under
+`OP_BT`). Their room is paid for in this image: the drive and delay code no model reaches is left out (the same sound, bit
+for bit) and the delay ring is 456 ticks shorter (the longest delay is still 2.0 s). Every other model sounds as before.
+The web editor sees the image as `v42 FX`.
+
+What changes on the pedal:
+
+- PIT has a 6th model, LOW OCTAVE; SYN a 12th, PAD.
+- With a PAD on in the preset, the left footswitch catches the chord (it no longer steps back a preset there) and, held
+  0.7 s, fades it; both footswitches together still open the tuner. MIDI CC 64 at 64 or more catches the chord too.
+
+Before flashing, in CI's artifact: the `hi RAM`, `pool tail` and `RAM` lines of the build log (the RAM code window should
+have about 4 to 5 KB more free than test build 14; the pool tail 40 bytes left, as before), and `rv_block` in
+`listings/px_dsp.s`, which should read as build 14's apart from its labels' numbers (the effects' state keeps the reverb's
+fields where they were; in `linked.txt` its addresses move).
+
+What to check:
+
+1. LOW OCTAVE at `LOWEST`, GROWL and COMP at 100, in front of a NAM preset, the music playing: `node tools/op.mjs dsp`
+   against the same preset without it (late blocks, `BYP`).
+2. A PAD on a preset without NAM, after a catch: the c1 line's `K` (the second core's stack, of 2,816 bytes).
+3. Around a catch with a heavy NAM preset: `PK` and late blocks.
+4. By ear: the octave on the low strings only, the pad holding a chord steady, no clicks at a catch or a crossing.
+
+## Test build 24: BLE MIDI, the delay at 780 ms, tap tempo
+
+- BLE MIDI beside the music, as test build 23 meant it (23 did not link: a stand-in for `le_controller_handler_for_ble5`
+  was missing).
+- The delay's ring is 18,176 ticks (`PX_DLY_SHORT`): TIME stops at 780 ms, REVERSE at 390 ms; the screen shows 780 for
+  any TIME of 63 or more. The 53,760 bytes this frees in the pool take the NAM model, its rows and the IR's spectrum
+  (`PX_BT_POOL`), about 24 KB out of the main RAM.
+- The music's packet queue holds 32 packets (464 ms, was 16) in the pool, no longer in the Bluetooth heap: its 10,816
+  bytes go back to the heap, which BLE now shares.
+- While the screen draws, the queued music is decoded every 4 ms (`bt_yield`, called from the screen's two DMA loops):
+  the long drawings under the NAM network's load used to leave the 58 ms ring dry (`UND`) and overflow the queue. The
+  FIFO line's `GAP max/n/y`: the longest wait between two decodes while playing (ms), the waits longer than 58 ms, the
+  decodes the screen asked for.
+- Tap tempo: MIDI CC 116 at 64 or more is a tap. Two taps 200 ms to 2 s apart set TIME to their interval, from the third
+  on to the mean of the last three; a pause of more than 2 s starts over (`firmware/px_midi_io.h`, `tests/midiio.c`).
+
+What to check: the Chocolate connects over Bluetooth and its footswitches act; the music with a heavy NAM preset while
+changing pages and presets: `UND`, `GAP` and the drops stay low.
+
+## Test build 25: the expression pedal
+
+One expression pedal, on MIDI CC 117 (a Chocolate Plus with a pedal in its jack: CubeSuite's expression pedal page, CC 117,
+0 to 127), moves what the preset has on:
+
+- a **WHAMMY** (PIT): heel the note as played, toe its SHIFT (the interval, up or down), so SHIFT 75 is an octave up at the
+  toe; its GLIDE still smooths;
+- else an **AUTO WAH** (SFX): heel to toe the sweep CENTER makes, 350 Hz to 2.25 kHz (DEPTH 0 for a plain wah pedal; with
+  DEPTH, the LFO moves around the pedal);
+- else the **volume**, before the delay and the reverb, so closing it leaves their tails ringing (half way about -18 dB, the
+  heel silent).
+
+The position stays out of the preset: nothing to save, nothing redrawn, on every page. When the pedal comes back to the volume
+from another job (a wah turned off), the volume stays at unity until the pedal moves, so a wah left at the heel does not
+silence the next song. Until a first position comes the engine plays as before, bit for bit (`tests/ownfx_equiv.sh`). The
+volume is smoothed over 10 ms, the wah over 15 ms, the whammy over 15 ms and then its own GLIDE (`engine/px_dsp.c` `px_exp`,
+`tests/engine/exp.c`, `tests/midiio.c`).
+
+What to check: the pedal as the volume (swells, the delay's tails after it closes), a wah, a WHAMMY with a NAM preset (its
+pitch shifter runs as before: late blocks, `BYP`), and that turning a wah off at the heel keeps the sound.
+
+## Test build 26: the music through a save
+
+Test build 25's first log with music showed `GAP 2031/2`: the main loop stopped for 2 s once, when a preset was saved. After
+the flash write, the save page kept "SAVED" on the screen for 0.7 s in a plain wait, with the radio unserved: the music's
+ring ran dry (`UND`), its queue overflowed (dropped 4) and the radio's receive pool filled (`RX .../12096/12272 F16`). The
+wait now serves the radio as the main loop does (`ui.h` `UI_IDLE`, `ble_test_poll`). The flash write itself still holds the
+audio, the guitar's too, for a moment: save between songs. The crash screen no longer runs the music's decoder while it draws.
+
+## Test build 27: the web editor over Bluetooth
+
+The web editor ([`editor.html`](https://isod89.github.io/openpocket/editor.html), or `http://localhost:8765/editor.html`
+after `make serve-bt`) now also reaches the pedal over Bluetooth MIDI, the link the Chocolate uses: from a Mac, from Chrome on
+Android, or from a Web MIDI browser on an iPhone or iPad (MIDIWeb). Nothing changes on the page: the computer or the phone
+shows the pedal as a MIDI port named `OpenPocket`, and the editor finds it there as it finds the USB one. USB works as before,
+also with both open: each request is answered the way it came.
+
+**Two Bluetooth MIDI links at once.** The pedal takes two Bluetooth LE links (up to test build 26: one): the Chocolate on
+one and the editor on the other, beside the phone's music (the classic link), so the sound can be tweaked from the phone while
+the Chocolate switches the effects. The pedal goes on advertising while a link is free, so the second central finds it while
+the first is connected, and again after either goes. The Chocolate's Control and Program Changes act from either link; the
+editor's replies go only to the link that asked, and a change made from the Chocolate shows in the editor as a change made on
+the pedal does.
+
+### Connect
+
+- **Mac.** Unplug the pedal's USB cable (a charger is fine), so that the editor finds the Bluetooth port and not the USB one.
+  Open **Audio MIDI Setup** (Applications > Utilities), **Window > Show MIDI Studio**, then the Bluetooth button in its
+  toolbar (**Configure Bluetooth**): `OpenPocket` is listed, **Connect**. Then open the editor in Chrome and press
+  **Connect**. When done, **Disconnect** in the same window (the Chocolate stays connected meanwhile).
+- **Android.** Open the editor in Chrome and press **Connect**. Chrome sees a Bluetooth MIDI device only once Android has
+  connected it: if the editor does not find the pedal, connect `OpenPocket` with a BLE MIDI app (for example "MIDI BLE
+  Connect"), leave it connected, and press **Connect** again.
+- **iPhone, iPad.** Safari has no Web MIDI: use a Web MIDI browser such as MIDIWeb. Open the editor's address there, connect
+  `OpenPocket` from its Bluetooth MIDI panel, then press **Connect** on the page.
+
+The first time a browser connects to this firmware, the editor reads its catalogue (the blocks, their models and the values'
+texts): about 150 requests and 1,800 notifications, about 20 s over Bluetooth (a moment over USB). The browser keeps it, so the
+next connections start at once; a browser that already used the editor over USB with this build has it already.
+
+### What works, and how fast
+
+Everything the editor does over USB: presets, live editing, the changes made on the pedal shown on the page, saving, backups,
+NAM models and cabinet IRs. Bluetooth is slower than USB, about 2.5 KB/s from the pedal: a knob follows at once, a list or a
+model takes longer (a NAM model goes in 67 pieces: some seconds). A save (a preset, a model, an IR) holds the audio during the
+flash write, as a save on the pedal does (test build 26: save between songs), and the radio waits too: if the link drops there,
+the editor says the pedal is lost; connect again.
+
+Over USB only: installing firmware (the installer), the rescue (UBOOT) key, and the log channel (`node tools/op.mjs log`: its
+DIAG reply is too long for Bluetooth and is dropped). Nothing but the editor's frames is taken from Bluetooth.
+
+### How it works
+
+- The pedal reads the editor's SysEx in the MIDI characteristic's writes, across writes (BLE MIDI cuts it, with a header and
+  timestamps): `firmware/px_ble_midi.h` `px_blem_sysex`, in a pass of its own beside the Chocolate's reader, whose messages are
+  as before. One frame at a time, up to 160 bytes.
+- The reply goes into the LE side's own buffer of 1 KB (`firmware/bt/bt_le_midi.c`), so the USB editor's buffer is free at
+  once. The host's task sends it as notifications of the MIDI characteristic from its `ble_profile_loop` hook, in packets of 20
+  bytes (one link-layer packet each, whatever MTU the central asked for), each acknowledgement of the controller bringing the
+  next. Only a few wait unacknowledged in the controller: about 2 for each 15 ms of the link's interval (1 at 7.5 ms, 2 at
+  15 ms, 4 from 30 ms), so the editor takes the same small share of the radio whatever interval the central chose, and the
+  music keeps the rest. A reply that sends nothing for 3 s is dropped (the editor asks again).
+- A push (a change made on the pedal) waits for the last reply to be out, and a request from Bluetooth for the last push.
+- A new LE link, or the end of one, drops what was left of the last one's on it (a reply, a frame, the pushes).
+- Memory: 1,024 bytes for the replies and 160 for the frame being read, in the main RAM, and a few words.
+
+**Two links** (`firmware/bt/bt_le_links.h`, `firmware/bt/bt_cfg.c`). The controller's radio entities go from one to two
+(`config_btctler_le_hw_nums`, and the host's `config_le_hci_connection_num`, which may not pass it): advertising takes a free
+entity, and a central's connection turns it into the link and ends the advertising (`ll_adv.c`), so two entities give one link
+and advertising, or two links. The library's multi-link scheduling (`multilink_schedule.c`, linked since test build 23, and
+`config_btctler_le_slave_multilink` on since then) places the two links' events; no other library member is needed. After a
+link is made or ends, the pedal asks for advertising while a link is free, and asks again every 2 s while one is (asked while it
+runs it does nothing), so a central that comes later finds it. Each link has its own reader for the editor's SysEx, so the
+Chocolate pressing between the writes of an editor's request on the other link spoils nothing; the musical messages of both
+links share the reader they had, which reads each Chocolate message from its own timestamp and status.
+
+What it costs: about 2.3 KB more of the Bluetooth heap with both links up (the host's second connection, 1,240 bytes,
+`btstack_memory.c`; the bonding table's second entry, 56; the LE baseband's second entity, 664, `RF_ble.c`; the second link's
+state, 336, while it is up), against about 13 KB left at its lowest before; about 0.2 KB of main RAM (the second link's SysEx
+reader). And radio time: advertising every 500 ms (three short packets, about 0.3 % of the air) while only one link is up, and a
+second link's connection events. Whether the music stays clean with the three links up is the thing to check on the pedal.
+
+### In the log
+
+The MIDI line's LE words (`node tools/op.mjs log` over USB: plug the cable back after the test, the counts stay until
+power-off) start with `LE 2 L3 ... A4/0 I12/24`: the links up (0 to 2), the links made since power-on, advertising asked n times
+/ its last answer, each link's interval (1.25 ms units). Once the editor has used Bluetooth they end with `ED 12/340 N1/0`: the
+frames answered over Bluetooth / the notifications sent, and each link's client configuration (`1`: notifications on; `0` on the
+editor's link with notifications sent means its central never wrote it, as one bonded before may not, and the replies went
+anyway). Then, when there are any, `X` and the replies dropped (no link, too long, or 3 s without progress) and `SX` and the
+SysEx dropped (too long, unfinished, or come while one waited).
+
+### What to check
+
+1. The music playing from the phone, the Chocolate on and connected (the log's `LE 1`). From the Mac (USB unplugged): connect
+   `OpenPocket` in Audio MIDI Setup, open the editor, **Connect** (`LE 2`). The catalogue loads (about 20 s the first time),
+   then the presets.
+2. A knob in the editor: the pedal follows at once. A knob on the pedal: the page follows. The music meanwhile: no skips.
+3. The Chocolate's footswitches while the editor is open: the effects switch, and the page shows them.
+4. A preset saved from the editor (the music skips once, as a save on the pedal).
+5. **Disconnect** in Audio MIDI Setup: the Chocolate still acts; connect again: the editor comes back.
+6. The Chocolate off and on: it connects again while the editor stays.
+7. The USB cable back: the log's MIDI line (`LE`, `I`, `ED`, `X`, `SX`), and the music's (`UND`, `GAP`).
+8. The same from an iPhone with MIDIWeb (the music from that iPhone too: three links), and from Chrome on Android.
+
+## Test build 28: the pedal as the Chocolate's central
+
+The regular M-VAVE Chocolate (not the Plus) is only a Bluetooth peripheral: phones and computers connect to it, it connects to
+nothing, so up to test build 27 it could not reach the pedal. M-VAVE's own firmware connects to it as its **central**, and so
+does this build: while no footswitch is connected, the pedal listens for it (it scans), connects to it, finds its MIDI
+characteristic and subscribes to its notifications; its footswitches then act as the Chocolate Plus's do (Control and Program
+Changes, tap tempo, the expression pedal), through the same MIDI reader. The editor over Bluetooth (test build 27) works beside
+it, and so does the phone's music.
+
+### Use
+
+1. Switch the pedal on, then the Chocolate (or the other way round). Within a few seconds the pedal connects to it and its
+   footswitches act. Nothing to pair by hand: if the Chocolate asks for pairing, the pedal asks for Just Works pairing by
+   itself (that path is untried: the log's `PR` counts it).
+2. The first Chocolate the pedal links after power-on is the only one it takes until the next power-off (another player's
+   Chocolate on stage is never taken). Its address is in the log's LE line (`@...`).
+3. Keep the Chocolate away from a phone's app while the pedal looks for it: a Chocolate already connected to a phone does not
+   advertise, so the pedal cannot find it.
+4. **DLY held at power-on: no central role** for that boot: no scanning, the LE side exactly as test build 27 (two phones or a
+   Chocolate Plus). It is the stage fallback if the scanning ever disturbs the music. (DLY used to leave out the rest of the
+   stock power setup, a diagnostic of test builds 18 to 27; the stock setup is now always done.)
+
+### How it works
+
+- **Which one is the Chocolate.** It is the advertiser that shows the BLE MIDI service UUID and a name containing `FOOTCTRL`
+  (the regular Chocolate's Bluetooth name in its quick guide and in players' reports) or `CHOCOLATE` (another of its manuals),
+  without case, in its advertising data or its scan response, advertises as connectable and is heard at -80 dBm or more
+  (`firmware/bt/bt_le_central.h`, `LE_CEN_NAMES`, `LE_CEN_RSSI`). Once one has been linked and subscribed, only its address.
+- **Scanning** (active, for the scan responses' names) runs only while the footswitch's link is down: 10 ms every 200 ms, 5 % of
+  the radio's time. With it found, the pedal stops scanning and connects (the library's initiator, which itself listens 5 ms in
+  every 15 while the classic link is on), asking a connection interval of 30 ms at most, no latency, a 2 s supervision timeout
+  (a flash write's pause does not end the link). A connection not made in 3 s is cancelled and the scanning goes on.
+- **The client** is the pedal's own, not the library's GATT client (not linked): the ATT packets with an odd opcode, the
+  responses and notifications, reach it through `att_dispatch_register_client`, and its requests go out as the server's
+  notifications do. It reads the primary services until the BLE MIDI one, its characteristics until the MIDI one, its
+  descriptors after the value until the client configuration, then writes it on (notifications). With the same Chocolate again
+  it goes straight to that write, with the handles found before. An answer that asks for security makes it pair (Just Works)
+  and ask again once the link is encrypted; an unanswered request (5 s), or pairing that encrypts nothing (8 s), ends the link
+  and the scanning starts again.
+- **The links.** Two LE links, typed: one for the footswitch (the pedal is its central), one for a phone or computer (the
+  editor). The two radio entities give: advertising and scanning (nothing connected), the footswitch's link and advertising, a
+  phone's link and scanning, or both links. So with the central role on, only one phone's LE link at a time (a second phone,
+  or a Chocolate Plus beside the editor, needs DLY at power-on).
+- **The library.** The controller's master link is `ll_master.c`, from the same pinned `btctrler.a` as the rest of
+  `third_party/jieli-ble` (its two handlers were empty stand-ins up to test build 27); everything it calls was already in the
+  image, apart from a Wi-Fi detection report (stood in) and two log switches. The roles: `LE_MASTER | LE_SLAVE | LE_ADV |
+  LE_SCAN | LE_INIT` (`bt_cfg.c`). The scanner, the initiator and the multi-link scheduler were linked already.
+- **Memory.** No more links than test build 27, so no more of the Bluetooth heap for them; the scanner's own link state (20
+  bytes) while it scans; the client and the filter about 0.2 KB of main RAM; `ll_master.c`'s code in the flash.
+
+### In the log
+
+The DIAG's eleventh line (`node tools/op.mjs log`: the `le` row) holds the whole LE side: `LE 2 L3 W134 P1 A4/0 C24 P12 U2
+24/0/200 D08@31500 IRQ 812/97 WD1@36000 ED 12/340 N0/1 CEN LINK R310 M2 T2 K2 S2 F0 MIDI 41 @A1B2C3D4E5F6`. After the links'
+counts and advertising, each link up as its role (`C` the footswitch's, the pedal its central; `P` a phone's) and interval
+(1.25 ms); when there are any, `U` the connection updates (count, then the last one's interval, latency and supervision timeout
+in 10 ms), `PHY` the PHY updates (count, the last transmit/receive PHY), `DL` the data length changes (count, the last transmit
+octets), `D` the last LE link's end (its reason in hex: `08` supervision timeout, `13` the other side ended it, `16` the pedal
+did; `@` ms since power-on, as `SE` and `RC`); the LE interrupts; `WD` the watchdog's restarts (below) and the last one's time;
+the editor's words (test build 27); then the central role: `CEN` and its step (`SCAN`, `INIT` connecting, `LINK`; `KEY` when
+DLY was held), `R` advertising reports read, `M` the footswitch's matched, `T` connections asked, `K` links made, `S`
+subscriptions, `F` failures (a link dropped by the client), `MIDI` its notifications; `PR` pairings asked, `CL` the client's
+step and last ATT error, and `@` the footswitch's address once known.
+
+### What to check
+
+1. The music playing from the phone, the Chocolate on: within a few seconds its footswitches act. The log: `CEN LINK`, `S1`,
+   `MIDI` rising with each press. `CEN SCAN` with `R` rising and `M0` means no advertiser passed the filter: the Chocolate's
+   name is then neither of the two (a scanner app on a phone, such as nRF Connect, shows its name and services).
+2. The Chocolate off and on again: it comes back by itself (`K`, `S` up by one).
+3. The editor connected over Bluetooth meanwhile (test build 27): both work.
+4. The music with the Chocolate away (scanning): `UND`, `GAP` as in test build 27.
+5. DLY held at power-on: `CEN KEY`, and the LE side as test build 27.
+
+### Test build 27's LE link drop
+
+On the pedal, test build 27's editor link from an iPhone (MIDIWeb, no music) ended by supervision timeout (`D8`) about 20 s
+in, as the catalogue read ended, and the LE side then stayed silent until power-off: the LE interrupts and the controller's own
+thread stood still, and advertising, asked again (`A2/0`), never came back on air. The cause is not known yet. Build 28 adds:
+
+- **A watchdog** (`bt_le_watch`, from the main loop): while something should be on air (advertising, scanning or a link) and
+  neither LE interrupt has moved for 4 s (advertising alone moves them every 500 ms), it turns advertising and scanning off and
+  on again, which closes their radio entities and opens new ones, scheduled afresh. `WD` counts it. Asking again without
+  turning off first (build 27) does nothing: the controller answers "already open".
+- **The classic scans' kick waits 30 s** instead of 5 while an LE link is up: the radio can serve an LE link for seconds on end
+  (the catalogue read), and the drop came in a boot with two kicks (which came first is not known). `KICK` now has its time.
+- **The link layer's procedures in the log** (`U`, `PHY`, `DL`, above) and the drop's time (`D08@...`), to see what the phone
+  did before a drop.
+
+What was checked in the library (its bitcode): a lost link's radio entity is freed (`le_hw_close`: its anchors cleared, a
+suspended advertiser or scanner resumed); the Wi-Fi detection hooks on that path (`ll_wifi_detect_ext`,
+`ll_update_ch_done_wfdet_callback`) return nothing, so their stand-ins change nothing; an LE link's end does not reach the
+classic side's disconnection handling (`hci_vendor.c` sends it to the LE handlers only). The LE scheduler (`ble_slot_schedule`)
+skips its pass when an interrupt arrives while a pass from the controller's task holds its lock: a lost pass is one way every
+LE event could stop at once, not proven.
+
+To check: the editor's catalogue read over Bluetooth from an iPhone, then 2 minutes idle: no `D08`; if it comes, the `U`
+words before it and whether `WD` brought the pedal back (it shows in the phone's Bluetooth MIDI list again within a few
+seconds, `A` rises, the LE interrupts move).
+
+### Test build 28's hang at Bluetooth's start
+
+On the pedal, test build 28 (c595492) stopped about 1.5 s after power-on: a watchdog reset, then safe mode, with no stall
+record (`last boot FAILED: it stopped at FIRST 6 S, reset by WATCHDOG; blocks 126, load 80%`). The safe-mode boot's own c1
+line (`V never`, `SE 0`) is that boot's, Bluetooth off, not the failed one's. 126 blocks of 2.9 ms with the DSP's load mean
+the DSP had just started (1.5 s), the moment Bluetooth becomes visible in a normal boot (`V 1452`): there test build 28
+starts advertising and, new, scanning for the footswitch.
+
+The cause, in the library's bitcode: the LE event interrupt (`RF_ble.c ble_event_irq_handler`) holds the baseband's spinlock
+(`bb_hdl`, a `testset` loop, interrupts off) for its whole run and calls `ble_slot_schedule`, which for a scanning or
+initiating entity calls `le_hw_suspend`. That asks `cpu_in_irq()`: in an interrupt it uses `ble_hw_disable_isr`, otherwise
+`ble_hw_disable`, which takes the same spinlock. This image's `cpu_in_irq()` counted only the classic baseband's interrupts
+(`bt/bt_irq.c`); the LE ones jump into the library's own entries (`ble/ble_isr.S`) and could not count themselves. So the LE
+interrupt took the lock it held, and spun there for ever with the interrupts off: nothing ran, not even the stall watch's
+tick. Up to test build 27 no entity scanned or initiated, so nothing in an LE interrupt reached that question.
+
+The fix (`ble/ble_os.c`): `cpu_in_irq()` is 1 also while the code runs on the system stack, where every interrupt runs and
+nothing else does (crt0 points `ssp` there; the main loop runs on `_ustack`, the tasks on their own stacks; the stall record
+relies on the same). Inside the LE interrupts the library now takes its interrupt paths, as in the SDK, and the waits of
+`ble_os.c` refuse there. `tests/test_ble_taskq.c` checks it. The BLE image is unchanged (its `cpu_in_irq()` stays 0).
+
+To check: a normal boot with the Chocolate away: the pedal starts, `CEN SCAN` and `R` rising in the LE line; then with the
+Chocolate on.
+
+### Test build 30's silent scanner, and test build 31's scanner alone
+
+Test build 30 started (the hang fixed) but its scanner heard nothing: `CEN SCAN R0`, and the LE interrupts were advertising's
+alone (98 and 90 in 16 s), with a Mac and an iPhone nearby. In the library's bitcode: beside advertising, a scanner starts
+suspended (`RF_ble.c le_hw_scanning`: more than one radio entity), and only the slot scheduler, from the LE event interrupt,
+resumes it, when a gap of its interval less its window (304 slots) lies ahead and the status register 0x28038's bit 1 is clear
+(`ble_slot_schedule`). Alone, a scanner is enabled at once. Also: a failed open (`ll_scan.c ll_scan_open`: no radio entity free,
+58) leaves the scanner half-open, and every later enable answers 12, "already open"; only an off clears it. (The scan
+parameters are not an HCI command here: the host sets them directly, `ll_scan_set_params`, while the scanner is closed. The
+host passes every advertising report on, whatever started the scan.)
+
+Test build 31 (`LE_SCAN_ALONE`, `bt/bt_le_midi.c`): with no phone linked, advertising pauses while the pedal scans, 4 s
+scanning, then 2 s advertising (`CEN PAUSE`), in turn, until the footswitch is linked; its connection is made alone too, and
+advertising comes back with its link. With a phone linked, its link and the scanner, as in build 30. A scanner silent for 2 s is
+turned off and on (no longer only asked again). New in the LE line, after `CEN`: `AH` while advertising is held, `RAW` the
+advertising reports that reach the pedal's callback (before any test), `SO` the scanner starts asked, and `HW`: the library's
+radio entities, `HW2 0:1/0 1:2/2 IE 03 BB 00` = two entities, slot 0 scanning (state 1, run flag 0: enabled at once), slot 1
+advertising (state 2, 2: resumed); states 1 scanning, 2 advertising, 3 connecting, 6 the footswitch's link, 7 a phone's; run
+flag 1 or 3 suspended, and `+n-m` after it the resumes and suspensions the main loop saw; `IE` the entities' interrupt
+enables, `BB` the status register. `RH` counts the advertising reports the controller posted to the host (before the host
+reads them), `RAW` those that reached the pedal's callback.
+
+Also in test build 31, for a phone's link: with DLY held (no central role) test build 30 lost an iPhone's link every few
+seconds, the phone ending it (`D13`), where build 27 kept it. `att_dispatch.c` gives every ATT packet with an odd opcode to the
+client once one is registered (the footswitch's, since test build 28), and to the server only while none is: the client is now
+registered only with the central role on, and it hands a packet of another link to the server (`AF` counts them). The `D` word
+now ends with the link's life in ms (`D13@49866/2950`); `EN n/ss` counts a phone link's encryption changes and the last status
+(`06`: the key is missing), `LTK n` the phone asking to encrypt with a key from an earlier pairing. This image keeps LE pairing
+keys in RAM only: after a restart, a phone that paired before must forget the pedal (iPhone: Settings > Bluetooth, the `i` next
+to `OpenPocket`, Forget This Device) if `EN` shows `06`.
+
+Test build 33 adds the GATT server's side of a phone's link (`le_att_server_spy`, put in front of the library's own server
+handler): `AT 14/13 E1 08:0007/0A M185/23 10>11 08>09 08>01 0A>0B` = the ATT requests that reached the server / the answers it
+sent, the error responses (count, then the last one's request opcode, handle and error code), the phone's MTU / the pedal's
+(Exchange MTU), and the last four request > answer opcodes, oldest first (`10>11` read by group type answered, `08>01` read by
+type answered with an error, `0A>0B` a read). With the central role off the LE line ends after `CEN KEY` and the `HW` word.
+
+Test build 33 also changes the footswitch's side, after test build 32's log (`RH135 RAW135 ... R134 M0`: the scanner, alone,
+heard 134 reports and none passed the filter, the Chocolate in CubeSuite's "Manufacturer" mode, `CU` on its display; and an
+iPhone's link died by supervision timeout after 1 s, `D08@49526/1044`, with the scanner resumed beside it):
+
+- **No scanning while a phone's LE link is up** (`bt_le_links.h le_links_want_scan`): the footswitch first, then the phone.
+- **The filter without the MIDI UUID**: a name containing `FOOTCTRL` or `CHOCOLATE`, connectable, heard at -85 dBm or more
+  (`LE_CEN_RSSI`, -80 up to 32). After the connection the client looks for the BLE MIDI service; an address without it (no
+  service, characteristic or client configuration; not a refusal for security) is not taken again this boot (`SK` counts
+  them, four kept).
+- **Why `M` stays 0**, on the `cen` line after `M`: `NM` reports showing a footswitch's name, `UU` reports with the MIDI UUID,
+  `CN` connectable reports, `B` the best RSSI of a name-matched address, `LF flags/rssi` the last name-matched address (flags 1
+  the UUID, 2 the name, 4 connectable: 6 or 7 is taken), `SK` the addresses skipped.
+- **The central role on a line of its own**, the DIAG's twelfth, `cen` in `make log` (`bt_le_cen_line`): with the GATT
+  server's and the filter's words the LE line passed the 223 characters a line holds, and its end, the footswitch's outcome,
+  was cut off. In order: the state (`AH` with it), the outcome (`T K S F MIDI PR CL @`), the filter's view (`R M NM UU CN B LF
+  SK`), the scanner's counts (`RH RAW SO`), the radio entities last (`HW ... IE BB`):
+  `CEN LINK T2 K2 S2 F0 MIDI 41 CL5/00 @A1B2C3D4E5F6 R310 M2 NM40 UU40 CN40 B-60 LF7/-62 RH320 RAW320 SO3 HW2 0:2/2 1:6/0 IE 03 BB 00`.
+
+A Mac's scan of the regular Chocolate in CubeSuite's "Manufacturer" mode, `CU` on its display (17 sightings): the name
+`FootCtrl`, connectable, -76 dBm, the 16-bit service `1812` (HID over GATT, as a Bluetooth keyboard), no MIDI UUID, and the
+manufacturer data `73696E636FD60508004A4C414953444B` ("sinco", then "JLAISDK": a JieLi chip as well). In that mode it is not a
+BLE MIDI device: test build 33 links it, finds no MIDI service and skips it (`SK1`) until the pedal is powered off. For the
+pedal the Chocolate goes in its MIDI mode, the one in which a phone lists it as "FootCtrl Bluetooth".
+
+### Test build 34: the footswitch's link left alone while it is made
+
+Test build 33 matched the Chocolate (in CubeSuite's "advanced custom mode": the name FootCtrl, no MIDI UUID) twice and
+linked twice, and both links ended before any answer: `3E` ("failed to be established") after 197 ms, six events of 30 ms.
+Advertising had come back on at the very connection complete, beside the new master link, and music was playing.
+
+- **Advertising stays off** from the scan through the connection until the footswitch is subscribed, 10 s (a safety net), or
+  the link's end (`LE_CEN_ADV_HOLD_MS`).
+- **The central role's clock**: its steps (the scan's turns, the pause, the connection's time limit) ran only after a message
+  of the host's task, and with no phone and no music nothing posted one: test build 33 stayed in `CEN PAUSE` for good. The main
+  loop now wakes the host's task every 200 ms while the role is on and the footswitch is not subscribed (`LE_CEN_WAKE_MS`).
+- **The last phone's call-back** (classic paging, 5 s after power-on) waits until the footswitch is linked, or 20 s.
+- **The cen line**: `CD3E/197` the footswitch's last link's end and its life in ms (the LE line's `D` is any link's), `X3E n`
+  the links that ended `3E`, `IV n` the interval its connection complete gave (1.25 ms), and `LF flags/rssi/t`: `t` the
+  footswitch's connectable advertisements, 0 undirected, 1 directed (to another central, which a footswitch keeps to: it then
+  ignores the pedal's connection request, and the link ends `3E`).
+
+From the library's bitcode, on the master's establishment: the initiator is enabled at once when no LE link exists
+(`le_hw_initiating`); the connection request takes its window, offset and interval from the link layer's parameters
+(`__connect_req_pdu`, CSA #1: the features have no CSA #2); the new master link's first anchor is the request's window offset
+(`le_hw_ioctrl` 6: offset x 2 + 4 slots, `__master_reset_transmitWindowDelay`), and with `config_btctler_le_master_multilink` 0
+`master_setup_first_data_location` changes nothing: the vendor's single-master path, with no stand-in on it.
+
+### Test build 35: the footswitch's link kept at 30 ms, and room for advertising beside it
+
+Test build 34 on the pedal, in the gig's order (pedal, Chocolate in its standard mode, then the phone's music): the Chocolate
+linked and changed presets (`CEN LINK ... K10 S7 MIDI 11`), the music played clean (`UND 0`, no drop), but its link kept
+ending and coming back (`K10` in about three minutes, `X3E 3`, `CD08/2054`), and MIDIWeb never found the pedal. The cen line
+showed why on two counts:
+
+- **The link's interval**: made at 30 ms (`IV24`), it ran at 11.25 ms (`C9` in the LE line): the Chocolate asked for a faster
+  link (an L2CAP connection parameter update request) and the library accepted it. Beside the music that is too much radio.
+  Now `l2cap_connection_update_request_just` (l2cap.c's weak hook, before the library accepts a request) refuses any request
+  below `LE_CEN_INTERVAL`: no update procedure, the link stays at 30 ms. `UR n+m/min-max` in the cen line: the requests
+  refused (and accepted), the last one's interval range.
+- **The advertiser beside the link never started** (`HW2 0:6/0 1:0/0`: the second radio entity in state 0, not 2).
+  `le_hw_advertising` takes 2 x 263 bytes from the LE baseband's receive DMA pool, which `config_btctler_le_rx_nums` sizes
+  (294 bytes each: 1,505 with 5), and a link keeps its own receive buffers there; when they are missing it stops before
+  advertising ("RX DMA NULL"). Now 8 (2,387 bytes, 882 more from the Bluetooth heap); the setting sizes nothing else
+  (`le_hw_init`). In the log, the second entity in state 2 (`1:2/..`) is advertising.
+
+### Test build 36: longer supervision timeouts, and a slower phone link
+
+Test build 35 on the pedal: the Chocolate held one link 101.6 s at 30 ms (it asked for 15 ms three times, refused, and stayed);
+MIDIWeb found the pedal and the editor, the Chocolate and the music worked together for about 25 s (`W85`, `ED 84/658`,
+`MIDI 5`). Then both LE links ended at the same moment by supervision timeout (`CD08/101619`, `D08@109540/26045`), with no
+preset saved; the music's link stayed up (`UND 0`, `DISC 0`). The pedal linked the Chocolate again by itself, with advertising
+beside it (`HW2 0:6/0 1:2/0`). The likely cause: the pedal's own link (its clock) and the phone's (the phone's clock, an
+iPhone at 7.5 ms, four events in each of the Chocolate's 30 ms) drift into each other, and with the supervision timeouts at
+about 1 and 2 s both end.
+
+- **The footswitch's supervision timeout 6 s** (`LE_CEN_TIMEOUT` 600; up to 35: 2 s), **and its interval 28.75 ms**
+  (`LE_CEN_INTERVAL` 23; up to 35: 30 ms): not a multiple of a phone's 7.5, 15 or 30 ms, so the two links' events slide past
+  each other by 1.25 ms or more per event instead of overlapping for tens of seconds. The refusal follows it.
+- **A phone's link asked for 15 to 30 ms and 6 s**, 3 s after it is made, when it is faster or less tolerant
+  (`gap_request_connection_parameter_update`, within Apple's limits). `PQ n/rc` in the LE line: the requests and the library's
+  answer; the phone's own update then shows as `U n intv/lat/timeout`.
+
+### Test build 37: room in the LE transmit pool
+
+Test build 36 crashed 87 s after power-on, with the Chocolate linked, the music playing and MIDIWeb's editor reading the
+pedal: `CRASH PC 0200109E` (`P33_SYSTEM_RESET`, the library's fatal stop: an endless loop here) `RETS 0204D178` (inside
+`le_hw_send_packet`) `VEC 63`, `DBG 0`. `le_hw_send_packet` stops there when its transmit buffer cannot be had: `hw_alloc_tx`
+takes size + 24 bytes, as an lbuf, from the LE baseband's transmit DMA pool (`le_hw_init`: `config_btctler_le_acl_total_nums`
+x 294 + 35 bytes, 1,505 with 5), which also holds the advertiser's 2 x 263 (since test build 35 advertising runs beside the
+footswitch's link) and the initiator's. Test build 36 had asked the phone for 15-30 ms, and the editor sends up to
+`le_tx_inflight` packets at a time by the interval: 4 from 30 ms, 1 at the iPhone's 7.5 ms before.
+
+- **`config_btctler_le_acl_total_nums` 8** (2,387 bytes; 882 more from the Bluetooth heap).
+- **The editor 2 packets out at most** (`le_tx_inflight`): a little slower to read the pedal over Bluetooth, never a full pool.
+
+### Test build 38: the library's timers on time
+
+Test build 37 on the pedal: no crash with the editor used hard, the music clean, but the Chocolate's link still ended by
+supervision timeout about every 1.5 minutes, even with no phone linked and a 6 s timeout, and it was heard again only seldom
+(`NM5` in about 11 minutes). The LE controller's multi-link scheduler (`config_btctler_le_slave_multilink` 1:
+multilink_schedule.c, from the LE event interrupt) arms usr and sys timeouts for its advertising and connection-update
+windows; up to 37 they ran from `ble_poll`, a main-loop pass late (tens of ms with the DSP's load), and their adds were not
+safe in an interrupt.
+
+- **The Bluetooth session's ff8c60a**: the timers' adds and deletes save and put back the interrupt state; an interrupt never
+  calls `ble_ms()`; the usr timeouts have their own table, run every millisecond by the 10 kHz tick (`BT_USR_IN_TICK` 1), and a
+  due one waits a millisecond when the baseband's lock is taken (`TB`, 0 expected).
+- **The HCI line's words**: `TS used/peak` and `TU used/peak` the two tables, `TF` adds refused, `TI` adds from an interrupt,
+  `TR` usr timeouts run, `TB` the waits.
+
+## Checked on a computer
+
+- `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate
+  settles at the clocks' ratio, a 1 kHz sine comes out 52 dB clean, the pitch wanders 0.7 cents; a 300 ms pause stops it once,
+  without a click, and it starts again.
+- `tests/test_bt_sbc.c`: Android's encoder makes the frames a phone sends (joint stereo, 328 kb/s), packed as A2DP packets
+  (contributors, an extension, padding): every frame decodes, the output is the mono mix 64 dB above the difference; mono
+  streams, also with frames of 8 and 4 blocks (each gives its own count of samples); a frame whose CRC fails is refused and the
+  stream goes on; a header whose contributors or extension run past the packet leaves nothing to decode.
+- `tests/test_ble_taskq.c`, built twice (the BLE image's scheduler and the Bluetooth audio image's): the task queues with the
+  library's message sizes, the recursive mutexes, the clock across TIMER4's wrap (a periodic timer, a one-shot and a task asleep
+  across it), and in the audio image's build the waits refused inside the baseband's interrupt, each task's queue peak, stack
+  depth and red zone.
+- `tests/test_bt_lbuf.c`: the radio pools' allocator through 100,000 random operations (no overlap, no corruption, no leak).
+- `tests/test_bt_ps.c` (test build 14): the pairing store, `firmware/bt/bt_ps.h` itself, on a model of the NOR flash, with power
+  cuts at random bytes of every save and inside every erase (40,000 rounds: about 7,500 cuts during a save, 960 during a
+  power-on's erase, 18,000 power-ons): every power-on loads the records last saved, or those being saved when the power went,
+  never anything else; nothing is written outside the two sectors or in their last 256 bytes; every program goes to erased
+  bytes; no erase takes the newest good copy; no two copies share a sequence number. Sessions of 1 to 5 saves never erase
+  during a save. A sector whose programs stop taking, power cuts with it, and a bit misread at power-on or in a save's
+  read-back cost saves, never the copy kept. The Bluetooth image's merged `FL_RANGE_OK` gives every sector erase and page
+  program the answer of one range per area. The model catches each of a dozen deliberate faults in the store (no read-back,
+  no guard of the newest copy, no second reading before an erase, a save sooner than 1 s, one sequence number a round...).
+- `tests/test_bt_sources.mjs`: the vendor objects are as published and listed, the licences are there.
+- The web editor over Bluetooth (test build 27):
+  - `tests/midisim.c`: the editor's SysEx kept across BLE MIDI writes as CoreMIDI and Android cut it (a timestamp before
+    each status, a clock inside, a timestamp byte that reads as F7 or F0, a write that goes on after a timestamp of its own),
+    and dropped when another status cuts it, when longer than 160 bytes, or when one comes while one waits (the waiting one
+    left as it was); the Chocolate's reader gives the same messages from the same writes. The replies cut into notifications:
+    3,000 replies of 2 to 1,100 bytes at packet sizes of 3 to 514, each packet within its size and with its header, back
+    byte for byte through a reference reader (Android's BluetoothPacketDecoder's rule) and through `px_blem_sysex`, and never
+    a message for the Chocolate's reader.
+  - `tests/midiio.c` with the image's flags: a write's SysEx goes to the editor, its Program Change to the pedal as before;
+    the Chocolate's Control Change gives the editor nothing.
+  - `tests/test_editor.mjs` with `EDSIM_BLE=1` against `tests/edsim.c -DED_BT=1`: the whole editor test (the catalogue,
+    editing, pushes, saves, slots, NAM models, IRs, a power cycle) over BLE MIDI writes and notifications, two a pass as the
+    pedal sends them; a link lost (nothing more pushed) and a new one; a USB request meanwhile answered over USB; a push and a
+    reply crossing (each waits for the other, nothing lost). About 660 frames, 3,900 writes, 5,000 notifications.
+  - Two LE links: `tests/test_bt_le_links.c` (`firmware/bt/bt_le_links.h`: each event taken as often as the host delivers it,
+    advertising asked while a link is free and never with both up, again after either ends or after a failed ask);
+    `tests/midiio.c` (the editor's SysEx on one link with the Chocolate's Control and Program Change between its writes on the
+    other: both whole); `tests/test_editor.mjs` with `EDSIM_BLE=1` against `tests/edsim.c -DED_BT_LINKS=2u` (the Chocolate's
+    writes between the editor's, INFO from a second central answered on its own link only, one link lost while the editor on
+    the other is still pushed).
+  - Test build 28, the central role: `tests/test_bt_le_central.c` (the ATT client against a simulated footswitch's GATT
+    server answering at the default MTU, in several layouts: the MIDI service last or first, descriptors before its CCC, a
+    vendor characteristic before it, no MIDI service, no CCC, encryption asked, a stale cached handle; and the advertisement
+    filter: the UUID and the name in separate reports, case, RSSI, not connectable, another BLE MIDI device, the known address,
+    malformed data, the table's turnover); `tests/test_bt_le_links.c` (the typed links: advertising and scanning wanted
+    as the entities allow, the DLY key's test build 27 behaviour). The member check of `ll_master.c` (nm against the image's
+    members and firmware): no symbol left unresolved that build 27 resolved.
+  - Each of about twenty deliberate faults (no timestamp before F7, a clock ending the SysEx, a waiting frame overwritten, a
+    reply sent over USB or to the other link, a push or a frame not waiting for the buffer, one SysEx reader for both links,
+    a link's end stopping the other's editor, an event counted twice, advertising with both links up...) fails at least one
+    of these tests.
+  - The release image and the BLE image compile to the same code as before (their LLVM IR, compared); the Bluetooth audio
+    image calls three more library functions, all in members it already links (`att_server_notify`,
+    `hci_le_get_acl_packet_num`, `stack_run_loop_resume`).
+- `tests/test_log.mjs`: the FIFO line and `W` named, and the nine lines classified and reported, as the log tool prints them.
+- Test build 13's cut, by hand (it is not in `tests/run_tests.sh`): the engine tests built with `-DPX_LOOP_GUARD=1` print the
+  same as without it and leave `W` at 0; `rv_block` called with an n above 64 stops at k 64 in each of its four loops, records n
+  and k, and writes nothing past frame 63. With the guard off (the release and BLE images) `engine/px_dsp.c` preprocesses to
+  the same text as before.
+- Test build 14, by hand: the engine is v42's and the cut (`tests/engine/equiv.c`, 852 runs: the same output as v42's engine,
+  with and without `-DPX_LOOP_GUARD=1`, `W` 0); the engine tests, plain and with the guard; `engine/px_dsp.c` and
+  `firmware/openpocket.c` preprocessed for the release image as v42's (`px_dsp.c` byte for byte; `openpocket.c` apart from
+  macros that compile to nothing: its optimised IR is v42's, function for function, now that test build 11's stall-watch
+  exception to the second core's bar and power-on key record are built in the Bluetooth images only); `tools/jlfold.py fold`
+  on the library's IR (the same 149 constants folded and 86 print helpers emptied as the probe in CI); v42's
+  `tests/test_aorder.c` (the callbacks' order). A host model with the real `px_audio.h` and engine and a stand-in second core:
+  `a_cpu1_quiet` returns at once for an idle worker, drains a request and its queued network blocks, retires a worker that
+  never idles as `G 2` within 8 ms and a faulted core as `G 4`, and collects both (one core, nothing left queued, the next
+  interrupt hands nothing over: before, it waited 8 ms and turned `G 4` into `G 2`); this image's callbacks' order fills an
+  output-first block whose input comes up to 1,440 µs later and counts one at 1,460 µs in `OD`, with `OG` its time.
+  macros that compile to nothing and two leftovers of test build 11, the stall watch's exception to the second core's bar,
+  12 bytes, and the power-on key's record); `tools/jlfold.py fold` on the library's IR (the same 149 constants folded and 86
+  print helpers emptied as the probe in CI); v42's `tests/test_aorder.c` (the callbacks' order).
+- The image's own effects (tests/run_tests.sh, [OWN-FX.md](OWN-FX.md)): `tests/ownfx_equiv.sh`, every existing model with
+  `PX_OWN_FX` and without, 5,460 runs bit for bit; LOW OCTAVE (`tests/engine/lowoct.c`, 18 checks) and PAD
+  (`tests/engine/pad.c`, 15) as the image builds the engine and with the host's flags, also under ASan and UBSan, both
+  giving v40's output bit for bit; the PAD's footswitch against v42's tuner (`tests/uisim.c` built with `PX_OWN_FX`, 16
+  gestures, v42's 48 screens unchanged) and CC 64 (`tests/midiio.c`); without `PX_OWN_FX` the engine and `openpocket.c`
+  preprocess to v42's text for the release, BLE and Bluetooth flags.
+- The member set was chosen from the archives' symbol tables: what it references and does not define is supplied
+  (`bt_glue.c`, `bt_cfg.c`) or stood in for (`bt_stubs.c`), with the library's own types.

@@ -3,6 +3,7 @@
  * frame buffer, exactly as the pedal streams it (window + pixels). Writes PPM screenshots of a script of actions.
  *   cc -O1 -Iengine -Ifirmware -o build/uisim tests/uisim.c engine/px_dsp.c firmware/px_math.c -lm
  *   build/uisim OUTDIR        -> OUTDIR/NN_name.ppm ; also checks that every pixel is drawn on each full page
+ * With -DPX_OWN_FX=1 (the Bluetooth audio image's): then SYN PAD's left footswitch and the two effects' pages too.
  * The frame buffer starts (and is re-poisoned before each full page) in magenta: any pixel left magenta after a
  * full redraw is a gap in the page's layout. */
 #include <math.h>
@@ -44,6 +45,11 @@ static void midi_persist(void) { midi_saved++; }
 /* user slots for the list settings (F7): NAM slot 3 and IR slots 2 and 5 hold something, the others are empty */
 int px_nam_user(int slot, char *name12, float *level_db, float *w) { (void)w; if (slot != 2) return 0; strcpy(name12, "MY AMP"); if (level_db) *level_db = 0; return 1; }
 int px_ir_user(int slot, char *name12, float *h) { (void)h; if (slot != 1 && slot != 4) return 0; strcpy(name12, slot == 1 ? "V30 4X12" : "GREENBACK"); return 1; }
+#if PX_OWN_FX                                           /* the Bluetooth audio image's SYN PAD: its catches and fades counted */
+static int n_catch, n_fade;
+#define PX_PAD_PRESS() (n_catch++)
+#define PX_PAD_STOP() (n_fade++)
+#endif
 #include "ui_text.h"
 #include "ui.h"
 
@@ -339,6 +345,76 @@ static int overhaul(const char *d)
     return 0;
 }
 
+#if PX_OWN_FX
+/* ---- the Bluetooth audio image's own effects (PX_OWN_FX): SYN PAD's left footswitch against v42's controls (ui_buttons
+ * as the main loop runs it, every 5 ms), and the two effects' pages ---- */
+static void pad_start(int on)
+{
+    cur_preset = 9; load_preset(9); ui_kept_slot = ~0u; ui_mode = M_CHAIN; ui_item = 0; ui_blk = PX_B_AMP; a_tmute = 0;
+    PRESET.type[PX_B_SYN] = PX_SYN_PAD; PRESET.on[PX_B_SYN] = (uint8_t)on;
+    n_catch = n_fade = 0; hold(0, 400);
+}
+static int pad_gestures(const char *d)
+{
+    const uint32_t FSL = UB_FSDN, FSR = UB_FSUP;
+    px_preset_t was;
+    pad_start(0); tap(FSL); CHECK(cur_preset == 8 && n_catch == 0, "PAD off: the left footswitch steps back, as on v42");
+    pad_start(0); hold(1u << FSL, 40); hold(1u << FSL | 1u << FSR, 40); hold(0, 300);
+    CHECK(ui_mode == M_TUNER && cur_preset == 9 && a_tmute, "PAD off: left then right within 150 ms: the tuner, the preset as it was");
+    tuner_close();
+    pad_start(0); hold(1u << FSR, 40); hold(1u << FSR | 1u << FSL, 40); hold(0, 300);
+    CHECK(ui_mode == M_TUNER && cur_preset == 9, "PAD off: right then left: the tuner, the preset as it was");
+    tuner_close();
+    pad_start(1); was = PRESET; tap(FSL);
+    CHECK(n_catch == 1 && n_fade == 0 && cur_preset == 9 && !memcmp(&was, &PRESET, sizeof was) && ui_mode == M_CHAIN,
+          "PAD on: the left footswitch catches the chord; preset, sound and page unchanged");
+    pad_start(1); ui_mode = M_BLOCK; ui_blk = PX_B_SYN; ui_item = 2; tap(FSL);
+    CHECK(n_catch == 1 && ui_mode == M_BLOCK && ui_blk == PX_B_SYN && ui_item == 2, "PAD on, on the SYN page: a catch leaves the page as it is");
+    pad_start(1); tap(FSR); CHECK(cur_preset == 10 && n_catch == 0, "PAD on: the right footswitch still steps on");
+    pad_start(1); hold(1u << FSL, 40); hold(1u << FSL | 1u << FSR, 40); hold(0, 300);
+    CHECK(ui_mode == M_TUNER && a_tmute && cur_preset == 9 && n_catch == 1 && n_fade == 1,
+          "PAD on: left then right within 150 ms: the tuner, the pad let go, the preset as it was");
+    hold(1u << FSL, 40); hold(0, 300);
+    CHECK(ui_mode == M_CHAIN && n_catch == 1 && !a_tmute, "PAD on: in the tuner the left footswitch only leaves it (no catch)");
+    pad_start(1); hold(1u << FSR, 40); hold(1u << FSR | 1u << FSL, 40); hold(0, 300);
+    CHECK(ui_mode == M_TUNER && cur_preset == 9 && n_catch == 0 && n_fade == 0, "PAD on: right then left: the step back and the tuner, no catch");
+    tap(FSR); hold(0, 300);
+    pad_start(1); hold(1u << FSL, 750); hold(0, 50);
+    CHECK(n_catch == 1 && n_fade == 1 && cur_preset == 9 && ui_mode == M_CHAIN, "PAD on: the left held 0.7 s: caught, then faded; once");
+    pad_start(1); hold(1u << FSL, 400); hold(0, 600);
+    CHECK(n_catch == 1 && n_fade == 0, "PAD on: held 0.4 s: no fade");
+    pad_start(1); hold(1u << FSL, 300); hold(1u << FSL | 1u << FSR, 600); hold(0, 300);
+    CHECK(n_catch == 1 && n_fade == 0 && cur_preset == 10 && ui_mode == M_CHAIN,
+          "PAD on: right pressed 0.3 s into a left hold: a step on, and the hold no longer fades");
+    pad_start(1); hold(1u << UB_PUSH, 850); hold(0, 5); tap(FSL);
+    CHECK(ui_mode == M_SAVE && n_catch == 0, "PAD on: on SAVE the left footswitch does nothing, as on v42");
+    tap(UB_HOME);
+    pad_start(1); tap(UB_HOME); tap(FSL);
+    CHECK(ui_mode == M_LIST && n_catch == 1 && cur_preset == 9, "PAD on: on the preset list a catch, and the list stays");
+    tap(UB_HOME);
+    pad_start(1); PRESET.type[PX_B_SYN] = PX_SYN_STRINGS; tap(FSL);
+    CHECK(cur_preset == 8 && n_catch == 0, "another SYN model on: the left footswitch steps back");
+    pad_start(1); tap(FSL); hold(0, 200); tap(FSL); hold(0, 200);
+    CHECK(n_catch == 2 && cur_preset == 9, "PAD on: two presses 0.2 s apart: two catches (the next chord)");
+    {   /* every value text of PAD's and LOW OCTAVE's settings fits the EDIT page's value box (FT_MD, 90 px) */
+        char b[16]; uint32_t wmax = 0; int bad = 0;
+        static const int BT[2][2] = {{PX_B_SYN, PX_SYN_PAD}, {PX_B_PITCH, PX_PIT_LOWOCT}};
+        for (int i = 0; i < 2; i++) for (int k = 0; k < 5; k++) for (int v = 0; v <= 100; v++) {
+            if (!px_param_text(BT[i][0], BT[i][1], k, v, b)) continue;
+            uint32_t w = ft_width(&FT_MD, b); if (w > wmax) wmax = w; if (w > 90u) { bad++; if (bad < 4) printf("too wide: %s (%u px)\n", b, w); }
+        }
+        CHECK(!bad && wmax > 0, "PAD's and LOW OCTAVE's value texts fit the EDIT page's box");
+    }
+    /* their pages, drawn whole: the model, the settings in plain values */
+    pad_start(1); ui_blk = PX_B_SYN; ui_mode = M_BLOCK; ui_item = 0; full(); shot(d, "edit_syn_pad");
+    load_preset(9); PRESET.on[PX_B_PITCH] = 1; PRESET.type[PX_B_PITCH] = PX_PIT_LOWOCT;
+    { static const uint8_t K[5] = {40, 70, 100, 33, 50}; memcpy(PRESET.p[PX_B_PITCH], K, 5); }
+    ui_blk = PX_B_PITCH; ui_mode = M_BLOCK; ui_item = 0; full(); shot(d, "edit_pitch_low_octave");
+    ui_home(); load_preset(9); full();
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *d = argc > 1 ? argv[1] : ".";
@@ -389,5 +465,9 @@ int main(int argc, char **argv)
     mid_cfg.chan = 16; midi_open(); midi_knob(1); midi_draw(); shot(d, "midi_channel_wraps_to_omni");
     if (mid_cfg.chan != 0) { printf("midi: channel 16 + 1 must wrap to omni\n"); return 1; }
     midi_knob(-1); if (mid_cfg.chan != 16) { printf("midi: omni - 1 must wrap to 16\n"); return 1; }
+#if PX_OWN_FX
+    return quick_wins(d) || overhaul(d) || pad_gestures(d);
+#else
     return quick_wins(d) || overhaul(d);
+#endif
 }

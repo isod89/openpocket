@@ -35,8 +35,16 @@ static uint32_t uad_lo = 52u, uad_hi = 108u, uad_prime = 80u, uad_tgt = 208u;
 #define RING_PUBLISH() __asm__ volatile("" ::: "memory")
 /* the app may only write the OTA staging area (its loader + update record), the preset store (px_store.h) and,
  * v37, the NAM user models (px_models.h) */
+#if OP_BT_AUDIO
+/* the Bluetooth audio image (test build 14) also the pairings' two sectors [0xEE000, 0xF0000) (bt/bt_ps.h). Adjacent areas as
+ * one range: the NAM models and the staging [0xC0000, 0xE5000), the pairings, the presets and v38's cabinet IRs
+ * [0xEE000, 0xFC000). An erase is one aligned sector and a program one page, so no call the RAM driver accepts can straddle two
+ * areas: every call gets the answer of one range per area (tests/test_bt_ps.c), in fewer instructions of RAM code */
+#define FL_RANGE_OK(off, n) (FL_IN(off, n, 0xC0000u, FL_OTA_HI) || FL_IN(off, n, 0xEE000u, 0xFC000u))
+#else
 #define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, 0xF0000u, 0xF4000u) || \
                              FL_IN(off, n, 0xC0000u, 0xE0000u) || FL_IN(off, n, 0xF4000u, 0xFC000u))
+#endif
 
 /* the package identity, patched by pxpkg.py ("OP-PRODUCT:" + identity, 32 bytes, exactly once in the app) */
 static const volatile char OP_PRODUCT[32] __attribute__((used, aligned(4))) = "OP-PRODUCT:PocketX_9" OP_VERSION_NUM;
@@ -45,6 +53,9 @@ static const volatile char OP_PRODUCT[32] __attribute__((used, aligned(4))) = "O
 #include "fm1_timer.h"
 #if OP_BLE_TEST
 static int ble_stall_tick(void);                /* ble/ble_status.h, included after this file */
+#if OP_BT_AUDIO
+static void bt_stall_tick(int firing);          /* bt/bt_a2dp.c: the stall record's samples (bt/bt_stall.h) */
+#endif
 #endif
 #include "fm1_flash.h"
 #include "fm1_cpu1_stop.h"
@@ -59,12 +70,28 @@ static volatile uint32_t px_t5_sub;
 static void uad_poll(void);                     /* px_uaudio.h: the gaps between USB polls */
 #endif
 
+#if OP_BLE_TEST
+static volatile uint32_t px_t5_in_s, px_t5_in;  /* its longest stay, this second and since boot, TIMER4 ticks (the log's isr line) */
+#endif
 void fm1_timer5_irq(void)                       /* 10 kHz; USB at 2 kHz */
 {
+#if OP_BLE_TEST
+    const uint32_t t0 = fm1_ticks();
+#endif
     fm1_timer5_ack();
 #if OP_BLE_TEST                                 /* a ble_poll that does not return: the crash screen says where (ble_status.h) */
-    if (ble_stall_tick())
-        FM1_VEC[FM1_IRQ_TIMER5] = (uint32_t)(uintptr_t)(fm1_fatal_stubs + 6u * FM1_IRQ_TIMER5);
+    {
+        const int stalled = ble_stall_tick();
+#if OP_BT_AUDIO
+        bt_stall_tick(stalled);                 /* (its last second sampled, the record completed when it fires) */
+#endif
+        if (stalled) {
+#if DSP_CPU1
+            fm1_cpu1_nobar = 1;                 /* (this crash is the watch's own, not the second core's fault: no bar) */
+#endif
+            FM1_VEC[FM1_IRQ_TIMER5] = (uint32_t)(uintptr_t)(fm1_fatal_stubs + 6u * FM1_IRQ_TIMER5);
+        }
+    }
 #endif
     if (++px_t5_sub >= 5u) {
         px_t5_sub = 0;
@@ -73,6 +100,13 @@ void fm1_timer5_irq(void)                       /* 10 kHz; USB at 2 kHz */
 #endif
         usb_poll();
     }
+#if OP_BLE_TEST
+    {
+        const uint32_t d = fm1_ticks() - t0;
+        if (d > px_t5_in_s) px_t5_in_s = d;
+        if (d > px_t5_in) px_t5_in = d;
+    }
+#endif
 }
 extern void isr_timer5(void);
 
@@ -102,6 +136,11 @@ static int ota_fread(uint32_t off, void *p, uint32_t n)
     uint8_t *d = p;
     while (n) {                                 /* 256-byte windows, interrupts off (the SFC is switched off) */
         uint32_t k = n > 256u ? 256u : n, f = irq_save();
+#if DSP_CPU1 && OP_BT_AUDIO
+        a_cpu1_quiet();                         /* (the Bluetooth audio image reads here with the audio running: nothing of the
+                                                 * second core's may run from the flash, and no new block starts; v41's worker
+                                                 * idle in its RAM loop; a core that faulted is held: px_audio.h) */
+#endif
         int rc = FL_FAR(fl_read_ram)(off, d, k);
         irq_restore(f);
         if (rc)
@@ -174,6 +213,9 @@ static void px_audio_halt(void)                 /* before any flash write: nothi
     a_collect();
     gpio_direction_output(G_AMP_EN, 0);         /* amp off: no noise while the flash is busy */
 #if DSP_CPU1
+#if FM1_CPU1_ECHO
+    fm1_cpu1_held_t = fm1_ticks() | 1u;         /* (test build 14: a hold's late flag, fm1_cpu1.h fm1_cpu1_echo) */
+#endif
     fm1_cpu1_stop();
     a_c1 = 0;
 #endif

@@ -174,6 +174,7 @@ static void st_audio_hold(int on)
         fm1_irq_mask(FM1_IRQ_ALNK0);
         a_collect();
     } else {
+        a_irq_gap_skip();                       /* (the hold is not a late interrupt: px_audio.h) */
         fm1_irq_unmask(FM1_IRQ_ALNK0);
         a_mute = 0;
     }

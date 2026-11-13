@@ -45,6 +45,7 @@ static void fm1_delay_ms(int ms) { (void)ms; }
 #define FM1_IRQ_ALNK0 11
 static void fm1_irq_mask(int n) { (void)n; }
 static void fm1_irq_unmask(int n) { (void)n; }
+static void a_irq_gap_skip(void) { }                   /* (px_audio.h: the Bluetooth images time the audio interrupt) */
 static void a_collect(void) {}
 static uint8_t px_flash_ok = 1;
 static uint32_t cur_preset;

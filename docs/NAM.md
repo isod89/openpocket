@@ -59,7 +59,21 @@ trending and latest tones. This uses TONE3000's public API ([tone3000.com/api](h
 "Select" flow and the lists a free application may read (not its search, which stays in TONE3000's own browser):
 OAuth 2.0 with PKCE and OpenPocket's publishable key (`T3K_CLIENT_ID` in `docs/pxt3k.js`), the sign-in coming back
 through `docs/t3k.html`. The access token lives in the page only while it is open. It needs that key and
-`https://isod89.github.io/openpocket/t3k.html` registered as a redirect URI in TONE3000's settings.
+`https://isod89.github.io/openpocket/t3k.html` registered as a redirect URI in TONE3000's settings. A site that publishes
+the editor under its own TONE3000 app gets that app's publishable key, chosen by the page's address (`T3K_SITE_KEYS` in
+`docs/pxt3k.js`): the fork at `https://steponme82.github.io/openpocket/`, whose key has that site's `t3k.html` as its
+redirect URI. Every other address uses `T3K_CLIENT_ID`. Only publishable keys: the sign-in is PKCE, with no secret.
+
+A browser that opens no second window (an in-app browser such as MIDIWeb, the Web MIDI browser an iPhone needs for
+Bluetooth MIDI) takes TONE3000 in the editor's own tab instead, after saying so. The code verifier, the state and the
+address to come back to wait in that tab's session storage; `t3k.html` checks the state, signs in, gets the tone's A2
+captures (the one there is, or the ones chosen there) ready for the pedal, and goes back to the editor, which puts them
+in the library. Connect the pedal and send them from there. The token stays in `t3k.html`'s memory and ends with it, and
+the redirect URI is the same `t3k.html`, so the same registration serves both ways.
+
+The file buttons (**Add .nam files**, an empty slot's button, **Replace with a file**, **Import** for presets) are
+labels of real file inputs with no type filter, so iOS offers `.nam` files instead of greying them out; each file is
+checked by its name and its content after it is picked.
 
 **The library.** The pedal stores a capture but cannot send it back. So the editor keeps every capture you add in the
 browser (IndexedDB, on that computer only), with where it came from. That is what lets it rename a capture, move it to

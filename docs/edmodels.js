@@ -3,12 +3,12 @@
 // files this browser keeps for them (docs/pxlib.js), and TONE3000 (docs/pxt3k.js). The two kinds of slot share
 // everything here but how a file is read and sent.
 
-import { app, $, h, fill, icon, on, emit, slotName, say, task, sleep, confirmDialog, promptDialog, pickDialog, menu, plural, dropTarget } from "./edcore.js";
+import { app, $, h, fill, icon, on, emit, slotName, say, task, sleep, confirmDialog, promptDialog, pickDialog, menu, plural, dropTarget, fileLabel } from "./edcore.js";
 import { writeSlots, entry, selectPreset } from "./edpresets.js";
-import { parseNam, levelTrim, packModel, readDi } from "./pxnam.js";
+import { namEntry, readDi, SLOT_BYTES } from "./pxnam.js";
 import { parseWav, prepareIr, packIr, irName } from "./pxir.js";
 import { Library, KINDS, slotRef, usage, retarget, renamePacked, cleanSlotName, pedalKey, planMove, indexKnob, presetSlot } from "./pxlib.js";
-import { t3kReady, t3kSelect, t3kSignIn, t3kSignedIn, t3kSignOut, t3kTone, t3kModels, t3kDownload, t3kUser, t3kList, t3kA2Count, t3kLink, t3kPicture, T3K_LISTS } from "./pxt3k.js";
+import { t3kReady, t3kSelect, t3kSelectHere, t3kNoteRead, t3kSignIn, t3kSignedIn, t3kSignOut, t3kTone, t3kModels, t3kDownload, t3kSource, t3kUser, t3kList, t3kA2Count, t3kLink, t3kPicture, T3K_LISTS } from "./pxt3k.js";
 
 let lib = null, namDi = null;
 const queue = { nam: [], ir: [] };                // what the last "add files" did, file by file
@@ -17,16 +17,15 @@ const pedal = () => pedalKey(app.info && app.info.identity);
 
 const BANKS = {
   nam: {
-    title: "Amp captures", sub: "NAM A2", input: "namfile", accept: (f) => /\.nam$/i.test(f.name), files: ".nam files",
+    title: "Amp captures", sub: "NAM A2", input: "namfile", accept: (f) => /\.nam$/i.test(f.name), files: ".nam files", one: ".nam file",
+    named: (f) => /\.(nam|json)$/i.test(f.name),     // (after a pick: the picker has no filter; the content is checked next)
     lead: "The AMP block's NAM type plays these neural captures. The pedal runs A2 captures (A2-Lite): on TONE3000, pick the A2 version.",
     slots: () => app.nam.models.filter((m) => m.user),
     // a .nam file's text -> what the pedal stores, at the same loudness as every other model
     async prepare(text, name) {
-      const m = parseNam(text, name);
       if (!namDi) namDi = readDi(await (await fetch("nam_di.wav")).arrayBuffer());
       await sleep(20);                            // (the level takes a moment of the processor: let the progress show first)
-      const lv = levelTrim(m.weights, namDi);
-      return { name: m.name, bytes: packModel(m.name, m.weights, lv), detail: [`level ${lv >= 0 ? "+" : ""}${lv.toFixed(1)} dB`, m.note].filter(Boolean).join("; ") };
+      return namEntry(text, name, namDi);
     },
     read: (f) => f.text(),
     upload: (slot, bytes, progress) => app.ed.namUpload(slot, bytes, progress),
@@ -34,7 +33,8 @@ const BANKS = {
     async reload() { app.nam = await app.ed.namList(); await app.ed.namTexts(); },
   },
   ir: {
-    title: "Cabinet IRs", sub: "WAV", input: "irfile", accept: (f) => /\.wav$/i.test(f.name), files: ".wav files",
+    title: "Cabinet IRs", sub: "WAV", input: "irfile", accept: (f) => /\.wav$/i.test(f.name), files: ".wav files", one: ".wav file",
+    named: (f) => /\.wav$/i.test(f.name),
     lead: "The CAB block's USER IR type plays these impulse responses. The pedal keeps the first 23 ms of a WAV file, at 44.1 kHz, and sets its level like the other cabinets.",
     slots: () => app.irs,
     async prepare(buf, name) {
@@ -104,6 +104,7 @@ export function addFiles(kind, files, into = -1) {
     for (const [i, f] of files.entries()) {
       const q = queue[kind][i], step = (state, text, frac) => { Object.assign(q, { state, text, frac }); render(kind); progress((i + (frac || 0)) / files.length); };
       try {
+        if (!B.named(f)) throw new Error(`not a ${B.one}`);
         step("work", kind === "nam" ? "Measuring its level" : "Reading", 0.05);
         const made = await B.prepare(await B.read(f), f.name);
         const e = await lib.add({ kind, name: made.name, bytes: made.bytes, detail: made.detail, source: { from: "file", file: f.name } });
@@ -206,13 +207,10 @@ async function forget(kind, e) {
   await lib.remove(e.id);
   await refreshAssets(kind, false);
 }
-function pickFile(kind, into = -1) {
-  const inp = $(BANKS[kind].input);
-  inp.multiple = into < 0;
-  inp.value = "";
-  inp.onchange = () => { const f = [...inp.files]; if (f.length) addFiles(kind, f, into); };
-  inp.click();
-}
+// the kind's file input (editor.html) opens from labels of it (edcore.js fileLabel): each says first which slot it is for
+const aim = { nam: -1, ir: -1 };
+function aimAt(kind, into) { aim[kind] = into; $(BANKS[kind].input).multiple = into < 0; }
+const pickLabel = (kind, into, attrs, ...kids) => fileLabel(BANKS[kind].input, () => aimAt(kind, into), attrs, ...kids);
 
 // ---- a kind's card ----
 function sourceLine(e) {
@@ -244,7 +242,7 @@ function render(kind) {
     h("div", { class: "card-head" },
       h("h2", {}, B.title, " ", h("small", { text: B.sub })),
       h("span", { class: "grow" }),
-      h("button", { type: "button", class: "btn small", id: `${kind}add`, onclick: () => pickFile(kind) }, icon("plus"), ` Add ${B.files}`)),
+      pickLabel(kind, -1, { class: "btn small", id: `${kind}add` }, icon("plus"), ` Add ${B.files}`)),
     h("div", { class: "cap" },
       h("span", { class: "capbar", role: "img", "aria-label": `${used} of ${slots.length} slots used` }, slots.map((s) => h("i", { class: s.used ? "on" : "" }))),
       h("span", { class: "cap-t", id: `${kind}cap`, text: `${used} of ${slots.length} slots used` })),
@@ -263,7 +261,7 @@ function render(kind) {
           h("button", { type: "button", class: "btn icon small", "aria-label": `Actions for ${tag(kind, s.slot)} ${s.name}`, "aria-haspopup": "menu", onclick: (ev) => menu(ev.currentTarget, [
             { label: "Rename…", run: () => renameSlot(kind, s), disabled: !e, why: "Not in this browser's library: load its file again to rename it." },
             { label: "Move to another slot…", run: () => moveSlot(kind, s), disabled: !e, why: "Not in this browser's library: load its file again to move it." },
-            { label: "Replace with a file…", run: () => pickFile(kind, s.slot) },
+            { label: "Replace with a file…", file: B.input, aim: () => aimAt(kind, s.slot) },
             "-",
             { label: "Remove from the pedal", run: () => removeFromPedal(kind, s), danger: true },
           ]) }, icon("more")));
@@ -273,10 +271,9 @@ function render(kind) {
         h("span", { class: "free-l", text: used ? "Empty" : "All empty" }),
         slots.filter((s) => !s.used).map((s) => {
           const u = use.get(s.slot) || [];
-          return h("button", { type: "button", class: `chip slot${u.length ? " need" : ""}`, "data-slot": s.slot, text: tag(kind, s.slot),
+          return pickLabel(kind, s.slot, { class: `chip slot${u.length ? " need" : ""}`, "data-slot": s.slot,
             title: u.length ? `${plural(u.length, "preset")} (${presetNames(u)}) ${u.length === 1 ? "points" : "point"} here and ${u.length === 1 ? "plays" : "play"} without ${K.without}. Load a file into ${tag(kind, s.slot)}.` : `Load a file into ${tag(kind, s.slot)}`,
-            "aria-label": `Load a file into ${tag(kind, s.slot)}${u.length ? `, which ${plural(u.length, "preset")} ${u.length === 1 ? "is" : "are"} waiting for` : ""}`,
-            onclick: () => pickFile(kind, s.slot) });
+            "aria-label": `Load a file into ${tag(kind, s.slot)}${u.length ? `, which ${plural(u.length, "preset")} ${u.length === 1 ? "is" : "are"} waiting for` : ""}` }, tag(kind, s.slot));
         })),
       slots.some((s) => !s.used && (use.get(s.slot) || []).length) && h("p", { class: "warn small" }, icon("alert"),
         ` ${slots.filter((s) => !s.used && (use.get(s.slot) || []).length).map((s) => `${tag(kind, s.slot)} (${presetNames(use.get(s.slot))})`).join(", ")}: presets point to an empty slot and play without ${K.without}.`)));
@@ -308,7 +305,18 @@ async function browse() {
   if (t3k.busy) return;
   t3k.busy = true; t3k.error = ""; renderT3k();
   try {
-    const sel = await t3kSelect();
+    let sel;
+    try { sel = await t3kSelect(); }
+    catch (e) {
+      if (!e.noWindow) throw e;
+      // no second window (an in-app browser: MIDIWeb on iOS, for Bluetooth MIDI): TONE3000 in this tab, and back here
+      t3k.busy = false; renderT3k();
+      if (await confirmDialog({ title: "TONE3000 opens in this page", confirm: "Go to TONE3000", body: h("div", {},
+        h("p", { text: "This browser opened no second window (it has none, or it blocks pop-ups), so TONE3000 takes this page for a moment: sign in there and choose a tone." }),
+        h("p", { class: "dim", text: "Its A2 captures come into the library here, and the editor opens again: connect to the pedal and send them from the library." })) }))
+        await t3kSelectHere(`${location.href.replace(/#.*$/, "")}#models`);
+      return;
+    }
     await t3kSignIn(sel);
     t3k.lists = {};
     t3kUser().then((u) => { t3k.user = u; renderT3k(); }, () => { });
@@ -347,9 +355,7 @@ function getModels(models) {
       const text = await t3kDownload(m);
       part(0.2, `Measuring the level of ${m.name || "the capture"}…`);
       const made = await BANKS.nam.prepare(text, `${m.name || tone.title || "MODEL"}.nam`);
-      const u = tone.user || {};
-      const e = await lib.add({ kind: "nam", name: made.name, bytes: made.bytes, detail: made.detail,
-        source: { from: "tone3000", toneId: tone.id, title: tone.title || "Tone", creator: creator(u), creatorUrl: u.url || "", url: tone.url || "", gear: tone.gear || "", format: tone.format || "", image: (tone.images || [])[0] || "", model: m.name || "" } });
+      const e = await lib.add({ kind: "nam", name: made.name, bytes: made.bytes, detail: made.detail, source: t3kSource(tone, m) });
       const slot = into === "lib" ? -1 : into === "free" || models.length > 1 ? freeSlot("nam", taken) : +into;
       if (slot < 0) { kept++; continue; }
       taken.add(slot);
@@ -409,7 +415,7 @@ function renderT3k() {
     fill(el,
       h("div", { class: "card-head" }, logo()),
       h("p", { class: "t3k-pitch", text: "Amp, pedal and full-rig captures shared by players, free to use. OpenPocket plays their NAM A2 captures." }),
-      h("p", { class: "dim", text: "TONE3000 opens in its own window: sign in there, search and listen, and choose a tone. It comes back here with its captures, ready for a slot." }),
+      h("p", { class: "dim", text: "TONE3000 opens in its own window (in this page, in a browser without windows): sign in there, search and listen, and choose a tone. It comes back here with its captures, ready for a slot." }),
       h("button", { type: "button", class: "btn primary", id: "t3kbrowse", disabled: t3k.busy, onclick: browse }, t3k.busy ? "Waiting for the TONE3000 window…" : "Browse TONE3000"),
       t3k.error && h("p", { class: "warn", role: "alert" }, icon("alert"), ` TONE3000: ${t3k.error}`),
       h("p", { class: "dim small", text: "The sign-in lasts while this page is open and is not stored. The captures you get are kept in the library on this computer." }));
@@ -432,8 +438,30 @@ function renderT3k() {
         : list.length ? list.map(toneRow) : h("p", { class: "dim empty-note", text: meta.empty })));
 }
 
+// TONE3000 in this tab (t3kSelectHere): what t3k.html brought back, into the library before the pedal is connected
+async function t3kCameBack() {
+  const n = t3kNoteRead();
+  if (!n) return;
+  if (n.error) { say(n.error === "cancelled" ? "TONE3000: no tone was chosen." : `TONE3000: ${String(n.error).replace(/^TONE3000: /, "")}`, n.error === "cancelled" ? "info" : "err"); return; }
+  const got = [];
+  for (const c of Array.isArray(n.captures) ? n.captures : []) {
+    try {
+      const bytes = Uint8Array.from(atob(c.bytes), (ch) => ch.charCodeAt(0));
+      if (bytes.length !== SLOT_BYTES || typeof c.name !== "string") continue;
+      got.push((await lib.add({ kind: "nam", name: c.name, bytes, detail: String(c.detail || ""), source: c.source && c.source.from === "tone3000" ? c.source : { from: "file", file: c.name } })).name);
+    } catch (_) { }
+  }
+  if (got.length) say(`${got.join(", ")} from TONE3000 ${got.length === 1 ? "is" : "are"} in the library: once the pedal is connected, send ${got.length === 1 ? "it" : "them"} from Models.`, "ok");
+}
+
 export async function initModels() {
   lib = await Library.open();
+  for (const k of ["nam", "ir"]) {
+    const inp = $(BANKS[k].input);
+    inp.onchange = () => { const f = [...inp.files]; inp.value = ""; if (f.length && has(k)) addFiles(k, f, aim[k]); };
+  }
+  await t3kCameBack();
+  addEventListener("pageshow", (e) => { if (e.persisted && t3k.busy) { t3k.busy = false; renderT3k(); } });   // (back from TONE3000 by the browser's Back)
   on("assets", (kind) => { render(kind); if (kind === "nam") renderT3k(); });
   on("bank", () => { if (app.conn === "ready") for (const k of ["nam", "ir"]) if (has(k)) render(k); });
   on("conn", () => { if (app.conn !== "ready") { queue.nam = []; queue.ir = []; } for (const k of ["nam", "ir"]) render(k); renderT3k(); });
