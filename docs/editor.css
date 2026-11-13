@@ -65,7 +65,8 @@ p { margin: 0; }
 a { color: var(--acc); text-underline-offset: 0.18em; }
 button, select, input { font: inherit; color: inherit; }
 button, a { touch-action: manipulation; }
-button { user-select: none; -webkit-user-select: none; cursor: pointer; }
+button, label[role="button"], .menu label { user-select: none; -webkit-user-select: none; cursor: pointer; }
+label[role="button"], .menu label { touch-action: manipulation; }
 button:disabled { cursor: default; }
 svg, img { display: block; max-width: 100%; }
 .more .ic, #pmore .ic, .srow .btn.icon .ic { stroke-width: 2.6; }
@@ -354,12 +355,12 @@ input[type="range"]:focus-visible::-moz-range-thumb { outline: 2px solid var(--a
 .srow .meta { font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .free { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-block: 12px 4px; border-block-start: 1px solid var(--line-soft); }
 .free-l { font-size: 0.8125rem; font-weight: 600; color: var(--faint); margin-inline-end: 6px; }
-button.chip.slot { position: relative; min-block-size: 30px; padding-inline: 10px; color: var(--dim); border-style: dashed; border-color: var(--line); }
-button.chip.slot::after { content: ""; position: absolute; inset: min(0px, (100% - 40px) / 2) 0; }
-button.chip.slot.need { color: var(--warn); border-color: var(--warn); border-style: solid; }
-@media (hover: hover) and (pointer: fine) { button.chip.slot:hover { background: var(--raised); color: var(--ink); border-style: solid; } }
-button.chip.slot:active { background: var(--hover); }
-@media (pointer: coarse) { button.chip.slot { min-block-size: 40px; min-inline-size: 48px; justify-content: center; } }
+.chip.slot { position: relative; min-block-size: 30px; padding-inline: 10px; color: var(--dim); border-style: dashed; border-color: var(--line); }
+.chip.slot::after { content: ""; position: absolute; inset: min(0px, (100% - 40px) / 2) 0; }
+.chip.slot.need { color: var(--warn); border-color: var(--warn); border-style: solid; }
+@media (hover: hover) and (pointer: fine) { .chip.slot:hover { background: var(--raised); color: var(--ink); border-style: solid; } }
+.chip.slot:active { background: var(--hover); }
+@media (pointer: coarse) { .chip.slot { min-block-size: 40px; min-inline-size: 48px; justify-content: center; } }
 .queue { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--r); background: var(--bg); border: 1px solid var(--line-soft); font-size: 0.8125rem; justify-items: start; }
 .q { display: grid; grid-template-columns: minmax(0, 14ch) minmax(0, 1fr); gap: 2px 10px; inline-size: 100%; align-items: center; }
 .q-n { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -477,13 +478,13 @@ a.tone-u[href] { text-decoration: underline; }
 .prof-b i { display: block; block-size: 100%; }
 .prof-r span:last-child { text-align: end; }
 .pop.menu { position: fixed; inset: auto; padding: 6px; inline-size: max-content; min-inline-size: 190px; max-inline-size: calc(100vw - 16px); gap: 0; position-area: none; margin: 0; }
-.menu button { display: flex; align-items: center; inline-size: 100%; min-block-size: 38px; padding-inline: 12px; border: 0; border-radius: var(--r); background: transparent; font-weight: 600; font-size: 0.875rem; text-align: start; }
-.menu button.danger { color: var(--err); }
-.menu button:disabled { color: var(--faint); }
-.menu button:focus-visible { outline-offset: -2px; }
+.menu :is(button, label) { display: flex; align-items: center; inline-size: 100%; min-block-size: 38px; padding-inline: 12px; border: 0; border-radius: var(--r); background: transparent; font-weight: 600; font-size: 0.875rem; text-align: start; }
+.menu :is(button, label).danger { color: var(--err); }
+.menu :is(button:disabled, label[aria-disabled="true"]) { color: var(--faint); cursor: default; }
+.menu :is(button, label):focus-visible { outline-offset: -2px; }
 .menu hr { border: 0; border-block-start: 1px solid var(--line); margin: 6px 4px; }
-@media (hover: hover) and (pointer: fine) { .menu button:hover:not(:disabled) { background: var(--hover); } }
-@media (pointer: coarse) { .menu button { min-block-size: 46px; } }
+@media (hover: hover) and (pointer: fine) { .menu :is(button:not(:disabled), label:not([aria-disabled="true"])):hover { background: var(--hover); } }
+@media (pointer: coarse) { .menu :is(button, label) { min-block-size: 46px; } }
 
 .dlg { padding: 0; inline-size: min(520px, calc(100vw - 24px)); max-block-size: min(86dvh, 720px); overflow: clip; }
 .dlg[open] { display: flex; flex-direction: column; }

@@ -49,9 +49,11 @@
   <aside class="presets" id="presets" aria-labelledby="presets-h">
     <div class="presets-head">
       <h2 id="presets-h">Presets</h2>
-      <button type="button" class="btn small" id="imp" title="Import presets from a file">Import</button>
+      <label class="btn small" id="imp" for="file" role="button" tabindex="0" title="Import presets from a file">Import</label>
       <button type="button" class="btn small" id="expall" title="Save all 52 presets in one file">Back up all</button>
-      <input type="file" id="file" accept=".json,application/json" hidden>
+      <!-- the file inputs: opened by their labels (a tap on a label is a tap on the input: in-app browsers such as MIDIWeb
+           open no picker for a script's click), never redrawn, no accept filter (iOS greys out extensions it does not know) -->
+      <input type="file" id="file" class="vh" tabindex="-1" aria-hidden="true">
     </div>
     <label class="search"><svg class="ic"><use href="#i-search"/></svg>
       <input type="search" id="psearch" placeholder="Search presets, amps, effects" autocomplete="off" spellcheck="false" aria-label="Search presets" aria-keyshortcuts="/"></label>
@@ -123,8 +125,8 @@
         </div>
         <section class="card t3k" id="t3k" aria-label="TONE3000"></section>
       </div>
-      <input type="file" id="namfile" accept=".nam,application/json" multiple hidden>
-      <input type="file" id="irfile" accept=".wav,audio/wav,audio/x-wav,audio/wave" multiple hidden>
+      <input type="file" id="namfile" class="vh" tabindex="-1" aria-hidden="true" multiple>
+      <input type="file" id="irfile" class="vh" tabindex="-1" aria-hidden="true" multiple>
     </section>
 
     <section class="view" id="view-midi" aria-labelledby="midi-h">

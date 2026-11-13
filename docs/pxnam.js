@@ -165,6 +165,13 @@ export function packModel(name, weights, levelDb) {
   return out;
 }
 
+// a .nam file's text -> what the pedal stores, at the same loudness as every other model: { name, bytes, detail }.
+// `di`: readDi(nam_di.wav). The editor's Models section and t3k.html (TONE3000 in the same tab) both make their entries here.
+export function namEntry(text, fileName, di) {
+  const m = parseNam(text, fileName), lv = levelTrim(m.weights, di);
+  return { name: m.name, bytes: packModel(m.name, m.weights, lv), detail: [`level ${lv >= 0 ? "+" : ""}${lv.toFixed(1)} dB`, m.note].filter(Boolean).join("; ") };
+}
+
 // 8-bit bytes -> 7-bit groups (a byte of high bits, then 7 bytes): px_models.h nm_unpack7
 export function pack7(b) {
   const o = [];
