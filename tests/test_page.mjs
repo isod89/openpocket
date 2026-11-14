@@ -145,6 +145,54 @@ cpSync(join(FIX, "firmware"), join(SITE, "firmware", "midi-test"), { recursive: 
   ok((await ch.textContent("#pkgver")) === "—", "test channel: a path in the name is cleaned (firmware/etc/ is asked for, nothing outside firmware/)");
   await ch.screenshot({ path: join(OUT, "page_5_test_channel.png"), fullPage: true });
   ok(!(await page.isVisible("#testchan")), "the normal page shows no test banner");
+  ok(!(await page.isVisible("#altCard")), "the normal page offers no alternative firmware");
+  await ch.close();
+}
+
+// an alternative firmware (an app on the base firmware): only through ?app=NAME, in a card of its own, beside OpenPocket;
+// the page says which product the pedal runs, and step 2 is the way back
+cpSync(join(FIX, "firmware", "alt"), join(SITE, "firmware", "apps", "starter"), { recursive: true });
+sim.stdin.end(); sim = null; simLog.length = 0; buf = "";
+await page.goto(url + "?app=starter");
+await page.waitForFunction(() => /STARTER v01/.test(document.getElementById("altname").textContent), null, { timeout: 5000 });
+ok(await page.isVisible("#altCard") && /not OpenPocket/.test(await page.textContent("#altCard")), "?app=starter: its own card names STARTER v01 and says it is not OpenPocket");
+ok(/v24/.test(await page.textContent("#pkgver")) && /Install OpenPocket/i.test(await page.textContent("#installCard h2")), "step 2 still offers OpenPocket, from its own folder");
+ok(!(await page.isEnabled("#altinstall")), "nothing can be installed before a pedal is connected");
+startSim();
+await page.waitForTimeout(300);
+await page.click("#connect");
+await page.waitForSelector("#devinfo:not([hidden])", { timeout: 15000 });
+ok(/OpenPocket v23/.test(await page.textContent("#d-fw")) && (await page.textContent("#install")) === "Install" && !(await page.isVisible("#altnow")), "a pedal on OpenPocket: named so, the button of step 2 says Install");
+ok((await page.textContent("#altinstall")) === "Install STARTER v01", "the alternative firmware's button names it");
+await page.screenshot({ path: join(OUT, "page_6_alt_offered.png"), fullPage: true });
+await page.click("#altinstall");
+await page.waitForFunction(() => /PocketX_901/.test(document.getElementById("altmsg").textContent) || document.getElementById("altmsg").classList.contains("err"), null, { timeout: 240000 });
+const altmsg = await page.textContent("#altmsg");
+ok(/the pedal now runs STARTER v01 \(PocketX_901\), an alternative firmware/.test(altmsg) && /To go back to OpenPocket/.test(altmsg), `result, in its own card: ${altmsg}`);
+ok((await page.textContent("#msg")) === "" && !(await page.isVisible("#next")), "step 2 says nothing of it: no OpenPocket version, no editor link");
+await page.waitForFunction(() => /STARTER/.test(document.getElementById("d-fw").textContent), null, { timeout: 15000 });
+ok(/STARTER v01: an alternative firmware, not OpenPocket \(PocketX_901\)/.test(await page.textContent("#d-fw")), `the page now sees: ${await page.textContent("#d-fw")}`);
+ok(await page.isVisible("#altnow") && /runs STARTER v01/.test(await page.textContent("#altnow")) && /presets, NAM models and cabinet IRs are still on the pedal/.test(await page.textContent("#altnow")),
+  "step 2 says the pedal runs an alternative firmware and that OpenPocket's data is still there");
+ok((await page.textContent("#install")) === "Back to OpenPocket" && (await page.textContent("#altinstall")) === "Install again: STARTER v01", "the button of step 2 is now Back to OpenPocket");
+ok(await page.isEnabled("#uboot"), "the UBOOT soft key is the base firmware's: offered for every product on it");
+await page.screenshot({ path: join(OUT, "page_7_alt_running.png"), fullPage: true });
+await page.click("#install");
+await page.waitForFunction(() => /PocketX_924/.test(document.getElementById("msg").textContent) || document.getElementById("msg").classList.contains("err"), null, { timeout: 240000 });
+ok(/OpenPocket v24 \(PocketX_924\)/.test(await page.textContent("#msg")), `the way back: ${await page.textContent("#msg")}`);
+await page.waitForFunction(() => /OpenPocket v24/.test(document.getElementById("d-fw").textContent), null, { timeout: 15000 });
+ok((await page.textContent("#install")) === "Install" && !(await page.isVisible("#altnow")), "the pedal is on OpenPocket again, and the page says so");
+ok(simLog.filter((l) => /step2 rc=0/.test(l)).length === 2, "the simulated pedal wrote both firmwares");
+await page.screenshot({ path: join(OUT, "page_8_back_on_openpocket.png"), fullPage: true });
+{
+  const no = await browser.newPage({ viewport: { width: 820, height: 900 } });
+  await no.goto(url + "?app=nosuch");
+  await no.waitForFunction(() => document.getElementById("altmsg").textContent !== "", null, { timeout: 5000 });
+  ok(/No alternative firmware by this name/.test(await no.textContent("#altmsg")) && !(await no.isEnabled("#altinstall")), "?app= with a name the site does not have: said so, nothing to install");
+  await no.goto(url + "?app=../../etc");
+  await no.waitForFunction(() => document.getElementById("altmsg").textContent !== "", null, { timeout: 5000 });
+  ok(/: etc$/.test(await no.textContent("#altmsg")), "a path in the name is cleaned (firmware/apps/etc/ is asked for, nothing outside it)");
+  await no.close();
 }
 await browser.close();
 if (sim) sim.stdin.end();

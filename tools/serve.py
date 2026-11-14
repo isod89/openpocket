@@ -3,13 +3,17 @@
 """OpenPocket offline installer: serves docs/ (installer, editor, packages) on this computer only, at
 http://localhost:8765/ (Web MIDI works on localhost). Chrome or Edge. Ctrl+C stops it.
   tools/serve.py [index.html|editor.html] [firmware-dir]
-firmware-dir (for example build/ble) replaces docs/firmware as the place the installer reads the packages from."""
+firmware-dir (for example build/ble) replaces docs/firmware as the place the installer reads the packages from.
+The packages of an alternative firmware (an app on the base firmware, docs/ALT-FIRMWARE.md) are read from where the
+build puts them: firmware/apps/NAME/ is build/apps/NAME/. The page offers one with index.html?app=NAME, beside
+OpenPocket, never in its place."""
 import functools, http.server, os, sys, webbrowser
 
 page = sys.argv[1] if len(sys.argv) > 1 else "index.html"
 here = os.path.dirname(os.path.abspath(__file__))
 root = os.path.abspath(os.path.join(here, "..", "docs"))
 fwdir = os.path.abspath(os.path.join(here, "..", sys.argv[2])) if len(sys.argv) > 2 else None
+appsdir = os.path.abspath(os.path.join(here, "..", "build", "apps"))
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
@@ -17,6 +21,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def translate_path(self, path):
         p = super().translate_path(path)
         prefix = os.path.join(root, "firmware")
+        apps = os.path.join(prefix, "apps")
+        if p.startswith(apps + os.sep):
+            return os.path.join(appsdir, os.path.relpath(p, apps))
         if fwdir and (p == prefix or p.startswith(prefix + os.sep)):
             return os.path.join(fwdir, os.path.relpath(p, prefix))
         return p

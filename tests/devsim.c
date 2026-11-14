@@ -9,7 +9,11 @@
  *   devsim FLASH.bin [--stock IDENTITY] [--dump OUT.bin]
  * FLASH.bin: the initial flash (1 MiB). --stock: answer with this identity in app mode instead of the app's own
  * OP_PRODUCT (the official firmware), its step 1 being simulated by ota.c. On exit (stdin closed) the flash is written
- * to --dump. */
+ * to --dump.
+ * The running app also says which product it is (INFO, F0 7D 4F 50 01 F7), from what its image in the flash holds: an
+ * app with a product descriptor answers as firmware/base/product.h does (the pedal's own code); an OpenPocket of v32
+ * or later (no descriptor) answers as its editor does (px_editor.h ED_INFO, stood in for here); the official firmware
+ * and the loader do not answer. */
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <stdio.h>
@@ -115,6 +119,8 @@ static uint8_t committed_parm[112];
 static int committed;
 static void ota_commit(const uint8_t *parm) { memcpy(committed_parm, parm, 112); committed = 1; }
 #include "../firmware/bsp/chip/ota.c"
+#define OP_PRODUCT_READER
+#include "../firmware/base/product.h"
 
 /* ---- loader (step 2): app area + update records only, never the head ---- */
 static int ldr_fread(uint32_t off, void *p, uint32_t n) { memcpy(p, nor + off, n); return 0; }
@@ -138,8 +144,10 @@ static void ldr_record_clear(void) { record_cleared++; }
 static void ldr_progress(uint32_t done, uint32_t total) { (void)done; (void)total; poll_in(0); }
 #include "../loader/ldr_core.c"
 
-/* ---- the app's identity: OP_PRODUCT inside the decrypted app.bin ---- */
+/* ---- the app's identity: OP_PRODUCT inside the decrypted app.bin; its product descriptor, if it holds one ---- */
 static char app_id[32];
+static op_app_t app_desc;
+static int app_is_alt;
 static const char *flash_app_id(void)
 {
     static uint8_t area[0x9D740 + 0x200];
@@ -152,6 +160,9 @@ static const char *flash_app_id(void)
             k = ((k << 1) ^ (k & 0x8000u ? 0x1021u : 0u)) & 0xFFFFu;
         }
     }
+    app_is_alt = 0;
+    for (i = 0; i + sizeof app_desc < sizeof area; i++)
+        if (!memcmp(area + i, "OP-APP:", 8)) { memcpy(&app_desc, area + i, sizeof app_desc); app_is_alt = 1; break; }
     for (i = 0; i + 43 < sizeof area; i++)
         if (!memcmp(area + i, "OP-PRODUCT:", 11)) {
             memcpy(app_id, area + i + 11, 20);
@@ -159,6 +170,23 @@ static const char *flash_app_id(void)
             return app_id;
         }
     return "NO-APP";
+}
+
+/* INFO, when the running app answers it (see the head of this file); 1 = the frame was INFO */
+static int info_service(int app_runs)
+{
+    const char *us = strchr(cur_id, '_');
+    const int ver = us ? atoi(us + 1) : 0;
+    if (!frame_full || frame_len != 4 || memcmp(frame, "\x7D\x4F\x50\x01", 4)) return 0;
+    frame_full = 0;
+    if (!app_runs) return 1;
+    if (app_is_alt) ed_info_reply(&app_desc, cur_id);
+    else if (ver >= 932) {
+        char v[16];
+        snprintf(v, sizeof v, "v%d", ver - 900);
+        ed_begin(ED_INFO); ed_b(4); ed_str(v, 15); ed_str(cur_id, 27); ed_b(12); ed_b(5); ed_b(52); ed_b(13); ed_send();
+    }
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -180,6 +208,7 @@ int main(int argc, char **argv)
     while (!closed) {
         poll_in(20);
         if (uboot_req) { printf("#log uboot\n#port none\n"); fflush(stdout); uboot_req = 0; }
+        info_service(mode == 0 && !stock);
         ota_service();
         if (!upgrade_req || mode == 2) { upgrade_req = 0; continue; }
         upgrade_req = 0;

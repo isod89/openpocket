@@ -9,13 +9,19 @@
 const HS_QUERY = [0xF0, 0x00, 0x32, 0x45, 0x00, 0x00, 0x00, 0x40, 0x7F, 0xF7];
 const UPGRADE = [0xF0, 0x22, 0x24, 0x35, 0x7F, 0xF7];
 const UBOOT_KEY = [0xF0, 0x22, 0x24, 0x35, 0x7D, 0xF7];
+const INFO_QUERY = [0xF0, 0x7D, 0x4F, 0x50, 0x01, 0xF7];   // the editor protocol's INFO (docs/EDITOR-PROTOCOL.md)
 const MAXDATA = 512;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const MODELS = ["PocketX", "BlackBox"];
 export const IS_OTA = (id) => /^ota-/i.test(id.model);
 export const OUR_LOADER = (id) => /^ota-OpenPocket_9\d\d$/i.test(id.text);
+// a firmware built on the OpenPocket base (identity Model_9NN): OpenPocket itself, or an alternative firmware. Which
+// one, the firmware says in its INFO reply (parseInfo, Updater.identify: `product`), never its identity
 export const IS_OPENPOCKET = (id) => MODELS.includes(id.model) && id.version >= 900;
+export const OPENPOCKET = "openpocket";               // product.app of OpenPocket itself
+export const APP_CAPS = ["stereo", "usb-audio", "midi", "store"];   // firmware/base/product.h OP_CAP_*, bit 0 first
+export const IS_ALT = (product) => Boolean(product) && product.app !== OPENPOCKET;
 export const IS_OFFICIAL = (id) => MODELS.includes(id.model) && id.version < 900;
 // the MIDI ports the page may probe: OpenPocket and its loader, and the names the official firmware's USB device gets
 // (its descriptors say "USB Composite Device" / "USB-Midi" / "Jieli Technology"; the system may add its own words)
@@ -74,6 +80,32 @@ export function parseIdentity(pkt) {
   return m ? { text: txt, model: m[1], version: parseInt(m[2], 10) } : null;
 }
 
+// The INFO reply of a firmware on the base: which product it is. OpenPocket answers with its editor protocol (1 and up)
+// and its 12-block layout; an alternative firmware answers with protocol 0, then its id, its name, what it can do
+// (firmware/base/product.h). null: not an INFO reply.
+export function parseInfo(pkt) {
+  if (pkt.length < 8 || pkt[0] !== 0xF0 || pkt[1] !== 0x7D || pkt[2] !== 0x4F || pkt[3] !== 0x50 || pkt[4] !== 0x01 || pkt[pkt.length - 1] !== 0xF7) return null;
+  let i = 5;
+  const end = pkt.length - 1;
+  const b = () => { if (i >= end) throw new Error("short"); return pkt[i++]; };
+  const s = () => { let t = ""; for (;;) { const c = b(); if (!c) return t; t += String.fromCharCode(c); } };
+  try {
+    const proto = b(), version = s(), identity = s();
+    if (proto) return { app: OPENPOCKET, name: "OpenPocket", version, identity, proto, caps: [], editor: proto };
+    const app = s(), name = s(), caps = b(), editor = b();
+    if (!/^[a-z0-9-]{1,15}$/.test(app) || app === OPENPOCKET || !name) return null;
+    return { app, name, version, identity, proto: 0, caps: APP_CAPS.filter((_, k) => caps >> k & 1), editor };
+  } catch (_) { return null; }
+}
+
+// what a pedal runs, in words, from its identity and its product (null: it did not say)
+export function firmwareName(id, product) {
+  if (IS_OTA(id)) return "update mode";
+  if (IS_ALT(product)) return `${product.name} ${product.version}, an alternative firmware`;
+  if (IS_OPENPOCKET(id)) return `OpenPocket v${id.version - 900}`;
+  return `the official firmware ${String(id.version).padStart(3, "0")}`;
+}
+
 // one MIDI in/out pair with a SysEx queue
 class Link {
   constructor(input, output) {
@@ -114,9 +146,26 @@ async function handshake(link, tries = 3) {
   return null;
 }
 
+// which product the firmware on this link is: parseInfo's result, or null when it does not answer (the official
+// firmware, an OpenPocket before v32, a loader)
+async function queryProduct(link, ms, tries = 2) {
+  for (let t = 0; t < tries; t++) {
+    link.drain();
+    if (!link.send(INFO_QUERY)) return null;
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      const p = await link.read(end - Date.now());
+      if (!p) break;
+      const info = parseInfo(p);
+      if (info) return info;
+    }
+  }
+  return null;
+}
+
 // timings (ms) as the hardware needs them; the tests shorten them
 export const TIMING = { afterUpgrade: 2000, afterStep1: 3000, loaderWait: 30000, step1Idle: 8000, step2Idle: 180000,
-  afterWrite: 3000, backWait: 40000, perRequest: 10, poll: 1000, rescuePoll: 100 };
+  afterWrite: 3000, backWait: 40000, perRequest: 10, poll: 1000, rescuePoll: 100, info: 600 };
 
 export class Updater {
   constructor(access, log, timing = {}) {
@@ -142,12 +191,15 @@ export class Updater {
     return null;
   }
 
-  // what is connected, for the status line: { id, name } or null (the link closed)
-  async identify() {
+  // what is connected, for the status line: { id, name, product } or null (the link closed). product: which firmware
+  // on the base it is (parseInfo), null when it does not say. product: false skips that question, for a caller that
+  // must act the moment a pedal answers (rescue: a pedal that restarts every few seconds)
+  async identify({ product: ask = true } = {}) {
     const dev = await this.find((id) => MODELS.includes(id.model) || IS_OTA(id));
     if (!dev) return null;
+    const product = ask && IS_OPENPOCKET(dev.id) ? await queryProduct(dev.link, this.t.info) : null;
     dev.link.close();
-    return { id: dev.id, name: dev.name };
+    return { id: dev.id, name: dev.name, product };
   }
 
   seen() {
@@ -194,13 +246,15 @@ export class Updater {
 
   // full update: running firmware (official or OpenPocket) -> its staged loader -> the new firmware.
   // product: the package identity ("PocketX_924", or the official "PocketX_016" for the way back)
-  async install(image, product, onStep) {
+  // opts.app: the product the package is (OPENPOCKET, or an alternative firmware's id). When given, the pedal must
+  // say it runs that product once it is back: the identity alone is the same for every product on the base
+  async install(image, product, onStep, opts = {}) {
     const step = onStep || (() => {});
     const [model] = product.split("_");
     const dev = await this.find((id) => MODELS.includes(id.model));
     if (!dev) throw fail("notfound", "pedal not found", this.seen());
     if (dev.id.model !== model) { dev.link.close(); throw fail("model", `the pedal is a ${dev.id.text}, the package is ${product}`, dev.id.text); }
-    return this.installOn(dev, image, product, step);
+    return this.installOn(dev, image, product, step, opts.app);
   }
 
   // rescue (issue #1): a pedal that restarts every few seconds. The first pedal that answers gets the package of
@@ -211,7 +265,7 @@ export class Updater {
     if (!dev) return null;
     const pkg = pick(dev.id.model);
     if (!pkg) { dev.link.close(); throw fail("pkg", dev.id.model, dev.id.model); }
-    return this.installOn(dev, pkg.image, pkg.product, step);
+    return this.installOn(dev, pkg.image, pkg.product, step, pkg.app);
   }
 
   // rescue for a program with no button to press again (the command line): rescue() again and again until a pedal is
@@ -229,7 +283,7 @@ export class Updater {
         const done = await this.rescue((model) => (pkg = pick(model)), onStep);
         if (done) return done;
         const half = pkg || loader;
-        if (half && await this.resume(half.image, half.product, onStep)) return half.product;
+        if (half && await this.resume(half.image, half.product, onStep, { app: half.app })) return half.product;
       } catch (e) {
         if (!["stopped", "lost", "noloader"].includes(e.code)) throw e;
         tell("retry", e);
@@ -241,7 +295,7 @@ export class Updater {
     }
   }
 
-  async installOn(dev, image, product, step) {
+  async installOn(dev, image, product, step, app) {
     step("start", dev.id.text);
     dev.link.send(UPGRADE);
     await sleep(this.t.afterUpgrade);
@@ -256,7 +310,7 @@ export class Updater {
     const s2 = await this.write(ota, image, step);
     if (!s2.finished)
       throw fail(s2.lost ? "lost" : "stopped", `the loader ${s2.lost ? "was disconnected" : "stopped"} after ${s2.served} requests`);
-    return this.comeBack(product, step);
+    return this.comeBack(product, step, app);
   }
 
   async write(ota, image, step) {
@@ -267,13 +321,19 @@ export class Updater {
     return s2;
   }
 
-  async comeBack(product, step) {
+  async comeBack(product, step, app) {
     step("reboot");
     await sleep(this.t.afterWrite);
     const back = await this.waitFor((id) => MODELS.includes(id.model), this.t.backWait);
     if (!back) throw fail("noreturn", "the pedal did not come back: power-cycle it");
+    const runs = app && back.id.text === product ? await queryProduct(back.link, this.t.info) : null;
     back.link.close();
     if (back.id.text !== product) throw fail("mismatch", `written, but the pedal reports ${back.id.text}`, back.id.text);
+    // an OpenPocket too old to say (before v32) is taken at its identity; an alternative firmware always says
+    if (app && (runs ? runs.app !== app : app !== OPENPOCKET)) {
+      const says = runs ? `${runs.name} ${runs.version}` : "a firmware that does not say which it is";
+      throw fail("mismatch", `written, but the pedal runs ${says}`, says);
+    }
     step("done", back.id.text);
     return back.id.text;
   }
@@ -290,7 +350,7 @@ export class Updater {
     const step = onStep || (() => {});
     const s = await this.write(ota, image, step);
     if (!s.finished) throw fail(s.lost ? "lost" : "stopped", `the loader stopped after ${s.served} requests`);
-    await this.comeBack(product, step);
+    await this.comeBack(product, step, opts.app);
     return true;
   }
 

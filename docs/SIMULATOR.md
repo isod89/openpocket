@@ -8,6 +8,7 @@ C compiler (`cc`: Xcode command line tools on macOS, `build-essential` on Linux)
 node tools/op.mjs sim                    # http://127.0.0.1:8766/
 node tools/op.mjs sim --port 9000 --reset
 node tools/op.mjs sim --update FLASH.bin # the update flow, for the installer (see below)
+node tools/op.mjs sim --app starter      # an alternative firmware of firmware/apps (see "An app on the base firmware")
 ```
 
 | Option | Meaning |
@@ -17,6 +18,8 @@ node tools/op.mjs sim --update FLASH.bin # the update flow, for the installer (s
 | `--flash FILE` | the pedal's flash, kept between runs (default `build/sim/flash.bin`) |
 | `--reset` | delete the flash file first: factory presets only |
 | `--update FILE` | run the update flow on this 1 MiB flash image (it is never written), see "The installer" |
+| `--app NAME` | run the app `firmware/apps/NAME` in place of OpenPocket, see "An app on the base firmware". Its flash is `build/sim/flash-NAME.bin` |
+| `--failed-start` | with `--app`: the start before did not finish, so the app starts in safe mode |
 
 ## What runs
 
@@ -119,7 +122,7 @@ The price is a committed binary: `tools/sim/px_engine.wasm` (82 KB), so that the
 compiler. `node tools/op.mjs wasm` (`make wasm`) rebuilds it in the container with Debian's clang and lld. Next to it,
 `px_engine.wasm.sources` holds the sources' checksum, and the test fails when the engine changes without a rebuild.
 
-`engine/px_wasm.c` mirrors `dsp_block()`, `audio_apply()`, `audio_reset()` and `audio_volume()` of `firmware/px_audio.h`:
+`engine/px_wasm.c` mirrors `dsp_block()`, `audio_apply()`, `audio_reset()` and `audio_volume()` of `firmware/px_audio.h` and `firmware/base/audio.h`:
 if those change, change it with them. Left out: the 24-bit output rounding, and the overload guard that drops to bypass,
 because a computer's load says nothing about the pedal's.
 
@@ -213,6 +216,34 @@ port renames itself as the real pedal's does ("OpenPocket" -> "OpenPocket Update
 change as a Web MIDI `statechange`. Open `/site/index.html`. `GET info` shows the program's `log` (the steps it took).
 Controls, screen and state answer 409 in this mode. `tests/fixtures.py DIR` builds a flash image (`flash_old.bin`) and
 fake packages for a try.
+
+## An app on the base firmware
+
+`node tools/op.mjs sim --app starter` runs an alternative firmware ([ALT-FIRMWARE.md](ALT-FIRMWARE.md)) in place of
+OpenPocket. The program is the app's own C file and its engine (`app.sh` names them), compiled for this computer with
+`tests/host` as the chip. Three files are stood in for: `base/board.h` (the chip, the screen, the time), `px_usb.h` (USB,
+the flash), and `base/start.h` (the program's start, and the commands of this simulator). Every other part of the base
+firmware is the pedal's own code: the start and the main loop, the controls from the pins up, the audio stages, the store,
+the MIDI reader, and the product's INFO reply.
+
+Time is the simulator's. Each main-loop pass is 1 ms, and an audio block is made every 2.9 ms of it. A button's pin moves
+as a hand moves it, and the pedal's code debounces it and times a hold.
+
+`/` is a plain page: the screen, a button for each control, MASTER, and the facts below. The API is the one above, with
+these differences:
+
+| Request | What it does |
+| --- | --- |
+| `GET /api/state` | the product (`app`, `name`, `version`, `identity`, `caps`, `editor`), `frame`, `volume`, `load`, `bypass`, `safe`, `hold` (the sound is held off), `start` (the boot stage), `guard_pending`, `nans`, `writes_ok` |
+| `POST /api/press/NAME` | a press of 60 ms: `fs_up fs_dn push home fx mod amp cab dly rev`. `NAME_long` holds it for 1.2 s |
+| `POST /api/wait/MS` | `MS` milliseconds of the pedal's time pass at once |
+| `POST /api/sound/HZ` | a sine of `HZ` at a quarter of full scale as the guitar; answers `{left, right}`, the two outputs' RMS as a part of full scale, measured by the pedal's own audio stages |
+| `POST /api/nan` | the app's sound gives a NaN in its next block |
+| `POST /api/midi` | SysEx reaches the update code's handshake, INFO and the app's own requests; any other message goes through the MIDI ring to the app's map |
+
+`battery`, `tuner`, `load`, and `bypass` are the OpenPocket simulator's only. The app's sound is not played in the
+browser: the WebAssembly engine is OpenPocket's. `/site/index.html?app=NAME` is the installer page with the app
+offered, and it names the simulated pedal's product. `tests/test_app_sim.mjs` drives all of this for STARTER.
 
 ## Tests
 

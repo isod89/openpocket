@@ -211,7 +211,7 @@ code.
 - `tests/uisim.c`: the MIDI page's fourth row.
 - On a pedal: the editor's `USB_AUDIO` command gives the streams' counts ([EDITOR-PROTOCOL.md](EDITOR-PROTOCOL.md));
   the record ring's "empty" and "no packet ready" counts must not rise while a preset simply plays.
-- Measurements on a pedal: a build with `OP_UADEV 1` (`firmware/px_audio.h`, never a release) adds the timing of the
+- Measurements on a pedal: a build with `OP_UADEV 1` (`firmware/base/audio.h`, never a release) adds the timing of the
   audio callbacks and the rings' fills to `USB_AUDIO`'s reply, and can put a counter or the computer's playback in the
   record stream, a steady tone at the input, and the callbacks' old order back, each switched by `USB_AUDIO`'s argument
   (`firmware/px_uaudio.h`). The figures of "The order of the audio callbacks" were taken with it.

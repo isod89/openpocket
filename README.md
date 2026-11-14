@@ -53,7 +53,9 @@ Written from scratch for the pedal's own chip (JieLi AC791N, two cores), install
 Full list of models, presets and controls: [docs/SOUNDS-AND-CONTROLS.md](docs/SOUNDS-AND-CONTROLS.md).
 Development notes (how the audio path was found, what changed in each version): [docs/AUDIO-SDK.md](docs/AUDIO-SDK.md).
 Everything learnt about the AC791N chip (CPU, memory, flash, second core, audio, FFT block, Bluetooth), for anyone
-building on it (FM-1 included): [docs/HARDWARE-HANDBOOK.md](docs/HARDWARE-HANDBOOK.md).
+building on it (FM-1 included): [docs/HARDWARE-HANDBOOK.md](docs/HARDWARE-HANDBOOK.md). To build a firmware of your own
+on the same base as OpenPocket, with your own engine and memory layout: [docs/ALT-FIRMWARE.md](docs/ALT-FIRMWARE.md) is
+the how-to, with a starter to copy, and [docs/BASE-FIRMWARE.md](docs/BASE-FIRMWARE.md) is the reference.
 What the stock BlackBox firmware does on the audio side, and what OpenPocket can take from it:
 [docs/STOCK-FIRMWARE.md](docs/STOCK-FIRMWARE.md).
 

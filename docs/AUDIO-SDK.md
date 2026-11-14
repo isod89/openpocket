@@ -56,7 +56,7 @@ Driver setup: `iis_open` IIS_PORTA, channel_in = BIT(1), channel_out = BIT(0), m
 `iis_set_sample_rate(44100)`, `iis_channel_on`, ALNK0 IRQ = 11 → `iis_irq_handler(0)`.
 
 ## v15: the DSP engine in the audio path
-- `firmware/px_audio.h`: I2S (in PA8 / out PA7), amp PA9, engine `engine/px_dsp.c` in the ALNK0 IRQ (blocks of 128
+- `firmware/base/audio.h` and `px_audio.h`: I2S (in PA8 / out PA7), amp PA9, engine `engine/px_dsp.c` in the ALNK0 IRQ (blocks of 128
   frames), guard: > 85 % load for 8 blocks in a row → BYPASS. Load shown as "CPU xx%".
 - Float on the hardware FPU: `-mcpu=r3 -mfprev1` (the JieLi SDK's options for the WL82). Without them clang emits
   software calls (`__addsf3`...). `firmware/px_math.c` = a small libm (sin/cos/exp/log/pow/sqrt, error ~1e-6).

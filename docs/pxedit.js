@@ -2,7 +2,7 @@
 // OpenPocket — the web editor's protocol over WebMIDI (docs/EDITOR-PROTOCOL.md; the pedal side: firmware/px_editor.h).
 // Request / reply, one at a time; STATE frames the pedal pushes while watched go to onState.
 
-import { PORT_RE } from "./pxota.js";
+import { PORT_RE, parseInfo } from "./pxota.js";
 import { pack7, SLOT_BYTES } from "./pxnam.js";
 import { IR_BYTES, IR_CHUNK } from "./pxir.js";
 
@@ -62,6 +62,7 @@ export class Editor {
     this.waiting = null;          // { cmd, resolve, reject, timer }
     this.info = null;
     this.cat = null;
+    this.other = null;            // set by connect(): the pedal answered, as an alternative firmware (pxota.js parseInfo)
   }
 
   // ---- transport ----
@@ -103,9 +104,12 @@ export class Editor {
     return p;
   }
 
-  // the first OpenPocket port that answers INFO
+  // the first OpenPocket port that answers INFO. A pedal that answers INFO with protocol 0 runs an alternative firmware
+  // (an app on the base firmware, firmware/base/product.h), not OpenPocket: it is not connected to, and `other` says
+  // which product it is
   async connect() {
     const outs = [...this.access.outputs.values()];
+    this.other = null;
     for (const input of this.access.inputs.values()) {
       if (input.state === "disconnected" || !PORT_RE.test(input.name || "")) continue;
       const output = outs.find((o) => o.name === input.name) || (outs.length === 1 ? outs[0] : null);
@@ -114,7 +118,9 @@ export class Editor {
       this.link = { input, output };
       input.onmidimessage = (ev) => this._onMessage(ev.data);
       try {
-        const r = new Reader(await this.request(C.INFO, [], 600));
+        const args = await this.request(C.INFO, [], 600);
+        if (args[0] === 0) this.other = parseInfo([0xF0, ...H, C.INFO, ...args, 0xF7]) || this.other;
+        const r = new Reader(args);
         const info = { proto: r.b(), version: r.s(), identity: r.s(), nblk: r.b(), npar: r.b(), nslot: r.b(), nameMax: r.b(), port: input.name };
         if (info.proto >= 1) { this.info = info; return info; }
       } catch (_) { }

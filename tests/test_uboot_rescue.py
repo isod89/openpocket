@@ -123,6 +123,26 @@ class Rescue(unittest.TestCase):
         self.assertEqual(saved[0].read_bytes(), before)
         self.assertEqual(self.opened, 1, "the loader's watchdog never fired: a command is always sent in time")
 
+    def test_a_pedal_on_an_alternative_firmware_is_restored_the_same_way(self):
+        """The rescue does not care which product loops: it writes the official app area over an app on the base firmware
+        (docs/ALT-FIRMWARE.md), and leaves the app's own data and OpenPocket's, above the app area, as they were."""
+        import struct
+        import pxpkg
+        flash = crashed_flash(same_sectors=())
+        app = noise(5, 60000) + struct.pack("<8s16s16s8sBB2x", b"OP-APP:", b"starter", b"STARTER", b"v01", 0x0D, 1)
+        self.assertEqual(pxpkg.app_info(app)["id"], "starter")
+        flash[0x4120:0x4120 + len(app)] = app                    # the looping firmware: an alternative one
+        flash[0xE5000:0xE5010] = b"THE APP'S STORE!"             # its own data (firmware/base/store.h)
+        flash[0xF0000:0xF0010] = b"OPENPOCKET PRESE"             # OpenPocket's, from before
+        before = bytes(flash)
+        sim, open_device = self.pedal(flash)
+        n, saved = self.run_rescue(open_device, sim, write=True)
+        self.assertEqual(n, (HI - 0x4000) // SECTOR, "every sector of the app area differed")
+        self.assertEqual(bytes(sim.flash[:HI]), IMAGE, "the app area is the official firmware")
+        self.assertNotIn(b"OP-APP:", bytes(sim.flash[:HI]))
+        self.assertEqual(bytes(sim.flash[HI:]), before[HI:], "the app's own data and OpenPocket's are untouched")
+        self.assertEqual(saved[0].read_bytes(), before, "the backup holds the alternative firmware as it was")
+
     def test_rerun_after_success_writes_nothing(self):
         sim, open_device = self.pedal()
         self.run_rescue(open_device, sim, write=True)

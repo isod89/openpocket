@@ -7,6 +7,9 @@
 #
 #   pxpkg.py APP.bin OTA.bin OUTDIR --version 24 [--sdk DIR]
 #       -> OUTDIR/PocketX_924.fwsc, OUTDIR/BlackBox_924.fwsc, OUTDIR/manifest.json
+#   pxpkg.py APP.bin OTA.bin OUTDIR --version 1 --app starter      an app on the base firmware other than OpenPocket
+#       -> OUTDIR/starter-PocketX_901.fwsc, OUTDIR/starter-BlackBox_901.fwsc, and a manifest.json that says which
+#          product they are ("app": its id, name, version and what it can do, read from the image itself)
 #
 # Package = JieLi UFW image: flash.bin (the whole [0, 0xA3000) image the update loader writes from 0x4000 up) and
 # ota.bin (the update loader, loader/). The flash head [0, 0x4000) is the JieLi SDK default (flash header, SDK SPL
@@ -15,10 +18,14 @@
 # nested "cfg" directory, SFC-encrypted with the chip key. All checks in the format are CRC16 (poly 0x1021, init 0).
 # The package identity (the 20 marker bytes of the .fwsc) is "PocketX_9NN" or "BlackBox_9NN"; the same string is
 # written into the app (OP_PRODUCT), so the running firmware reports exactly the package it came from.
+# The identity is the same for every product on the base firmware (an installer of any age finds the pedal and can put
+# OpenPocket back). Which product an image is stands in the image: an app other than OpenPocket holds a descriptor
+# (firmware/base/product.h, "OP-APP:"), and OpenPocket holds none. A package is never built as the other kind.
 import argparse
 import hashlib
 import json
 import os
+import re
 import struct
 from pathlib import Path
 
@@ -28,6 +35,8 @@ APP_SLOT = 0x9D740                # app.bin slot in PocketX_016 (the XIP window 
 FLASH_HDR = bytes.fromhex("20022f104cc900f00f001010a4ff4e5d0b41e0cd781dc856417fb367cf9f")   # = PocketX_016's
 UFW_CHIP = b"AC791N"
 PRODUCT_MARK = b"OP-PRODUCT:"     # firmware: const char OP_PRODUCT[32] = "OP-PRODUCT:" + identity
+APP_MARK = b"OP-APP:\0"            # firmware: const op_app_t OP_APP = {"OP-APP:", id, name, version, caps, editor}
+APP_CAPS = ("stereo", "usb-audio", "midi", "store")      # op_app_t.caps, bit 0 first (OP_CAP_*)
 MODELS = ("PocketX", "BlackBox")
 # region descriptors exactly as PocketX_016 has them (16-byte name fields include the SDK packer's trailing bytes)
 REGIONS = [
@@ -216,18 +225,40 @@ def with_product(app, product):
     return bytes(a)
 
 
-def build(app, ota, outdir, version, sdk, flat=None):
+def app_info(app):
+    """which product the image is: the descriptor of an app other than OpenPocket (firmware/base/product.h), or None"""
+    i = app.find(APP_MARK)
+    if i < 0:
+        return None
+    if app.find(APP_MARK, i + 1) >= 0:
+        raise SystemExit("pxpkg: the app holds more than one product descriptor (\"OP-APP:\")")
+    f = app[i:i + 52]
+    text = [f[a:b].split(b"\0")[0].decode("ascii", "replace") for a, b in ((8, 24), (24, 40), (40, 48))]
+    if len(f) < 52 or not re.fullmatch(r"[a-z0-9-]{1,15}", text[0]) or not text[1] or not text[2]:
+        raise SystemExit(f"pxpkg: the app's product descriptor is damaged (id {text[0]!r}, name {text[1]!r})")
+    return {"id": text[0], "name": text[1], "version": text[2],
+            "caps": [c for k, c in enumerate(APP_CAPS) if f[48] >> k & 1], "editor": f[49]}
+
+
+def build(app, ota, outdir, version, sdk, flat=None, app_id=None):
+    info = app_info(app)
+    if app_id is None and info:
+        raise SystemExit(f"pxpkg: this image is {info['name']} (the app {info['id']!r}), not OpenPocket: "
+                         f"package it with --app {info['id']}")
+    if app_id is not None and (not info or info["id"] != app_id):
+        raise SystemExit(f"pxpkg: --app {app_id}: the image " + (f"is the app {info['id']!r}" if info else
+                         "holds no product descriptor (the app must include base/product.h, with OP_APP_ID its folder's name)"))
     outdir.mkdir(parents=True, exist_ok=True)
     files = sdk_files(sdk, flat)
-    man = {"version": version, "packages": []}
+    man = {"version": version, **({"app": info} if info else {}), "packages": []}
     for model in MODELS:
         product = f"{model}_{900 + version}"
         pkg = ufw(flash_image(with_product(app, product), files), ota, product)
-        name = f"{product}.fwsc"
+        name = f"{info['id']}-{product}.fwsc" if info else f"{product}.fwsc"
         (outdir / name).write_bytes(pkg)
         man["packages"].append({"model": model, "product": product, "file": name, "size": len(pkg),
                                 "sha256": hashlib.sha256(pkg).hexdigest()})
-        print(f"package {outdir / name}: {len(pkg)} B, identity {product}")
+        print(f"package {outdir / name}: {len(pkg)} B, identity {product}" + (f", product {info['name']} {info['version']}" if info else ""))
     (outdir / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
     return man
 
@@ -240,10 +271,11 @@ def main():
     ap.add_argument("--version", type=int, required=True, help="OpenPocket version number (24 -> PocketX_924)")
     ap.add_argument("--sdk", help="JieLi AC79 SDK checkout (default: $AC79_SDK)")
     ap.add_argument("--sdk-files", help="directory holding uboot.boot, cfg_tool.bin, eq_cfg_hw.bin")
+    ap.add_argument("--app", dest="app_id", help="the image is this app on the base firmware (its folder under firmware/apps), not OpenPocket")
     a = ap.parse_args()
     if not 1 <= a.version <= 99:
         raise SystemExit("pxpkg: --version 1..99")
-    build(a.app.read_bytes(), a.ota.read_bytes(), a.outdir, a.version, a.sdk, a.sdk_files)
+    build(a.app.read_bytes(), a.ota.read_bytes(), a.outdir, a.version, a.sdk, a.sdk_files, a.app_id)
 
 
 if __name__ == "__main__":

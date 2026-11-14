@@ -26,7 +26,7 @@ The 12 blocks, by index: 0 GATE, 1 COMP, 2 PITCH, 3 SFX, 4 DRIVE, 5 AMP, 6 CAB, 
 
 | cmd | Request args | Reply args |
 | --- | --- | --- |
-| 1 INFO | — | protocol (1), firmware string ("v32"), identity string ("PocketX_932"), blocks (12), parameters per block (5), slots (52), name length (13) |
+| 1 INFO | — | protocol (1), firmware string ("v32"), identity string ("PocketX_932"), blocks (12), parameters per block (5), slots (52), name length (13). An image that is not OpenPocket answers protocol 0 and other fields: see "Another product" below |
 | 2 CAT_BLOCK | block | block, label string ("AMP"), name string ("AMPLIFIER"), types, color |
 | 3 CAT_TYPE | block, type | block, type, name string, parameters n, text mask (bit k: parameter k has its own value texts, see `TEXTS`), then n parameter-name strings |
 | 4 TEXTS | block, type, k | block, type, k, then 101 strings: the text the pedal shows for values 0..100 ("" = the number itself) |
@@ -54,6 +54,20 @@ The 12 blocks, by index: 0 GATE, 1 COMP, 2 PITCH, 3 SFX, 4 DRIVE, 5 AMP, 6 CAB, 
 | 26 IR_COMMIT | slot (0..7) | slot, rc (0 ok, 1 invalid: header, CRC; 2 flash). Checks the pieces received and writes them to the slot |
 | 27 IR_ERASE | slot (0..7) | slot, rc (0 ok, 1 invalid, 2 flash). Empties the slot |
 | 28 USB_AUDIO | nothing, or on (0/1) | on (0/1), rc (0 ok, 1 this firmware has no USB audio, 2 flash), state, n (20), then n counts of 4 bytes each (bits 0-6, 7-13, 14-20, 21-27). Without an argument it only reads. With one it sets the USB AUDIO setting and, if it changed, writes it to the flash; see "USB audio" below |
+
+### Another product (protocol 0)
+
+OpenPocket's protocol number is 1 or more. An alternative firmware built on the same base
+([ALT-FIRMWARE.md](ALT-FIRMWARE.md), `firmware/base/product.h`) answers `INFO` with protocol 0, and then says which
+product it is:
+
+| Reply args of `INFO`, protocol 0 |
+| --- |
+| 0, firmware string ("v01"), identity string ("PocketX_901"), id string ("starter": lowercase letters, digits, "-"), name string ("STARTER"), capabilities (bit 0 stereo sound, bit 1 USB audio, bit 2 a MIDI map, bit 3 its own data in flash), its own editor protocol (0 = none) |
+
+It answers none of the other commands of this document. With an editor protocol of its own it answers its own
+commands in the same framing, which that product documents. An editor written for OpenPocket takes protocol 0 as
+"not OpenPocket" and does not open: `docs/pxedit.js` reports the product, and the page says how to put OpenPocket back.
 
 ### NAM models (protocol 2)
 

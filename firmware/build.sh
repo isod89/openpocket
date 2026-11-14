@@ -25,6 +25,24 @@ fi
 GUARD_STACK=1; [ -n "$OP_BLE" ] && GUARD_STACK="${OP_GUARD_STACK:-0}"
 if [ -n "$OP_BLE" ]; then O="$HERE/build-ble"; APP="$HERE/openpocket-ble.bin"; PKG="$HERE/../build/ble"; BLEDEF="-DOP_BLE_TEST=1 -I$HERE/ble"
 else O="$HERE/build"; APP="$HERE/openpocket.bin"; PKG="$HERE/../docs/firmware"; BLEDEF=""; fi
+# An app on the base firmware (docs/BASE-FIRMWARE.md): OP_APP=<name> builds firmware/apps/<name>/ in place of OpenPocket,
+#   into build/apps/<name>/ (the image, its packages). Its app.sh names its C file (APP_MAIN), its engine's when that is
+#   a file of its own (APP_ENGINE), their options (APP_DEFS) and the functions that run from RAM beside the base's
+#   (APP_RAM_DSP in the engine's file, APP_RAM_FW in the app's); its memory.ld holds its regions (app.ld).
+#   Nothing of the OpenPocket build's outputs is touched.
+MAIN="$HERE/openpocket.c"; ENGINE="$HERE/../engine/px_dsp.c"; MEM="$HERE"
+if [ -n "$OP_APP" ]; then
+  case "$OP_APP" in *[!a-z0-9-]*) echo "ERROR: OP_APP must be lowercase letters, digits and -"; exit 1;; esac
+  [ -z "$OP_BLE$OP_CHANNEL" ] || { echo "ERROR: OP_APP builds an app as it is: not with OP_BLE or OP_CHANNEL"; exit 1; }
+  MEM="$HERE/apps/$OP_APP"
+  [ -f "$MEM/app.sh" ] || { echo "ERROR: no app.sh in $MEM"; exit 1; }
+  APP_ENGINE=""; APP_DEFS=""; APP_RAM_DSP=""; APP_RAM_FW=""
+  . "$MEM/app.sh"
+  MAIN="$MEM/$APP_MAIN"; ENGINE="${APP_ENGINE:+$MEM/$APP_ENGINE}"
+  O="$HERE/../build/apps/$OP_APP/obj"; APP="$HERE/../build/apps/$OP_APP/$OP_APP.bin"; PKG="$HERE/../build/apps/$OP_APP"
+  echo "App: $OP_APP -> $APP, $PKG"
+fi
+MOBJ="$O/$(basename "$MAIN" .c).o"; EOBJ="${ENGINE:+$O/$(basename "$ENGINE" .c).o}"
 rm -rf "$O"; mkdir -p "$O"
 CC="$TC/pi32v2/bin/clang -target pi32v2"
 $CC -c "$BSP/chip/crt0.S"    -o "$O/crt0.o"
@@ -32,7 +50,7 @@ $CC -c "$BSP/chip/fm1_vec.S" -o "$O/vec.o"
 $CC -c "$BSP/chip/fm1_isr.S" -o "$O/isr.o"
 # 2nd core (entry + stacks, Felucca): only if openpocket.c enables it (#define DSP_CPU1 1)
 CPU1OBJ=""
-if grep -q "^#define DSP_CPU1 1" "$HERE/openpocket.c"; then
+if grep -q "^#define DSP_CPU1 1" "$MAIN"; then
   $CC -c "$BSP/chip/fm1_cpu1.S" -o "$O/cpu1.o"; CPU1OBJ="$O/cpu1.o"
 fi
 # A test channel build (OP_CHANNEL=midi-test): its own version number (OP_TEST_VERSION, default 37) and a boot-screen tag, its
@@ -51,14 +69,14 @@ fi
 FP="-mcpu=r3 -mfprev1"
 DSPDEF="-DPX_SR=44100.0f -DPX_OVERSAMPLE=4"
 [ -n "$OP_BLE" ] && DSPDEF="$DSPDEF -DPXN_LEAN=1 -DPXN_HOT_RAM=1 -DPX_RUNS=0"   # v40.2: the test image's flash is full (engine/px_nam.c; v40.4: px_dsp.c PX_RUNS)
-INC="-I$HERE/inc -I$HERE/../engine"
+[ -n "$OP_APP" ] && DSPDEF="$APP_DEFS"
+INC="-I$HERE -I$HERE/inc -I$HERE/../engine"
 $CC $FP -Os -ffunction-sections -fno-builtin -Wall -Wno-unused-function $DSPDEF $BLEDEF -DOP_GUARD_STACK=$GUARD_STACK $INC \
-    -I"$BSP/chip" -I"$BSP/boards/fm1" -include "$O/channel.h" -c "$HERE/openpocket.c" -o "$O/openpocket.o"
-$CC $FP -O2 -ffunction-sections -fno-builtin $DSPDEF $INC -c "$HERE/../engine/px_dsp.c" -o "$O/px_dsp.o"
+    -I"$BSP/chip" -I"$BSP/boards/fm1" -include "$O/channel.h" -c "$MAIN" -o "$MOBJ"
+[ -z "$ENGINE" ] || $CC $FP -O2 -ffunction-sections -fno-builtin $DSPDEF $INC -c "$ENGINE" -o "$EOBJ"
 $CC $FP -O2 -fno-builtin -c "$HERE/px_math.c" -o "$O/px_math.o"
-BLEOBJ=""; MAPOPT=""
+BLEOBJ=""; MAPOPT="-Map $O/openpocket.map"   # (the memory report below reads the regions from the map)
 if [ -n "$OP_BLE" ]; then
-  MAPOPT="-Map $O/openpocket.map"
   # JieLi's LE controller (LLVM bitcode, Apache-2.0, third_party/jieli-ble) -> pi32v2 objects, and our context switch
   mkdir -p "$O/jl"
   for b in "$HERE"/../third_party/jieli-ble/*/*.bc; do
@@ -87,20 +105,22 @@ RAM_DSP="px_engine_process px_engine_part px_wet_run px_wet_swap dly_block rv_bl
 # of the hand routines (used only if a hand one fails its start-up check: the network is then too slow anyway)
 RAM_FW="a_enc a_dec a_block a_send a_collect a_commit dsp_block dsp_out dsp_load dsp_job post_job post_run dsp_pipe lp_job dsp_lp_run a_lp_post lp_split
   fm1_alnk0_irq tn_capture fm1_cpu1_run fm1_cpu1_wait fm1_cpu1_retire a_hrun a_hwait b_ticks memcpy memset"
-python3 "$HERE/../tools/ramcode.py" "$O/px_dsp.o" --plain $RAM_DSP
-python3 "$HERE/../tools/ramcode.py" "$O/openpocket.o" $RAM_FW
+# an app: its own lists, and the base's audio path (base/audio.h, px_aorder.h)
+[ -n "$OP_APP" ] && { RAM_DSP="$APP_RAM_DSP"; RAM_FW="a_enc a_dec a_block a_send a_collect a_input a_output dsp_out a_knee dsp_load fm1_alnk0_irq tn_capture memcpy memset $APP_RAM_FW"; }
+[ -z "$ENGINE" ] || python3 "$HERE/../tools/ramcode.py" "$EOBJ" --plain $RAM_DSP
+python3 "$HERE/../tools/ramcode.py" "$MOBJ" $RAM_FW
 # a direct call between the flash code and the RAM code is out of the CPU's call range: refuse it with its name
 # (v40: the audio path's RAM code, .ram_text.dsp.*, is within range by its place, firmware/app.ld)
-python3 "$HERE/../tools/check_calls.py" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o"
-"$TC/pi32v2/bin/ld" --defsym "op_guard_stack=$GUARD_STACK" -T "$HERE/app.ld" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$O/openpocket.o" "$O/px_dsp.o" "$O/px_math.o" "$O/iis.o" $BLEOBJ $MAPOPT -o "$O/openpocket.elf"
+python3 "$HERE/../tools/check_calls.py" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$MOBJ" $EOBJ "$O/px_math.o"
+"$TC/pi32v2/bin/ld" --defsym "op_guard_stack=$GUARD_STACK" -L "$MEM" -T "$HERE/app.ld" "$O/crt0.o" "$O/vec.o" "$O/isr.o" $CPU1OBJ "$MOBJ" $EOBJ "$O/px_math.o" "$O/iis.o" $BLEOBJ $MAPOPT -o "$O/openpocket.elf"
 # symbol map: used to translate a crash address (PC) into a function name
 "$TC/common/bin/objdump" -t "$O/openpocket.elf" 2>/dev/null | sort > "$O/symbols.txt" || true
 "$TC/common/bin/objcopy" -O binary -j .text     "$O/openpocket.elf" "$O/text.bin"
 "$TC/common/bin/objcopy" -O binary -j .data     "$O/openpocket.elf" "$O/data.bin"
 "$TC/common/bin/objcopy" -O binary -j .ram_text "$O/openpocket.elf" "$O/rt.bin" 2>/dev/null || : > "$O/rt.bin"
-python3 - "$TC" "$O" "$APP" <<'PY'
+python3 - "$TC" "$O" "$APP" "$OP_APP" <<'PY'
 import re,subprocess,sys
-tc,out,dest=sys.argv[1:]
+tc,out,dest,app=sys.argv[1:]
 syms=subprocess.run([f"{tc}/common/bin/objdump","-t",f"{out}/openpocket.elf"],capture_output=True,text=True,check=True).stdout
 def sym(n):
     m=re.search(rf"^([0-9a-f]+) .*\s{n}$",syms,re.M); return int(m.group(1),16) if m else None
@@ -108,13 +128,18 @@ load=sym("_data_load"); rt_load=sym("_rt_load"); start=sym("_start")
 be,cl,ch,nb=sym("_bss_end"),sym("_cram_lo"),sym("_cram_hi"),sym("_ble_stack_hi")
 re_,hs,he=sym("_rt_end"),sym("_bss_hi_start"),sym("_bss_hi_end")
 ls_,le=sym("_bss_lo_start"),sym("_bss_lo_end")
-if ls_ is not None and le and le > ls_: print(f"low RAM   : {le-ls_} of 24576 bytes (below the RAM)")
+# the regions as the linker laid them out (app.ld, the app's memory.ld): name -> origin, length
+mem=open(f"{out}/openpocket.map").read().split("Memory Configuration")[1].split("Linker script and memory map")[0]
+mem={m[1]:(int(m[2],16),int(m[3],16)) for m in re.finditer(r"^(\w+)\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)",mem,re.M)}
+(r0,rl),(p0,pl),(t0,tl),(n0,nl)=mem["RAM"],mem["POOL"],mem["RAMTEXT"],mem["NOINIT"]
+if ls_ is not None and le and le > ls_: print(f"low RAM   : {le-ls_} of {mem['LOWRAM'][1]} bytes (below the RAM)")
 ps_,pe=sym("_pool_tail_start"),sym("_pool_tail_end")
-if ps_ and pe: print(f"pool tail : {pe-ps_} bytes, {0x01C5E000-pe} left before the RAM code")
-if re_ and he: print(f"hi RAM    : RAM code {re_-0x01C5E000}, data {he-hs}, free {0x01C74000-he} of 90112 bytes (the RAM code window)")
-if be: print(f"RAM       : {be-0x01C08000} of 98304 bytes ({98304-(be-0x01C08000)} free)")
-if nb and nb >= 0x01C7C000 and nb > sym("_ble_stack_lo"): print(f"NOINIT    : {nb-0x01C7C000} of 15696 bytes up to the BLE task stacks' end")
-if cl is not None and ch is not None: print(f"cache RAM : {ch-cl} of 28672 bytes (the rest, {28672-(ch-cl)}, to the NAM network's vector unit)")
+if ps_ and pe: print(f"pool tail : {pe-ps_} bytes, {p0+pl-pe} left before the RAM code")
+if re_ and he: print(f"hi RAM    : RAM code {re_-t0}, data {he-hs}, free {t0+tl-he} of {tl} bytes (the RAM code window)")
+if be: print(f"RAM       : {be-r0} of {rl} bytes ({rl-(be-r0)} free)")
+if nb and nb >= n0 and nb > sym("_ble_stack_lo"): print(f"NOINIT    : {nb-n0} of {nl} bytes up to the BLE task stacks' end")
+cr=mem["CRAM"][1]
+if cl is not None and ch is not None: print(f"cache RAM : {ch-cl} of {cr} bytes" + ("" if app else f" (the rest, {cr-(ch-cl)}, to the NAM network's vector unit)"))
 assert start==0x02000120,hex(start or 0)
 img=bytearray(open(f"{out}/text.bin","rb").read())
 for at,part in sorted([(rt_load,open(f"{out}/rt.bin","rb").read()),(load,open(f"{out}/data.bin","rb").read())]):
@@ -122,7 +147,7 @@ for at,part in sorted([(rt_load,open(f"{out}/rt.bin","rb").read()),(load,open(f"
         assert at-0x02000120>=len(img),"sections overlap"
         img+=b"\xff"*(at-0x02000120-len(img))+part
 img+=b"\xff"*(-len(img)%4)
-open(dest,"wb").write(img); print(f"OK -> openpocket.bin: {len(img)} bytes")
+open(dest,"wb").write(img); print(f"OK -> {app or 'openpocket'}.bin: {len(img)} bytes")
 PY
 
 # ---- update loader (loader/, felucca-bsp's, Pocket X layout) -> build/loader/ota.bin ----
@@ -143,8 +168,9 @@ for ln in sys.stdin:
 python3 "$HERE/../tools/mkloader.py" "$L/loader.bin" "$L/ota.bin"
 
 # ---- update packages for the web installer -> docs/firmware/ (PocketX_9NN.fwsc, BlackBox_9NN.fwsc, manifest.json) ----
-VER=$(sed -n 's/^#define OP_VERSION_NUM "\([0-9]*\)".*/\1/p' "$HERE/openpocket.c")
+VER=$(sed -n 's/^#define OP_VERSION_NUM "\([0-9]*\)".*/\1/p' "$MAIN")
 [ -n "$CHAN" ] && VER="$TESTVER"
 mkdir -p "$PKG"
+# (an app's packages are named after it and its manifest says which product it is: --app; OpenPocket's are as ever)
 python3 "$HERE/../tools/pxpkg.py" "$APP" "$L/ota.bin" "$PKG" --version "$VER" \
-    --sdk-files "$HERE/sdk/packager"
+    --sdk-files "$HERE/sdk/packager" ${OP_APP:+--app "$OP_APP"}

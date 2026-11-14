@@ -15,16 +15,31 @@
 #  - preset store: save / reload / power cut at every step of a save (firmware/px_store.h on a simulated flash)
 #  - the audio callbacks' order (v42, firmware/px_aorder.h): the I2S driver calls the output's callback before the
 #    input's when its interrupt enters late; every output block must still be the sound of that interrupt's guitar block
+#  - tuner (firmware/px_tuner.h): bass and guitar notes, sine and plucked, in tune and off it, read every 100 ms: the
+#    note and its octave, within 2 cents from a five-string bass's low B (31 Hz) to the high E string
+#  - base audio (firmware/base/audio.h, audio_plain.h): the audio stages every app shares, for a mono and for a stereo
+#    app: the guitar through an app's sound to the output channels, MASTER, the mutes, the fades, the soft knee, the
+#    load's bypass
+#  - base controls (firmware/base/input.h): each button's pins and the keypad's voltages to its event, the debounce, a
+#    hold and its release, two buttons together, the encoder's detents, the MASTER knob
+#  - base store (firmware/base/store.h): save / reload, a power cut at every step of a save, nothing written outside its
+#    ten sectors, no sector ending like an update record whatever the app saves
 #  - USB audio (v42): the USB device code and the audio glue (bsp/chip/usb.c, firmware/px_uaudio.h) against a model of
 #    the controller and a computer: with the setting off the descriptors are the earlier device's byte for byte; with
 #    it on, the descriptors, the requests, 10 minutes of each stream with the clocks apart (no gap, no repeat)
+#    and the MIDI input ring with an app's reader of it (firmware/base/midi.h): unread, it blocks the installer's SysEx
 #  - LED map + lights driver (led_probe.h, px_leds.h): PC7 enable after the first byte, the 595 timing, the table
 #  - button lights (px_lights.h): each block lights its button, FX for its group, HOME blinks in the tuner
 #  - packages: tools/pxpkg.py rebuilds the official PocketX_016 app area byte for byte (needs the official file)
 #  - installer: docs/pxota.js + docs/pxpkg.js against a simulated pedal running the real update code (ota.c, ldr_core.c)
 #  - flasher: tools/flash.mjs (node tools/op.mjs flash) against the same simulated pedal: update, dry run, wrong model, damaged package, rescue of a pedal that restarts in a loop
+#  - products: an alternative firmware (an app on the base firmware) on the same simulated pedal: what it says it is, the
+#    flasher's --app guard, the install, the way back to OpenPocket (also by rescue), what the flash keeps through both.
+#    With OP_BUILT=1 (node tools/op.mjs all) also with the packages the build made: each product's image byte for byte
 #  - rescue: tools/uboot_rescue.py (protocol, guards, resume) against a simulated UBOOT pedal, tests/uboot_sim.py
 #  - hosted simulator: tools/sim.mjs driven over HTTP (controls, held buttons, screen, flash file, SysEx, the Web MIDI shim)
+#  - an app in the hosted simulator: firmware/apps/starter's own C files with tests/host as the chip, over the same HTTP
+#    interface: its controls, its sound at the two outputs, MIDI, its store, safe mode, the boot guard
 #  - pedal skin: its input mapping (tools/sim/pedal-input.js)
 #  - sound: the WebAssembly engine on known signals, against the native build; the bundled loops against their manifest
 #  - Chocolate Plus files: tools/chocolate/fcp.py against a made-up export
@@ -62,6 +77,18 @@ echo "== preset store"
 $CC -O1 -Iengine tests/test_store.c engine/px_dsp.c firmware/px_math.c -lm -o build/test_store && build/test_store | tail -2
 echo "== audio callbacks' order (the output block is its interrupt's, whichever callback the driver calls first)"
 $CC -O1 -Wall -Ifirmware tests/test_aorder.c -o build/test_aorder && build/test_aorder | tail -1
+echo "== tuner (bass and guitar notes through the pedal's capture and estimate)"
+$CC -O1 -Wall -Ifirmware tests/test_tuner.c -lm -o build/test_tuner && build/test_tuner | tail -1
+echo "== base audio (the stages every app shares, under the plain schedule: firmware/base/audio.h, audio_plain.h)"
+# (a base test's last line is its result; its whole output is shown when it fails)
+base_test() { t="$1"; shift; "$@" -o "build/$t"; "build/$t" > "build/$t.log" || { cat "build/$t.log"; exit 1; }; tail -1 "build/$t.log"; }
+BAF="-O1 -Wall -Wno-unused-function -Wno-unused-variable -Wno-int-to-pointer-cast -Ifirmware"
+base_test test_base_audio $CC $BAF tests/test_base_audio.c firmware/px_math.c -lm
+base_test test_base_audio2 $CC $BAF -DA_CH=2 tests/test_base_audio.c firmware/px_math.c -lm   # an app with a stereo sound
+echo "== base controls (firmware/base/input.h over base/controls.h: the pins and the ADC to an app's events)"
+base_test test_base_input $CC -O1 -Wall -Wno-unused-function -Wno-unused-variable -Itests/host -Ifirmware tests/test_base_input.c
+echo "== base store (firmware/base/store.h: an app's own data in flash, kept by every update loader)"
+base_test test_base_store $CC -O1 -Wall -Wno-unused-function -Ifirmware tests/test_base_store.c
 echo "== USB audio (the device code and the audio glue against a model of the controller and a computer)"
 UAF="-O1 -Wall -Wno-unused-function -Wno-int-to-pointer-cast -Iengine -Ifirmware -Ifirmware/bsp/chip"
 $CC $UAF tests/test_usb_audio.c -lm -o build/test_usb_audio
@@ -90,16 +117,28 @@ build/lightsim > build/lightsim.log || { cat build/lightsim.log; exit 1; }; tail
 echo "== simulated pedal"
 $CC -O1 -Wall -Wno-unused-function -o build/devsim tests/devsim.c
 if [ -n "$1" ]; then echo "== packages"; python3 tests/test_pxpkg.py "$1"; fi
+echo "== packages of two products (tools/pxpkg.py: an app's product descriptor, its packages' names, the manifest)"
+python3 tests/test_pxpkg_app.py > build/pxpkg_app.log || { cat build/pxpkg_app.log; exit 1; }; tail -1 build/pxpkg_app.log
 echo "== installer"
 node tests/test_installer.mjs "$1"
 echo "== flasher (tools/flash.mjs)"
 node tests/test_flash.mjs
+echo "== two products from one base (an alternative firmware installed, told from OpenPocket, and OpenPocket put back)"
+node tests/test_products.mjs ${OP_BUILT:+--built}
 echo "== build entry point (tools/op.mjs)"
 node tests/test_op.mjs
+echo "== release pin (tests/release_pin.sh: the same sums pass, one changed byte's sum fails)"
+sh tests/release_pin.sh tests/release.sha256 > /dev/null || { echo "release pin: refuses its own sums"; exit 1; }
+sed '1s/^./0/;1s/^00/01/' tests/release.sha256 > build/release_pin_wrong.sums
+if sh tests/release_pin.sh build/release_pin_wrong.sums > /dev/null 2>&1; then echo "release pin: accepts a changed image"; exit 1; fi
+if sh tests/release_pin.sh build/no-such.sums > /dev/null 2>&1; then echo "release pin: accepts a missing build"; exit 1; fi
+echo "release pin: ok"
 echo "== rescue tool (tools/uboot_rescue.py on a simulated UBOOT pedal)"
 python3 tests/test_uboot_rescue.py $1
 echo "== hosted simulator (tools/sim.mjs)"
 node tests/test_sim.mjs
+echo "== an app on the base firmware in the simulator (firmware/apps/starter, from its own C files: tools/sim.mjs --app)"
+node tests/test_app_sim.mjs
 echo "== Bluetooth test image sources (third_party/jieli-ble)"
 node tests/test_ble_sources.mjs
 echo "== Bluetooth test image status codes"

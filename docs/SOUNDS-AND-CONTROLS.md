@@ -199,7 +199,8 @@ CC 7 is the MASTER volume. Details, the clock sync and the limits: [MIDI.md](MID
 
 ## Tuner
 Both footswitches, or a long press on HOME. The output is muted while the tuner is open (v36). The note, how far off it
-is in cents, and an amber arrow on the side of the note that points toward in tune. Any switch leaves it.
+is in cents, and an amber arrow on the side of the note that points toward in tune. Any switch leaves it. It reads
+from about 28 Hz to 1100 Hz: a bass's strings, a five-string's low B included, and a guitar's up the neck.
 
 ## Diagnostics
 Keep holding HOME past the tuner (1.4 s in all), or hold HOME again on the tuner. The pages bug reports ask for a photo of

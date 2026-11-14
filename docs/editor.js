@@ -36,6 +36,7 @@ async function connect() {
     app.access.onstatechange = onPorts;
     const e = new Editor(app.access);
     const info = await e.connect();
+    if (!info && e.other) { app.other = e.other; setConn("other"); return; }   // an alternative firmware answered: not OpenPocket
     if (!info) { setConn(was === "lost" ? "lost" : "notfound"); return; }
     app.ed = e; app.info = info;
     e.onLost = lost;
@@ -76,7 +77,7 @@ on("reconnect", () => { lost(); setTimeout(() => { if (app.conn === "lost") conn
 // a port came or went: a pedal plugged back in is found again; the MIDI section lists the other devices
 function onPorts() {
   emit("ports");
-  if (app.conn === "lost" || app.conn === "notfound") connect();
+  if (app.conn === "lost" || app.conn === "notfound" || app.conn === "other") connect();
 }
 let pinged = 0;
 async function ping() {
@@ -141,6 +142,17 @@ const GATE = {
         h("li", { text: "Does the cable carry data? Many USB-C cables only charge." }),
         h("li", {}, "Does it run OpenPocket v32 or newer? ", h("a", { href: "./", text: "Install or update it" }), "."),
         h("li", { text: "Is another tab or program using it (the installer, a DAW)? Close that first." })),
+      connectBtn("Try again"),
+      h("p", { class: "dim", text: "The editor also tries again by itself as soon as a device is plugged in." }),
+    ];
+  },
+  other: () => {
+    const o = app.other, name = `${o.name} ${o.version}`;
+    return [
+      h("h1", { text: `This pedal runs ${name}` }),
+      h("p", { id: "othernote", text: `${o.name} is an alternative firmware built on OpenPocket's base. It is not OpenPocket, and this editor edits OpenPocket's presets and blocks, which ${o.name} does not have.` }),
+      h("p", {}, "To use this editor, put OpenPocket back: ", h("a", { href: "./", text: "open the installer" }), " and press ", h("b", { text: "Back to OpenPocket" }),
+        ". Your OpenPocket presets, NAM models and cabinet IRs are still on the pedal."),
       connectBtn("Try again"),
       h("p", { class: "dim", text: "The editor also tries again by itself as soon as a device is plugged in." }),
     ];

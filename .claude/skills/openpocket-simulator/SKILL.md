@@ -49,6 +49,10 @@ footswitches, drag or wheel the knobs, click PARA for PUSH, or use the keys list
 `chrome-devtools-axi` or Playwright. For the installer use the update flow instead of the pedal:
 `node tools/op.mjs sim --update FLASH.bin` (an image such as `flash_old.bin` from `python3 tests/fixtures.py DIR`).
 
+An alternative firmware (an app of `firmware/apps`, `docs/ALT-FIRMWARE.md`) runs with `node tools/op.mjs sim --app starter`:
+its own C files, compiled for this computer. `/api/state` then gives the product, and `/api/wait/MS`, `/api/sound/HZ` and
+`NAME_long` presses exist (`docs/SIMULATOR.md`, "An app on the base firmware"). Its sound is measured, not played.
+
 ## Sound
 
 The skin's Sound section runs the real engine (`engine/px_dsp.c`, built to `tools/sim/px_engine.wasm`) in an AudioWorklet:

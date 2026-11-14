@@ -2,14 +2,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // The one host-side entry point of the OpenPocket build (macOS, Linux, Windows; Node 18+). The Makefile and the
 // .bat files only call this. Every Docker command line lives here.
-//   node tools/op.mjs doctor | build | ble | test | package | clean | shell | image | serve [editor|build|ble]
-//   node tools/op.mjs flash --dry-run | --confirm-flash [--rescue] [--package FILE]   (writes to a connected pedal: docs/BUILDING.md)
+//   node tools/op.mjs doctor | build | ble | test [--built] | package | clean | shell | image | serve [editor|build|ble]
+//   node tools/op.mjs all        every product of this tree and the tests: OpenPocket (package, with the release pin), each
+//                                app of firmware/apps, then the host tests with the packages just built (test --built)
+//   node tools/op.mjs app NAME   another app on the base firmware (firmware/apps/NAME, docs/BASE-FIRMWARE.md) -> build/apps/NAME/
+//   node tools/op.mjs serve app NAME   the installer with that app offered beside OpenPocket (index.html?app=NAME)
+//   node tools/op.mjs flash --dry-run | --confirm-flash [--rescue] [--package FILE] [--app NAME]   (writes to a connected pedal: docs/BUILDING.md)
 //   node tools/op.mjs log [--follow] [--json] [--wait SEC] [--scan SEC]   (reads a connected pedal's state: docs/BLE-TEST.md)
 //   node tools/op.mjs dsp [--presets A,B] [--seconds SEC] [--json]   (the DSP's load, late blocks and bypass per preset, over USB)
 //   node tools/op.mjs render in.wav [out.wav] [preset]   |   node tools/op.mjs appimage [fm1-1.bin]
 //   node tools/op.mjs rescue [--write] [options]   (restore a looping BlackBox from its UBOOT state; read-only without --write; docs/RESCUE.md)
 //   node tools/op.mjs rescue-check   (the UBOOT rescue tool against a simulated pedal: Python 3 only, no Docker)
-//   node tools/op.mjs sim [--port 8766] [--flash FILE] [--reset] | --update FLASH.bin   the hosted simulated pedal
+//   node tools/op.mjs sim [--port 8766] [--flash FILE] [--reset] | --update FLASH.bin | --app NAME   the hosted simulated pedal
 //   node tools/op.mjs wasm   the engine as WebAssembly for the simulated pedal's sound (tools/sim/px_engine.wasm)
 // NATIVE=1 runs the commands on this machine (toolchain from firmware/setup.sh) instead of in the container.
 import { spawnSync } from "node:child_process";
@@ -64,6 +68,9 @@ function inside(path) {
   return rel.split(sep).join("/");
 }
 
+// the apps of this tree other than OpenPocket: the folders of firmware/apps that hold an app.sh
+const apps = () => { const d = resolve(root, "firmware/apps"); return existsSync(d) ? readdirSync(d).filter((n) => existsSync(resolve(d, n, "app.sh"))).sort() : []; };
+
 const commands = {
   doctor() {                                   // prerequisites, one line each; exit 1 when the build cannot work
     let bad = 0;
@@ -87,8 +94,21 @@ const commands = {
   image,
   build: () => inContainer(["sh", "firmware/build.sh"]),
   ble: () => inContainer(["sh", "-c", "OP_BLE=1 sh firmware/build.sh && sha256sum firmware/openpocket-ble.bin build/ble/*.fwsc"]),   // the Bluetooth MIDI test image (docs/BLE-TEST.md)
-  test: () => inContainer(["sh", "tests/run_tests.sh"]),
-  package: () => inContainer(["sh", "-c", `sh firmware/build.sh && mkdir -p build && sha256sum ${OUTS} > build/SHA256SUMS && cat build/SHA256SUMS`]),
+  app([name]) {                                // an app on the base firmware other than OpenPocket: its own outputs, build/apps/<name>/
+    if (!/^[a-z0-9-]+$/.test(name || "")) fail("usage: app NAME   (a folder of firmware/apps, such as starter). See docs/ALT-FIRMWARE.md.");
+    if (!existsSync(resolve(root, "firmware/apps", name, "app.sh"))) fail(`firmware/apps/${name}/app.sh not found.`);
+    const out = `build/apps/${name}`;
+    return inContainer(["sh", "-c", `OP_APP=${name} sh firmware/build.sh && sha256sum ${out}/${name}.bin ${out}/*.fwsc ${out}/manifest.json > ${out}/SHA256SUMS && cat ${out}/SHA256SUMS`]);
+  },
+  // --built: the tests also take the packages the build made (OpenPocket's, each app's), which must be there
+  test: (args = []) => inContainer(args.includes("--built") ? ["sh", "-c", "OP_BUILT=1 sh tests/run_tests.sh"] : ["sh", "tests/run_tests.sh"]),
+  all() {                                      // both kinds of product from one tree, then the tests on what was built
+    let rc = commands.package();
+    for (const name of apps()) rc = rc || commands.app([name]);
+    return rc || commands.test(["--built"]);
+  },
+  // (the release pin, tests/release_pin.sh: OpenPocket's outputs must be the pinned release's bytes, or this fails)
+  package: () => inContainer(["sh", "-c", `sh firmware/build.sh && mkdir -p build && sha256sum ${OUTS} > build/SHA256SUMS && sh tests/release_pin.sh`]),
   "package-test": () => inContainer(["sh", "-c", `OP_CHANNEL=midi-test sh firmware/build.sh && mkdir -p build && sha256sum ${TEST} > build/SHA256SUMS-midi-test && cat build/SHA256SUMS-midi-test`]),
   clean() {
     for (const p of ["build", "firmware/build", "firmware/build-ble", "firmware/openpocket.bin", "firmware/openpocket-ble.bin", "firmware/openpocket-midi-test.bin", "docs/firmware/midi-test", "docs/firmware/manifest.json", "engine/px_render"]) {
@@ -108,14 +128,21 @@ const commands = {
   async dsp(args) {                            // the same: the DSP's load, late blocks and bypass per preset (selects, saves nothing)
     return (await import("./dsp.mjs")).main(args);
   },
-  serve([arg]) {
+  serve([arg, name]) {
     const ble = arg === "ble";                 // the Bluetooth test packages (build/ble) instead of docs/firmware
+    const alt = arg === "app";                 // an alternative firmware offered beside OpenPocket (its packages: build/apps/NAME)
+    if (alt && (!/^[a-z0-9-]+$/.test(name || "") || !existsSync(resolve(root, "firmware/apps", name, "app.sh")))) fail("usage: serve app NAME   (a folder of firmware/apps, such as starter). See docs/ALT-FIRMWARE.md.");
     if (ble ? !existsSync(resolve(root, "build/ble/manifest.json")) : arg === "build" || !existsSync(resolve(root, "docs/firmware/manifest.json"))) {
       const built = ble ? commands.ble() : commands.build();
       if (built !== 0) return built;
     }
+    if (alt && !existsSync(resolve(root, "build/apps", name, "manifest.json"))) {
+      const built = commands.app([name]);
+      if (built !== 0) return built;
+    }
     const py = python;
-    const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", arg === "editor" ? "editor.html" : "index.html", ...(ble ? ["build/ble"] : [])], { stdio: "inherit", cwd: root });
+    const page = arg === "editor" ? "editor.html" : alt ? `index.html?app=${name}` : "index.html";
+    const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", page, ...(ble ? ["build/ble"] : [])], { stdio: "inherit", cwd: root });
     if (r.error) fail("Python 3 is needed to serve the installer offline (python.org).");
     return r.status ?? 0;
   },

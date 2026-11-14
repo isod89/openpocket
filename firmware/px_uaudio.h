@@ -17,10 +17,10 @@
 #pragma once
 
 #if OP_UADEV
-/* the measurement option (px_audio.h OP_UADEV). USB_AUDIO's first argument: bit 0 the setting, bit 1 a counter in the
+/* the measurement option (base/audio.h OP_UADEV). USB_AUDIO's first argument: bit 0 the setting, bit 1 a counter in the
  * record stream (a saw of 20000 frames, -10000..9999, both channels), bit 2 the computer's playback in it, as it is added
  * to the output (the pedal's own sound left out), bit 3 a steady tone as the input (its period 100 frames, which no block
- * boundary repeats), bit 4 the output blocks in the order the driver asks (px_audio.h A_ORDER_OLD). Then, each optional:
+ * boundary repeats), bit 4 the output blocks in the order the driver asks (base/audio.h A_ORDER_OLD). Then, each optional:
  * the band's floor, its top / 2, the priming / 2, the playback target / 4 (frames). The figures after the normal ones are
  * extremes since the last USB_AUDIO reply. */
 static struct {

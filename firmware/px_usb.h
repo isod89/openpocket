@@ -14,6 +14,12 @@
  * pedal is then a class-compliant USB sound card as well (USB Audio Class 1, felucca-bsp's streams in usb.c, both on
  * endpoint 4, isochronous): the computer records the pedal's sound and plays through its output. 16-bit stereo at
  * 44.1 kHz. With the setting off the USB device is the same as before, byte for byte (tests/test_usb_audio.c).
+ *
+ * A part of the base firmware (docs/BASE-FIRMWARE.md). The including file provides: ed_service(now), the app's own SysEx
+ * service, which runs before the installer's and may be empty (px_editor.h is OpenPocket's); a_collect and the audio's
+ * state (base/audio.h); the boot guard and op_diag (base/board.h, base/diag.h). It may define OP_FLASH_OWN (the flash
+ * it keeps its own data in), OTA_SCRATCH (0x400 + 512 bytes lent to an update; ota.c has its own otherwise),
+ * PX_LIGHTS_OFF, and OP_UAUDIO 1 with px_ua_on for USB audio.
  */
 #pragma once
 
@@ -21,7 +27,7 @@
 #define FELUCCA_CDC 0
 #if OP_UAUDIO
 #include "px_uaconf.h"                          /* the streams and their rings (also tests/test_usb_audio.c's) */
-#if OP_UADEV                                    /* the measurement option (px_audio.h): the band and the target set at run time */
+#if OP_UADEV                                    /* the measurement option (base/audio.h): the band and the target set at run time */
 static uint32_t uad_lo = 52u, uad_hi = 108u, uad_prime = 80u, uad_tgt = 208u;
 #define UA_BAND_VAR 1
 #define UA_LO uad_lo
@@ -33,10 +39,13 @@ static uint32_t uad_lo = 52u, uad_hi = 108u, uad_prime = 80u, uad_tgt = 208u;
 #define FELUCCA_USB_PRODUCT "OpenPocket"
 #define FELUCCA_USB_MANUFACTURER "OpenPocket"
 #define RING_PUBLISH() __asm__ volatile("" ::: "memory")
-/* the app may only write the OTA staging area (its loader + update record), the preset store (px_store.h) and,
- * v37, the NAM user models (px_models.h) */
-#define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, 0xF0000u, 0xF4000u) || \
-                             FL_IN(off, n, 0xC0000u, 0xE0000u) || FL_IN(off, n, 0xF4000u, 0xFC000u))
+/* the app may only write the OTA staging area (its loader + update record) and the flash it keeps its own data in:
+ * OP_FLASH_OWN(off, n), which the app's file defines (openpocket.c: the preset store, the NAM models, the IRs) */
+#include "base/flashmap.h"                      /* (BS_FLASH_OWN: the range of an app that uses base/store.h) */
+#ifndef OP_FLASH_OWN
+#define OP_FLASH_OWN(off, n) 0                  /* an app that keeps nothing in flash */
+#endif
+#define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || OP_FLASH_OWN(off, n))
 
 /* the package identity, patched by pxpkg.py ("OP-PRODUCT:" + identity, 32 bytes, exactly once in the app) */
 static const volatile char OP_PRODUCT[32] __attribute__((used, aligned(4))) = "OP-PRODUCT:PocketX_9" OP_VERSION_NUM;
@@ -49,8 +58,6 @@ static int ble_stall_tick(void);                /* ble/ble_status.h, included af
 #include "fm1_flash.h"
 #include "fm1_cpu1_stop.h"
 #include "usb.c"
-static uint8_t *ota_scratch(void);              /* px_models.h: the upload staging buffer, idle while ota_session blocks */
-#define OTA_SCRATCH ota_scratch()
 #include "ota.c"
 
 static uint8_t px_flash_ok;                     /* the flash is a 1 MiB SPI NOR: the update entry may stage */

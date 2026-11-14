@@ -16,13 +16,13 @@
  * the note is dropped, so a block is never filled while the output plays it.
  *
  * The including file provides a_block(data, len), the guitar's block (its sound started on the second core, or made),
- * a_send(d, n), an output block of n frames filled with that sound, A_ORDER_TICKS and fm1_ticks (px_audio.h);
+ * a_send(d, n), an output block of n frames filled with that sound, A_ORDER_TICKS and fm1_ticks (base/audio.h);
  * tests/test_aorder.c runs this file on a PC.
  */
 #pragma once
 
 #ifndef A_ORDER_OLD
-#define A_ORDER_OLD 0u                          /* (px_audio.h OP_UADEV: the order the driver asks, to measure it) */
+#define A_ORDER_OLD 0u                          /* (base/audio.h OP_UADEV: the order the driver asks, to measure it) */
 #endif
 static uint8_t a_encd;                          /* a_enc has run since the last output block */
 static int32_t *a_dq;                           /* an output block asked for before its a_enc */

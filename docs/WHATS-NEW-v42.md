@@ -12,6 +12,8 @@ A design review of the pedal's interface. [SOUNDS-AND-CONTROLS.md](SOUNDS-AND-CO
 
 - **Both footswitches open the tuner**, as the panel always said. The first one still changes the preset at once; the
   second one, within about 0.15 s, changes it back and opens the tuner.
+- **The tuner reads a bass.** Its lowest note was 61 Hz, so a bass's E (41 Hz) and A (55 Hz) strings showed nothing or
+  a wrong note. It now reads from about 28 Hz (a five-string bass's low B is 31 Hz); a guitar reads as before.
 - **PUSH on PLAY opens the block at once.** It used to wait 350 ms for a possible second click. A double click still
   starts MOVE.
 - **An unsaved edit is kept** when a footswitch moves on: come back to that preset and the edit is there, still marked

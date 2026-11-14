@@ -65,9 +65,9 @@ await page.addInitScript(() => {
   window.__ctl = (bytes) => { if (ctl.onmidimessage) ctl.onmidimessage({ data: Uint8Array.from(bytes) }); };
   navigator.requestMIDIAccess = async () => access;
 });
-function startSim() {
+function startSim(program = join(ROOT, "build", "edsim"), args = ["--persist", FLASH]) {
   buf = "";
-  sim = spawn(join(ROOT, "build", "edsim"), ["--persist", FLASH], { stdio: ["pipe", "pipe", "inherit"] });
+  sim = spawn(program, args, { stdio: ["pipe", "pipe", "inherit"] });
   sim.stdout.on("data", (d) => {
     buf += d.toString();
     let i;
@@ -668,6 +668,27 @@ const free = (kind, slot) => page.locator(`#${kind}list .free [data-slot="${slot
   await page.click("#dlg-ok");
   await back("Off");
   ok(await page.textContent("#uabtn") === "Turn on", "USB audio: off again");
+  await go("sound");
+}
+
+// ---- a pedal on an alternative firmware (an app on the base firmware: the starter, from its own C files): the editor
+// says which product it is and how to get OpenPocket back, and opens again by itself once OpenPocket answers ----
+{
+  const { compile } = await import("../tools/sim.mjs");
+  sim.stdin.end();
+  await page.evaluate(() => window.__simGone());
+  await page.waitForSelector('body[data-conn="lost"]', { timeout: 8000 });
+  startSim(compile("app", "starter"), []);
+  await page.waitForSelector('body[data-conn="other"]', { timeout: 20000 });
+  ok(/This pedal runs STARTER v01/.test(await text("#gate h1")) && /not OpenPocket/.test(await text("#othernote")), `an alternative firmware answers: "${await text("#gate h1")}", and that it is not OpenPocket`);
+  ok(await page.isVisible('#gate a[href="./"]') && /Back to OpenPocket/.test(await text("#gate")) && await page.isHidden("#tabs"), "the way back is given (the installer, Back to OpenPocket); none of OpenPocket's screens is shown");
+  await shot("editor_11_other_firmware.png");
+  sim.stdin.end();
+  await page.evaluate(() => window.__simGone());
+  await sleep(300);
+  startSim();
+  await page.waitForSelector('body[data-conn="ready"]', { timeout: 20000 });
+  ok(await page.isVisible("#tabs"), "OpenPocket again on the cable: the editor opens by itself");
   await go("sound");
 }
 

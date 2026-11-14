@@ -7,9 +7,10 @@ export const pad2 = (n) => String(n).padStart(2, "0");
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const slotName = (slot) => pad2(slot + 1);
 
-// conn: idle | unsupported | denied | searching | notfound | loading | ready | lost
+// conn: idle | unsupported | denied | searching | notfound | other | loading | ready | lost
+// (other: the pedal runs an alternative firmware, app.other says which)
 export const app = {
-  access: null, ed: null, info: null, cat: null,
+  access: null, ed: null, info: null, cat: null, other: null,
   conn: "idle",
   st: null,                 // { slot, dirty, saved, focus, preset }: the current sound
   slots: [],                // [{ slot, saved, name }]

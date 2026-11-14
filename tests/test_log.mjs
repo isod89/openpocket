@@ -64,10 +64,10 @@ b = parseLast("LAST FAILED STAGE 7 BLOCKS 9 LOAD 42 PEAK 61 NAN 0 CPU1 1 LOOPS 0
 ok(b.failed && b.load === 42 && b.crash.vec === 0x3F && b.crash.pc === 0x2000DC8 && b.crash.emu === 8 && b.crash.clockMs === 4100, "last-boot line with a crash");
 ok(!parseLast("LAST OK").failed, "last boot fine");
 
-const fw = readFileSync(join(ROOT, "firmware/openpocket.c"), "utf8");
+const fw = ["firmware/base/diag.h", "firmware/base/start.h"].map((f) => readFileSync(join(ROOT, f), "utf8")).join("\n");
 const strings = (s) => [...s.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
-ok(strings(/ST_NAME\[ST_N\] = \{([^}]*)\}/.exec(fw)[1]).join() === BOOT_STAGES.join(), "boot stage names match firmware/openpocket.c");
-ok(strings(/N\[7\] = \{([^}]*)\}/.exec(fw)[1]).join() === RESET_CAUSES.join(), "reset causes match firmware/openpocket.c");
+ok(strings(/ST_NAME\[ST_N\] = \{([^}]*)\}/.exec(fw)[1]).join() === BOOT_STAGES.join(), "boot stage names match firmware/base/diag.h");
+ok(strings(/N\[7\] = \{([^}]*)\}/.exec(fw)[1]).join() === RESET_CAUSES.join(), "reset causes match firmware/base/start.h");
 
 // ---- the verdicts on the real firmware text ----
 const fast = ["--interval", "0.01", "--json"];
@@ -137,6 +137,18 @@ await dev.ready;
 r = await run(dev.access, fast);
 ok(r.code === 3 && r.last.level === "identity" && /identity/.test(r.last.verdict.reason), `stock firmware: ${r.last.verdict.reason}`);
 await dev.end();
+
+// an alternative firmware (an app on the base firmware) is named, not taken for OpenPocket or for the official firmware
+{
+  const fix = mkdtempSync(join(tmpdir(), "oplogfix-"));
+  (await import("node:child_process")).execFileSync("python3", [join(ROOT, "tests", "fixtures.py"), fix], { stdio: "ignore" });
+  const alt = simAccess([join(fix, "flash_alt.bin")]);
+  await alt.ready;
+  r = await run(alt.access, fast);
+  ok(r.code === 3 && r.last.level === "identity" && /runs STARTER v01, an alternative firmware, not OpenPocket/.test(r.last.verdict.reason) && /flash --confirm-flash/.test(r.last.verdict.reason),
+    `an alternative firmware: ${r.last.verdict.reason}`);
+  await alt.end();
+}
 
 const port = (name) => ({ name, state: "connected", onmidimessage: null, open: async () => {}, send: () => {} });
 const mute = { inputs: new Map([["OpenPocket", port("OpenPocket")]]), outputs: new Map([["OpenPocket", port("OpenPocket")]]) };

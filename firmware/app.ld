@@ -14,13 +14,13 @@ PROVIDE(op_guard_stack = 1);   /* build.sh passes --defsym op_guard_stack=0 with
 MEMORY
 {
     XIP    (rx)  : ORIGIN = 0x02000120, LENGTH = 0x8DFBC
-    RAM    (rwx) : ORIGIN = 0x01C08000, LENGTH = 96K
-    POOL   (rw)  : ORIGIN = 0x01C20000, LENGTH = 0x3E000   /* free SRAM (like CLIPPER): DSP engine (v40: was 0x54000) */
-    RAMTEXT (rwx): ORIGIN = 0x01C5E000, LENGTH = 0x16000   /* v40: the RAM code, audio path included (was 24 KB at 0x01C00000) */
     NOINIT (rw)  : ORIGIN = 0x01C7C000, LENGTH = 0x3D50
     LOWRAM (rw)  : ORIGIN = 0x01C00000, LENGTH = 0x6000    /* v40.1: v37's RAM code window, free since v40 (see .bss_lo) */
     CRAM   (rw)  : ORIGIN = 0x01F28000, LENGTH = 0x7000    /* PXC_BEGIN..PXC_END (px_cacheram.h) */
 }
+/* the app's own regions, between LOWRAM and the stacks: RAM (.data, .bss), POOL (its engine's memory), RAMTEXT (the RAM
+ * code). firmware/memory.ld holds OpenPocket's, firmware/apps/<name>/memory.ld another app's (build.sh: -L) */
+INCLUDE memory.ld
 SECTIONS
 {
     .text : { KEEP(*(.text.crt0)) *(EXCLUDE_FILE(*libjl.a:*) .text*) *(EXCLUDE_FILE(*libjl.a:*) .rodata*) _etext_fw = .;
@@ -57,5 +57,8 @@ SECTIONS
      * linker would refuse a call out of it, naming one) */
     ASSERT(_etext_fw - ORIGIN(RAMTEXT) < 0x400000 && 0x02000120 - (ORIGIN(RAMTEXT) + LENGTH(RAMTEXT)) < 0x400000,
            "the flash code has grown out of the RAM code's call range: move RAMTEXT up (firmware/app.ld)")
+    ASSERT(ORIGIN(RAM) >= ORIGIN(LOWRAM) + LENGTH(LOWRAM) && ORIGIN(RAM) + LENGTH(RAM) <= ORIGIN(POOL) &&
+           ORIGIN(POOL) + LENGTH(POOL) <= ORIGIN(RAMTEXT) && ORIGIN(RAMTEXT) + LENGTH(RAMTEXT) <= _guard0,
+           "the app's RAM, POOL and RAMTEXT (memory.ld) must lie in that order between LOWRAM and the stacks")
     /DISCARD/ : { *(.comment) *(.note*) }
 }

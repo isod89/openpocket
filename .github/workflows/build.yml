@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Build the container, the firmware and the installer packages
+      - name: Build the container, the firmware and the installer packages (it fails when they are not the release's bytes)
         run: node tools/op.mjs package
       - uses: actions/upload-artifact@v4
         with:
@@ -29,5 +29,15 @@ jobs:
             firmware/openpocket-midi-test.bin
             docs/firmware/midi-test/
             build/SHA256SUMS-midi-test
-      - name: Host tests
-        run: node tools/op.mjs test
+      - name: Build STARTER, the alternative firmware to start from (it fails when the base needs a name from OpenPocket)
+        run: node tools/op.mjs app starter
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openpocket-app-starter
+          path: |
+            build/apps/starter/starter.bin
+            build/apps/starter/*.fwsc
+            build/apps/starter/manifest.json
+            build/apps/starter/SHA256SUMS
+      - name: Host tests, also with the packages of both products built above
+        run: node tools/op.mjs test --built

@@ -14,7 +14,9 @@
  *     blocks that start up to 0.7 ms late: every frame the pedal made arrives once, in order (no gap, no repeat), the
  *     ring's fill stays in its band;
  *   - the playback stream over 10 minutes at the same clock differences: no gap, the ring neither empties nor
- *     overflows, the level follows MASTER, the sum with the pedal's sound is clipped, a flash write's mute stops it. */
+ *     overflows, the level follows MASTER, the sum with the pedal's sound is clipped, a flash write's mute stops it;
+ *   - the MIDI input ring and an app's reader of it (firmware/base/midi.h): a ring nobody reads refuses the host's
+ *     packets, the installer's SysEx among them; midi_poll empties it and gives the app's map each message. */
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -169,6 +171,83 @@ static uint8_t px_ua_on;
 
 static int fails;
 #define CHECK(c, what) do { if (!(c)) { printf("FAIL %s\n", what); fails++; } } while (0)
+
+/* ---- an app's MIDI map over the base firmware's reader of usb.c's ring (firmware/base/midi.h) ---- */
+#define APP_MIDI t_map
+#include "base/midi.h"
+static midi_msg_t t_got[128];
+static uint32_t t_got_ms[128], t_got_n;
+static void t_map(const midi_msg_t *m, uint32_t ms) { if (t_got_n < 128u) { t_got[t_got_n] = *m; t_got_ms[t_got_n++] = ms; } }
+/* an EP1 OUT packet of n event packets (4 bytes each) from the host: 1 = taken, 0 = left unread (the host is NAKed) */
+static int host_sends(const uint32_t *ev, uint32_t n)
+{
+    uint8_t b[64];
+    for (uint32_t i = 0; i < n; i++) { b[4u * i] = (uint8_t)ev[i]; b[4u * i + 1u] = (uint8_t)(ev[i] >> 8); b[4u * i + 2u] = (uint8_t)(ev[i] >> 16); b[4u * i + 3u] = (uint8_t)(ev[i] >> 24); }
+    return ep1_take(b, 4u * n);
+}
+#define EV_CC(ch, cc, v) (0x0Bu | (0xB0u | (ch)) << 8 | (uint32_t)(cc) << 16 | (uint32_t)(v) << 24)
+#define EV_PC(ch, pc)    (0x0Cu | (0xC0u | (ch)) << 8 | (uint32_t)(pc) << 16)
+#define EV_RT(st)        (0x0Fu | (uint32_t)(st) << 8)
+static void test_midi_ring(void)
+{
+    /* the installer's identity query (docs/pxota.js HS_QUERY), as USB-MIDI packets */
+    static const uint32_t QUERY[4] = {0x3200F004u, 0x00004504u, 0x7F400004u, 0x0000F705u};
+    uint32_t ev[16], i, k, taken = 0;
+    const uint8_t *f;
+    uint32_t fn;
+    mi_r = mi_w = 0; midi_in_overflow = 0; t_got_n = 0;
+    /* a host that plays (a controller's knob, 16 Control Changes a packet) into a pedal whose main loop never reads */
+    for (k = 0; k < 8u; k++) {
+        for (i = 0; i < 16u; i++) ev[i] = EV_CC(2u, 10u + i, k);
+        fm1_ms = 1000u + k;
+        if (!host_sends(ev, 16)) break;
+        taken++;
+    }
+    CHECK(taken == 3u && mi_w - mi_r == 48u, "a ring nobody reads takes 3 packets of 16, then leaves the host's packets unread");
+    CHECK(!host_sends(QUERY, 4) && !ota_frame_get(&f, &fn), "and the installer's identity query with them: the pedal cannot be updated");
+    /* the app's main loop reads: every message reaches its map, in order, and the ring is free again */
+    midi_poll();
+    CHECK(mi_r == mi_w && t_got_n == 48u, "midi_poll empties the ring into the app's map");
+    {
+        int ok = 1;
+        for (i = 0; i < 48u; i++)
+            if (t_got[i].type != MIDI_CC || t_got[i].ch != 2u || t_got[i].d1 != 10u + i % 16u || t_got[i].d2 != i / 16u || t_got_ms[i] != 1000u + i / 16u) ok = 0;
+        CHECK(ok, "each one as the host sent it: Control Change, channel, number, value, the millisecond it arrived");
+    }
+    CHECK(host_sends(QUERY, 4) && ota_frame_get(&f, &fn) && fn == 8u && !memcmp(f, "\x00\x32\x45\x00\x00\x00\x40\x7F", 8),
+          "the installer's query is taken now, and the update code has its frame");
+    ota_frame_done();
+    /* what the map is given, and what it is not */
+    t_got_n = 0;
+    ev[0] = EV_PC(15u, 79u); ev[1] = EV_RT(0xF8u); ev[2] = EV_RT(0xFAu); ev[3] = EV_RT(0xFBu); ev[4] = EV_RT(0xFCu);
+    ev[5] = 0x09u | 0x90u << 8 | 60u << 16 | 100u << 24;            /* a note: not the map's */
+    ev[6] = 0x0Bu | 0xC0u << 8 | 5u << 16;                          /* the code index of one message, the status of another */
+    ev[7] = EV_CC(0u, 64u, 127u);
+    CHECK(host_sends(ev, 8), "a mixed packet is taken");
+    midi_poll();
+    CHECK(t_got_n == 6u && t_got[0].type == MIDI_PC && t_got[0].ch == 15u && t_got[0].d1 == 79u && t_got[1].type == MIDI_CLOCK &&
+          t_got[2].type == MIDI_START && t_got[3].type == MIDI_START && t_got[4].type == MIDI_STOP &&
+          t_got[5].type == MIDI_CC && t_got[5].d1 == 64u && t_got[5].d2 == 127u,
+          "Program Change, clock, Start, Continue, Stop and Control Change reach the map; a note and a malformed packet do not");
+    CHECK(midi_decode(0x0Bu | 0xC0u << 8 | 5u << 16).type == MIDI_NONE && midi_decode(EV_CC(0u, 0x80u, 1u)).type == MIDI_NONE &&
+          midi_decode(EV_CC(0u, 1u, 0x80u)).type == MIDI_NONE && midi_decode(EV_PC(0u, 0x80u)).type == MIDI_NONE,
+          "a packet whose status is not its code index's, or with a data byte above 127, is no message");
+    midi_in_overflow = 1; midi_poll();
+    CHECK(!midi_in_overflow, "an overflow usb.c flagged is cleared once the ring is empty: it queues again");
+    {   /* the clock: 24 a quarter note. 120 a minute is a clock every 20.83 ms */
+        midi_tempo_t c;
+        uint32_t q = 0, got = 0, n;
+        midi_tempo_reset(&c);
+        for (n = 0; n < 24u * 4u + 1u; n++) { q = midi_tempo(&c, 5000u + n * 500u / 24u); if (q) got = q; }
+        CHECK(got >= 499u && got <= 501u, "MIDI clock at 120 a minute: a quarter note of 500 ms, once two runs agree");
+        midi_tempo_reset(&c);
+        for (n = 0, got = 0; n < 25u; n++) if (midi_tempo(&c, 9000u + n * 500u / 24u)) got = 1;
+        CHECK(!got, "one run alone gives no time yet");
+        midi_tempo_reset(&c);
+        for (n = 0, got = 0; n < 73u; n++) if (midi_tempo(&c, 20000u + n * 2400u / 24u)) got = 1;
+        CHECK(!got, "a clock slower than 30 a minute (a quarter note of 2.4 s) gives none");
+    }
+}
 
 static void enumerate(void)                     /* a computer finds the pedal: address, descriptors, configuration 1 */
 {
@@ -489,6 +568,7 @@ int main(int argc, char **argv)
     test_play(0.0, "playback, the nominal clocks");
     test_play(+300.0, "playback, the pedal 300 ppm slow");
     test_play(-300.0, "playback, the pedal 300 ppm fast");
+    test_midi_ring();
     printf("USB audio: %s (%d failures)\n", fails ? "FAIL" : "ok", fails);
     return fails ? 1 : 0;
 }

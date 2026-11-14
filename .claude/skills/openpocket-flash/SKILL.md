@@ -61,8 +61,13 @@ node tools/op.mjs flash --confirm-flash [--package FILE] [--manifest FILE]
 ```
 
 Same checks as the dry run, then: the pedal stages its update loader (step 1), the loader writes the app area (step 2), the
-pedal restarts, and the command reads the version it reports. `done: the pedal reports PocketX_924.` is success (exit 0); a
-version that differs from the package is a failure. It takes about a minute. Report the full output to the captain.
+pedal restarts, and the command reads the version it reports. `done: the pedal reports PocketX_924 (OpenPocket v24).` is
+success (exit 0); a version or a product that differs from the package is a failure. It takes about a minute. Report the full
+output to the captain.
+
+An alternative firmware (`docs/ALT-FIRMWARE.md`) is installed only with `--app NAME`, which reads
+`build/apps/NAME/manifest.json`. Without `--app` its package or manifest is refused (exit 2) and nothing is sent. The same
+command without `--app` installs OpenPocket: it is the way back. The `pedal:` line names the product the pedal runs.
 
 ## 4b. A pedal that restarts in a loop (only on the captain's explicit instruction)
 

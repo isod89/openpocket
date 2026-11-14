@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulated pedal: an app on the base firmware</title>
+<!-- SPDX-License-Identifier: GPL-3.0-only
+     The page of `node tools/op.mjs sim --app NAME`: the app's screen and the pedal's controls, over the simulator's
+     HTTP interface (docs/SIMULATOR.md). The app's own code decides what a control does. -->
+<style>
+:root{color-scheme:light dark;--line:#8884;--dim:#888}
+body{margin:0;padding:20px;font:15px/1.5 system-ui,sans-serif;display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start;justify-content:center}
+h1{font-size:18px;margin:0 0 4px}
+p{margin:0 0 10px;color:var(--dim);max-width:44ch}
+#screen{width:480px;height:480px;max-width:100%;image-rendering:pixelated;border:1px solid var(--line);border-radius:8px;background:#000}
+.col{display:flex;flex-direction:column;gap:10px;min-width:280px}
+.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+button{font:600 13px/1 system-ui,sans-serif;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:inherit;cursor:pointer}
+dl{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;margin:0;font-size:13px}
+dt{color:var(--dim)}dd{margin:0;overflow-wrap:anywhere}
+label{font-size:13px;color:var(--dim)}
+</style>
+</head>
+<body>
+<img id="screen" alt="The pedal's screen" src="/api/screen.png">
+<div class="col">
+  <div><h1 id="title">An app on the base firmware</h1>
+  <p>Click a button for a press. Hold Shift and click for a hold of 1.2 seconds. The arrow keys turn the knob.</p></div>
+  <div class="row" id="buttons"></div>
+  <div class="row"><button data-knob="-1">Knob −</button><button data-knob="1">Knob +</button>
+    <label>MASTER <input id="vol" type="range" min="0" max="100" value="80"> <span id="volv">80</span></label></div>
+  <div class="row"><button id="sound">Play a 440 Hz guitar and measure</button><span id="level"></span></div>
+  <dl id="facts"></dl>
+  <div class="row"><a href="/api/flash" download="app-sim-flash.bin">Download flash</a><button id="reset">Erase flash and restart</button></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const BUTTONS = ["fs_dn", "fs_up", "push", "home", "fx", "mod", "amp", "cab", "dly", "rev"];
+const call = async (path) => { const r = await fetch(path, { method: "POST" }); const j = await r.json(); if (j.error) console.warn(j.error); return j; };
+$("buttons").innerHTML = BUTTONS.map((b) => `<button data-press="${b}">${b.replace("_", " ").toUpperCase()}</button>`).join("");
+let frame = -1;
+async function refresh() {
+  try {
+    const s = await (await fetch("/api/state")).json();
+    if (s.error) throw new Error(s.error);
+    $("title").textContent = `${s.name} ${s.version} (${s.app})`;
+    if (s.frame !== frame) { frame = s.frame; $("screen").src = "/api/screen.png?scale=2&" + frame; }
+    const facts = { Identity: s.identity, Volume: s.volume, "DSP load": s.load + "%" + (s.bypass ? " (overload: bypassed)" : ""),
+      Sound: s.hold ? (s.safe ? "held off: safe mode" : "held off: starting") : "on", "Flash writes": s.writes_ok ? "inside the app's own range" : "REFUSED: outside it" };
+    $("facts").innerHTML = Object.entries(facts).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  } catch (e) { $("facts").innerHTML = `<dt>Simulator</dt><dd>${e.message}</dd>`; }
+}
+document.body.addEventListener("click", async (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.press) await call("/api/press/" + b.dataset.press + (e.shiftKey ? "_long" : ""));
+  else if (b.dataset.knob) await call("/api/knob/" + b.dataset.knob);
+  else if (b.id === "sound") { const l = await call("/api/sound/440"); $("level").textContent = `left ${l.left.toFixed(3)}, right ${l.right.toFixed(3)} of full scale (RMS)`; }
+  else if (b.id === "reset" && confirm("Erase the simulated pedal's flash (its saved sounds)?")) { await call("/api/reset"); frame = -1; }
+  refresh();
+});
+$("vol").oninput = async () => { $("volv").textContent = $("vol").value; await call("/api/volume/" + $("vol").value); refresh(); };
+document.addEventListener("keydown", async (e) => {
+  const m = { ArrowLeft: "/api/knob/-1", ArrowRight: "/api/knob/1", ArrowUp: "/api/press/fs_up", ArrowDown: "/api/press/fs_dn", Enter: "/api/press/push" }[e.key];
+  if (m && e.target.tagName !== "INPUT") { e.preventDefault(); await call(m); refresh(); }
+});
+refresh();
+setInterval(refresh, 500);
+</script>
+</body>
+</html>

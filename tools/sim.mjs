@@ -5,6 +5,8 @@
 // SysEx to it. A virtual Web MIDI shim lets the installer and editor pages use it as a pedal. docs/SIMULATOR.md.
 //   node tools/op.mjs sim [--port 8766] [--flash build/sim/flash.bin] [--reset]
 //   node tools/op.mjs sim --update FLASH.bin [--stock IDENTITY]     the update flow (tests/devsim.c) for the installer
+//   node tools/op.mjs sim --app NAME     an app on the base firmware other than OpenPocket (firmware/apps/NAME): its own
+//                                        C files, compiled for this computer against tests/host (docs/ALT-FIRMWARE.md)
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -17,6 +19,7 @@ const BUILD = join(ROOT, "build", "sim");
 const BIN = join(BUILD, `${process.platform}-${process.arch}`);   // the container shares build/ with the host: one binary each
 const SIM_FILES = join(ROOT, "tools", "sim");
 const SIM_SERVED = new Set(["webmidi-shim.js", "pedal-input.js", "pedal-audio.js", "pedal-worklet.js", "px-engine.js", "px_engine.wasm"]);
+const APPS = join(ROOT, "firmware", "apps");
 const LOOPS = join(ROOT, "assets", "loops");
 
 // ---- the native simulators, built with the host's C compiler (no JieLi toolchain, no Docker) ----
@@ -31,13 +34,22 @@ function newest(dirs) {
   }
   return t;
 }
-function compile(kind) {
-  const bin = join(BIN, kind === "pedal" ? "edsim" : "devsim");
+// an app's simulator is the app's own C file and its engine's (app.sh names them), with tests/host as the chip
+function appProgram(app) {
+  const sh = readFileSync(join(APPS, app, "app.sh"), "utf8");
+  const word = (k) => (new RegExp(`^${k}=("?)([^"#\\s]*)\\1`, "m").exec(sh) || [])[2] || "";
+  if (!word("APP_MAIN")) throw new Error(`firmware/apps/${app}/app.sh names no APP_MAIN`);
+  return { src: [word("APP_MAIN"), word("APP_ENGINE")].filter(Boolean).map((f) => `firmware/apps/${app}/${f}`), libs: ["-lm"],
+    flags: ["-Wno-unused-variable", "-Wno-int-to-pointer-cast", "-Wno-misleading-indentation", "-Itests/host", "-Ifirmware"], dirs: [`firmware/apps/${app}`, "tests/host", "tests/host/base", "firmware/base"] };
+}
+// the simulator program of a kind ("pedal", "update", or "app" with its name), compiled when its sources are newer
+export function compile(kind, app) {
+  const bin = join(BIN, kind === "pedal" ? "edsim" : kind === "app" ? `app-${app}` : "devsim");
   mkdirSync(BIN, { recursive: true });
-  const stale = !existsSync(bin) || statSync(bin).mtimeMs < newest(["tests", "engine", "firmware", "firmware/bsp/chip", "loader"]);
+  const p = kind === "app" ? appProgram(app) : PROGRAMS[kind];
+  const stale = !existsSync(bin) || statSync(bin).mtimeMs < newest(["tests", "engine", "firmware", "firmware/bsp/chip", "loader", ...(p.dirs || [])]);
   if (!stale) return bin;
-  const p = PROGRAMS[kind];
-  const r = spawnSync(process.env.CC || "cc", ["-O1", "-Wall", "-Wno-unused-function", "-o", bin, ...p.src, ...p.libs], { cwd: ROOT, stdio: "inherit" });
+  const r = spawnSync(process.env.CC || "cc", ["-O1", "-Wall", "-Wno-unused-function", ...(p.flags || []), "-o", bin, ...p.src, ...p.libs], { cwd: ROOT, stdio: "inherit" });
   if (r.error || r.status !== 0) {
     throw new Error(r.error ? `no C compiler (${r.error.message}): install one (Xcode command line tools, build-essential) or set CC` : "the simulator did not compile");
   }
@@ -46,8 +58,8 @@ function compile(kind) {
 
 // ---- one simulated pedal: the native program on stdin/stdout, one line per MIDI message or '#' command ----
 class Pedal {
-  constructor(kind, args) {
-    this.kind = kind; this.args = args;
+  constructor(kind, args, app) {
+    this.kind = kind; this.args = args; this.app = app;
     this.port = null; this.log = [];
     this.waiters = new Map();                      // reply word -> FIFO of resolvers
     this.listeners = new Set();                    // (event, value): "midi" (Uint8Array), "port" (name | null)
@@ -56,7 +68,7 @@ class Pedal {
   emit(ev, v) { for (const l of this.listeners) l(ev, v); }
   setPort(name) { if (name !== this.port) { this.port = name; this.emit("port", name); } }
   start() {
-    const child = spawn(compile(this.kind), this.args, { stdio: ["pipe", "pipe", "inherit"] });
+    const child = spawn(compile(this.kind, this.app), this.args, { stdio: ["pipe", "pipe", "inherit"] });
     this.child = child;
     let buf = "", ready;
     this.ready = new Promise((r) => { ready = r; });
@@ -145,9 +157,10 @@ function png(be, scale = 1) {
 }
 
 // ---- HTTP ----
-const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json", ".png": "image/png", ".css": "text/css", ".md": "text/plain; charset=utf-8", ".wasm": "application/wasm", ".wav": "audio/wav" };
+const TYPES = { ".fwsc": "application/octet-stream", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json", ".png": "image/png", ".css": "text/css", ".md": "text/plain; charset=utf-8", ".wasm": "application/wasm", ".wav": "audio/wav" };
 const BUTTONS = ["fs_up", "fs_dn", "fx", "home", "push", "mod", "amp", "cab", "dly", "rev"];
 const CONTROLS = [...BUTTONS, "push_long", "dpush", "home_long", "fx_long", "feet"];
+const APP_CONTROLS = [...BUTTONS, ...BUTTONS.map((b) => b + "_long")];   // an app: a press, or a hold of 1.2 s (tests/host/base/start.h)
 const SHIM_TAG = '<script src="/sim/webmidi-shim.js"></script>';
 
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
@@ -167,12 +180,16 @@ const num = (s, lo, hi, what) => { const v = Number(s); if (!Number.isFinite(v) 
 
 export async function startSim(opts = {}) {
   const update = opts.update ? resolve(opts.update) : null;
-  const flash = resolve(opts.flash || join(BUILD, "flash.bin"));
-  const kind = update ? "update" : "pedal";
+  const app = opts.app || null;
+  if (app && (!/^[a-z0-9-]+$/.test(app) || !existsSync(join(APPS, app, "app.sh")))) throw new Error(`no app ${app}: firmware/apps/${app}/app.sh not found`);
+  const flash = resolve(opts.flash || join(BUILD, app ? `flash-${app}.bin` : "flash.bin"));
+  const kind = update ? "update" : app ? "app" : "pedal";
+  const controls = app ? APP_CONTROLS : CONTROLS;
   mkdirSync(dirname(flash), { recursive: true });
-  const args = () => update ? [update, ...(opts.stock ? ["--stock", opts.stock] : []), "--dump", join(BUILD, "update-dump.bin")] : ["--persist", flash];
+  const args = () => update ? [update, ...(opts.stock ? ["--stock", opts.stock] : []), "--dump", join(BUILD, "update-dump.bin")]
+    : ["--persist", flash, ...(app && opts.failedStart ? ["--failed-start"] : [])];
   if (!update && opts.reset) rmSync(flash, { force: true });
-  let pedal = new Pedal(kind, args());
+  let pedal = new Pedal(kind, args(), app);
   const clients = new Set();                          // SSE responses
   const attach = (p) => p.listeners.add((ev, v) => {
     const data = ev === "midi" ? Buffer.from(v).toString("hex") : v || "";
@@ -184,7 +201,7 @@ export async function startSim(opts = {}) {
     await busy;
     await pedal.stop();
     afterStop?.();
-    const next = new Pedal(kind, args());
+    const next = new Pedal(kind, args(), app);
     attach(next);
     pedal = next;
     busy = pedal.start();
@@ -193,14 +210,15 @@ export async function startSim(opts = {}) {
   await busy;
   if (pedal.child.exitCode !== null) throw new Error(`the simulator program ended at once (exit ${pedal.child.exitCode}): is ${update || flash} a 1 MiB flash image?`);
 
-  const needPedal = () => { if (kind !== "pedal") throw new HttpError(409, "this is the update simulator (--update): it has no screen or controls"); };
+  const needPedal = () => { if (kind === "update") throw new HttpError(409, "this is the update simulator (--update): it has no screen or controls"); };
+  const onlyOpenPocket = (what) => { if (kind !== "pedal") throw new HttpError(409, `${what}: only the OpenPocket simulator has it`); };
   const reply = async (cmd) => { const r = await pedal.ask(cmd); if (r === null) throw new HttpError(503, "the simulated pedal did not answer"); return r; };
   const ok = async (cmd) => { const r = await reply(cmd); if (r !== "ok") throw new HttpError(400, r.replace(/^err ?/, "") || "refused"); return { ok: true }; };
 
   async function api(req, res, path, query) {
     const [, , what, a, b] = path.split("/");
     const post = req.method === "POST";
-    if (what === "info") return json(res, { kind, port: pedal.port, flash: update || flash, controls: CONTROLS, log: pedal.log });
+    if (what === "info") return json(res, { kind, app, port: pedal.port, flash: update || flash, controls, log: pedal.log });
     if (what === "events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", ...cors });
       res.write(`event: port\ndata: ${pedal.port || ""}\n\n`);
@@ -214,7 +232,7 @@ export async function startSim(opts = {}) {
       const t0 = Date.now(), m = await pedal.sysex(midiBytes(await readBody(req)), num(query.get("timeout") ?? 1000, 1, 60000, "timeout"));
       return json(res, { reply: m && Buffer.from(m).toString("hex"), ms: Date.now() - t0 });
     }
-    if (what === "reset" && post) { await restart(() => { if (kind === "pedal") rmSync(flash, { force: true }); }); return json(res, { ok: true }); }
+    if (what === "reset" && post) { await restart(() => { if (kind !== "update") rmSync(flash, { force: true }); }); return json(res, { ok: true }); }
     if (what === "restart" && post) { await restart(); return json(res, { ok: true }); }
     needPedal();
     await busy;
@@ -234,10 +252,17 @@ export async function startSim(opts = {}) {
       return res.end(data);
     }
     if (!post) throw new HttpError(405, "POST");
-    if (what === "press") { if (!CONTROLS.includes(a)) throw new HttpError(400, `control: one of ${CONTROLS.join(" ")}`); return json(res, await ok(`#press ${a}`)); }
+    if (what === "press") { if (!controls.includes(a)) throw new HttpError(400, `control: one of ${controls.join(" ")}`); return json(res, await ok(`#press ${a}`)); }
     if (what === "down" || what === "up") { if (!BUTTONS.includes(a)) throw new HttpError(400, `button: one of ${BUTTONS.join(" ")}`); return json(res, await ok(`#${what} ${a}`)); }
     if (what === "knob") return json(res, await ok(`#knob ${Math.trunc(num(a, -200, 200, "knob steps"))}${query.has("fast") ? " fast" : ""}`));
     if (what === "volume") return json(res, await ok(`#vol ${Math.trunc(num(a, 0, 100, "volume"))}`));
+    if (what === "nan" && kind === "app") return json(res, await ok("#nan"));
+    if (what === "wait" && kind === "app") return json(res, await ok(`#wait ${Math.trunc(num(a, 0, 600000, "milliseconds"))}`));
+    if (what === "sound" && kind === "app") {         // a sine as the guitar: the two outputs' level, from the pedal's own audio code
+      const [left, right] = (await reply(`#sound ${Math.trunc(num(a, 0, 20000, "frequency in Hz"))}`)).split(" ").map((v) => Number(v) / 10000);
+      return json(res, { left, right });
+    }
+    onlyOpenPocket(what);
     if (what === "battery") return json(res, await ok(`#bat ${Math.trunc(num(a, 0, 6000, "battery mV"))} ${b === undefined ? "" : Math.trunc(num(b, 0, 6000, "USB mV"))}`));
     if (what === "tuner") return json(res, await ok(`#hz ${num(a, 0, 5000, "tuner Hz")}`));
     if (what === "load") return json(res, await ok(`#dsp load ${Math.trunc(num(a, 0, 999, "DSP load"))}`));
@@ -263,10 +288,12 @@ export async function startSim(opts = {}) {
       if (req.method === "OPTIONS") { res.writeHead(204, cors); return res.end(); }
       if (path.startsWith("/api/")) return await api(req, res, path, url.searchParams);
       if (req.method !== "GET") throw new HttpError(405, "GET");
-      if (path === "/") return file(res, join(SIM_FILES, "pedal.html"));
+      if (path === "/") return file(res, join(SIM_FILES, kind === "app" ? "app.html" : "pedal.html"));
       if (path === "/plain") return file(res, join(SIM_FILES, "page.html"));
       if (path.startsWith("/sim/") && SIM_SERVED.has(path.slice(5))) return file(res, join(SIM_FILES, path.slice(5)));
       if (path.startsWith("/loops/")) return file(res, within(LOOPS, path.slice(7)));
+      // (an alternative firmware's packages are where the build puts them: build/apps/NAME, as tools/serve.py serves them)
+      if (path.startsWith("/site/firmware/apps/")) return file(res, within(join(ROOT, "build", "apps"), path.slice(20)));
       if (path.startsWith("/site/")) { const p = within(join(ROOT, "docs"), path.slice(6) || "index.html"); return file(res, p, extname(p) === ".html"); }
       throw new HttpError(404, "not found");
     } catch (e) {
@@ -282,7 +309,7 @@ export async function startSim(opts = {}) {
   }
   const url = `http://${server.address().address}:${server.address().port}`;
   return {
-    url, kind, flash,
+    url, kind, app, flash,
     async close() {
       for (const c of clients) c.end();
       server.close(); server.closeAllConnections?.();
@@ -293,7 +320,10 @@ export async function startSim(opts = {}) {
 
 // ---- command line ----
 const USAGE = `usage: node tools/op.mjs sim [--port 8766] [--host 127.0.0.1] [--flash FILE] [--reset]
+       node tools/op.mjs sim --app NAME [--failed-start] [--port N] [--flash FILE] [--reset]
        node tools/op.mjs sim --update FLASH.bin [--stock IDENTITY] [--port N]
+  --app NAME     an app on the base firmware other than OpenPocket (firmware/apps/NAME), from its own C files
+  --failed-start with --app: the start before did not finish, so the app starts in safe mode
   --flash FILE   the pedal's flash, kept between runs (default build/sim/flash.bin); --reset starts from a blank one
   --update FILE  the update flow (the installer's stand-in) on this 1 MiB flash image (never written) instead of the pedal`;
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -306,14 +336,17 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else if (a === "--reset") o.reset = true;
     else if (a === "--update") o.update = val();
     else if (a === "--stock") o.stock = val();
+    else if (a === "--app") o.app = val();
+    else if (a === "--failed-start") o.failedStart = true;
     else { console.error(USAGE); process.exit(a === "--help" || a === "-h" ? 0 : 2); }
   }
   if (o.update && !existsSync(o.update)) { console.error(`${o.update} not found`); process.exit(2); }
   try {
     const sim = await startSim(o);
-    console.log(`OpenPocket simulator (${sim.kind}) listening on ${sim.url}/`);
-    console.log(`  the pedal: ${sim.url}/    plain controls: ${sim.url}/plain    installer: ${sim.url}/site/index.html    editor: ${sim.url}/site/editor.html`);
-    if (sim.kind === "pedal") console.log(`  flash: ${sim.flash}`);
+    console.log(`OpenPocket simulator (${sim.kind}${sim.app ? " " + sim.app : ""}) listening on ${sim.url}/`);
+    if (sim.kind === "app") console.log(`  the pedal: ${sim.url}/    installer: ${sim.url}/site/index.html (it names the product)`);
+    else console.log(`  the pedal: ${sim.url}/    plain controls: ${sim.url}/plain    installer: ${sim.url}/site/index.html    editor: ${sim.url}/site/editor.html`);
+    if (sim.kind !== "update") console.log(`  flash: ${sim.flash}`);
     const quit = async () => { await sim.close(); process.exit(0); };
     process.on("SIGINT", quit); process.on("SIGTERM", quit);
   } catch (e) { console.error(`ERROR: ${e.message}`); process.exit(1); }
