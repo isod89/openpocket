@@ -43,6 +43,39 @@ static uint8_t st_last;                         /* the slot to start on (the las
 static uint8_t st_midi;                         /* the MIDI settings byte (header pad[0]) */
 static uint8_t st_usb;                          /* the USB settings byte (header pad[1]) */
 
+#if PX_OWN_FX
+/* test build 39: the controls learned on the pedal (px_midi.h mid_map) ride in each copy, in sector 1 after its slots, with
+ * their own mark and CRC16: "OPMP", PXM_MAP_N entries of 3 bytes, the CRC, 2 bytes 0. The header's CRC covers the slots
+ * only, as before, so other firmware reads this copy as it always did and never looks here; a copy it writes has none
+ * (the sector is erased), and then nothing is learned. Written before the header like the slots, so a power cut keeps the
+ * previous copy whole, its learned controls with it. */
+#define ST_MAP_OFF (0x1000u + (ST_NSLOT - ST_S0N) * ST_SLOT)   /* 0x17E0: under 0xF00 of sector 1 */
+#define ST_MAP_LEN (4u + PXM_MAP_N * 3u + 4u)
+#define ST_MAP_MAGIC 0x504D504Fu                        /* "OPMP" */
+typedef char st_map_check[(ST_MAP_OFF + ST_MAP_LEN <= 0x1F00u && sizeof(px_map_t) == 3u) ? 1 : -1];
+static void st_map_pack(uint8_t *b)
+{
+    uint32_t c;
+    b[0] = ST_MAP_MAGIC & 0xFFu; b[1] = (ST_MAP_MAGIC >> 8) & 0xFFu; b[2] = (ST_MAP_MAGIC >> 16) & 0xFFu; b[3] = ST_MAP_MAGIC >> 24;
+    memcpy(b + 4, mid_map, PXM_MAP_N * 3u);
+    c = ota_crc16(b + 4, PXM_MAP_N * 3u, 0);
+    b[4u + PXM_MAP_N * 3u] = (uint8_t)c; b[5u + PXM_MAP_N * 3u] = (uint8_t)(c >> 8);
+    b[6u + PXM_MAP_N * 3u] = b[7u + PXM_MAP_N * 3u] = 0;
+}
+static void st_map_load(uint32_t base)                 /* the copy's learned controls, or none */
+{
+    uint8_t b[ST_MAP_LEN];
+    uint32_t i, c;
+    px_midi_map_clear();
+    if (!base || ota_fread(base + ST_MAP_OFF, b, ST_MAP_LEN)) return;
+    if ((b[0] | b[1] << 8 | b[2] << 16 | (uint32_t)b[3] << 24) != ST_MAP_MAGIC) return;
+    c = ota_crc16(b + 4, PXM_MAP_N * 3u, 0);
+    if ((b[4u + PXM_MAP_N * 3u] | b[5u + PXM_MAP_N * 3u] << 8) != (c & 0xFFFFu)) return;
+    for (i = 0; i < PXM_MAP_N; i++) if (!px_midi_map_valid((const px_map_t *)(b + 4u + i * 3u))) return;
+    memcpy(mid_map, b + 4, PXM_MAP_N * 3u);
+}
+#endif
+
 static uint32_t st_slot_off(uint32_t base, uint32_t k)
 {
     return k < ST_S0N ? base + 16u + k * ST_SLOT : base + 0x1000u + (k - ST_S0N) * ST_SLOT;
@@ -151,6 +184,9 @@ static void st_load(void)
         st_usb = 0;
     }
     if (st_last >= ST_NSLOT) st_last = 0;
+#if PX_OWN_FX
+    st_map_load(best);                              /* test build 39: the controls learned on the pedal */
+#endif
     if (best && bh.ver < 3u) st_types_v34();        /* saved before v34: the old amp / drive / cab numbers */
     if (best && bh.ver < 4u) st_time_v35();         /* saved before v35: delay TIME on the 1 s scale */
     if (best && bh.ver < 5u) st_level_v36();        /* saved before v36: preset LEVEL = 0 dB */
@@ -193,6 +229,11 @@ static int st_commit(void)
     if (fl_erase4k(base, &k) || fl_erase4k(base + 0x1000u, &k)) rc = -2;
     for (k = ST_S0N; !rc && k < ST_NSLOT; k++)
         if (fl_write(st_slot_off(base, k), st_slot[k], ST_SLOT)) rc = -3;
+#if PX_OWN_FX
+    static uint8_t mb[ST_MAP_LEN];                /* test build 39: the learned controls, before the header like the slots */
+    st_map_pack(mb);
+    if (!rc && fl_write(base + ST_MAP_OFF, mb, ST_MAP_LEN)) rc = -3;
+#endif
     if (!rc && fl_write(base + 16u, st_slot[0], ST_S0N * ST_SLOT)) rc = -3;   /* sector 0's slots: st_slot's rows are contiguous */
     if (!rc && fl_write(base, (const uint8_t *)&h, sizeof h)) rc = -4;      /* header last */
     if (!rc) {                                    /* read back */
@@ -201,6 +242,9 @@ static int st_commit(void)
         if (ota_fread(base, &r, sizeof r) || memcmp(&r, &h, sizeof h)) rc = -5;
         for (k = 0; !rc && k < ST_NSLOT; k++)
             if (ota_fread(st_slot_off(base, k), chk, ST_SLOT) || memcmp(chk, st_slot[k], ST_SLOT)) rc = -5;
+#if PX_OWN_FX
+        if (!rc && (ota_fread(base + ST_MAP_OFF, chk, ST_MAP_LEN) || memcmp(chk, mb, ST_MAP_LEN))) rc = -5;
+#endif
     }
     st_audio_hold(0);
     if (!rc) { st_cur = base; st_seq = h.seq; }
@@ -232,6 +276,9 @@ static void px_store_boot(void)
 {
     st_ok = px_flash_ok;
     if (st_ok) st_load();
+#if PX_OWN_FX
+    else px_midi_map_clear();                     /* (test build 39: nothing learned without a store) */
+#endif
     ST_IRQ_OFF();                                 /* (ota_fread turned them on) */
     cur_preset = st_last;
     load_preset(cur_preset);

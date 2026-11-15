@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { Editor, presetToJSON, presetFromJSON, filePresets, parsePresetFile, clonePreset } from "../docs/pxedit.js";
 import { parseNam, levelTrim, packModel, readDi, a2Run, KERNELS, DILATIONS, NW } from "../docs/pxnam.js";
 import { parseWav, prepareIr, packIr, irName, resample, IR_LEN } from "../docs/pxir.js";
+import { pedalLearn, switchMode, MAP_EACH, MAP_VALUE, PEDAL_MAP_N, CC_NEXT } from "../docs/pxmidi.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 // EDSIM_BLE=1: the same tests over BLE MIDI, as the Bluetooth audio image (test build 27) talks to the editor, against
@@ -20,6 +21,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 // the pedal's notifications are read as Android's BluetoothPacketDecoder reads them, each checked: a header first, 20 bytes
 // at most.
 const BLE = !!process.env.EDSIM_BLE;
+const FX = !!process.env.EDSIM_FX;           // the Bluetooth audio image's (tests/edsim.c -DPX_OWN_FX=1): protocol 5, test build 39
 const SIM = process.env.EDSIM || join(ROOT, "build", BLE ? "edsim_bt" : "edsim");
 const TMP = mkdtempSync(join(tmpdir(), "opedit-"));
 globalThis.localStorage = { getItem: () => null, setItem: () => {} };
@@ -98,6 +100,7 @@ function sim(args) {
   return {
     access, ready, lines,
     pedal: (l) => child.stdin.write(`#pedal ${l}\n`),
+    cc: (n, v) => child.stdin.write(`#cc ${n} ${v}\n`),       // (FX) a Control Change from a controller on the pedal
     dump: async () => { lines.length = 0; child.stdin.write("#dump\n"); for (let i = 0; i < 50 && !lines.length; i++) await sleep(10); return lines[0] || ""; },
     ble, usb,
     usbSend: (b) => child.stdin.write(Buffer.from(b).toString("hex") + "\n"),
@@ -125,7 +128,7 @@ let s = sim(["--dump", flash1]);
 await s.ready;
 let ed = new Editor(s.access);
 const info = await ed.connect();
-ok(info && info.proto === 4 && info.version === "v39" && info.identity === "PocketX_939", `INFO: ${info && `${info.version} ${info.identity}`}`);
+ok(info && info.proto === (FX ? 5 : 4) && info.version === (FX ? "v39 FX" : "v39") && info.identity === "PocketX_939", `INFO: ${info && `${info.version} ${info.identity}`}`);
 ok(info && info.nblk === 12 && info.npar === 5 && info.nslot === 52 && info.nameMax === 13, "INFO: 12 blocks, 5 parameters, 52 slots, names of 13");
 const t0 = Date.now();
 const cat = await ed.catalog();
@@ -271,6 +274,45 @@ ok(oldDly.preset.p[dl][0] === 40 && oldDly.warn.length === 1 && newDly.preset.p[
   const u1 = await ed.usbAudio(true);
   ok(ed.hasUsbAudio && !u0.on && u0.rc === 0 && u1.on && u1.rc === 0, "USB audio: off by default; switched on");
 }
+// ---- test build 39 (protocol 5, the Bluetooth audio image): controls learned on the pedal, MIDI_IN, SWITCH ----
+if (FX) {
+  const eq = cat.blocks.findIndex((b) => b.label === "EQ"), dly = cat.blocks.findIndex((b) => b.label === "DLY");
+  let m = await ed.pedalMap();
+  ok(ed.hasPedalLearn && m.rc === 0 && !m.each && m.entries.length === PEDAL_MAP_N && m.entries.every((e) => !e), "MAP: nothing learned, SWITCH MOMENT, 8 places");
+  const got = [];
+  ed.onMidiIn = (x) => got.push(x);
+  ok(await ed.watch(true) === 3, "WATCH 3: the pedal also pushes what a controller sends it");
+  s.cc(80, 127); await sleep(150); s.cc(80, 0); await sleep(150);
+  ok(got.length === 2 && got[0].type === "cc" && got[0].n1 === 80 && got[0].n2 === 127 && got[1].n2 === 0,
+     `MIDI_IN: a controller's CC 80 = 127, then 0, pushed (${got.map((x) => `${x.n1}=${x.n2}`).join(" ")})`);
+  m = await ed.setPedalMap(false, pedalLearn(m.entries, 80, { kind: "on", b: eq }, switchMode([127, 0])));
+  ok(m.rc === 0 && m.entries[0] && m.entries[0].src === 80 && m.entries[0].dst === 8 + eq && m.entries[0].mode === 0, "MAP: CC 80 learned as the EQ's flip, on its press");
+  let was = (await ed.state()).preset.on[eq];
+  s.cc(80, 127); await sleep(100);
+  const pressed = (await ed.state()).preset.on[eq];
+  s.cc(80, 0); await sleep(100);
+  const released = (await ed.state()).preset.on[eq];
+  ok(pressed === 1 - was && released === pressed, "a learned switch acts: CC 80's press flips the EQ, its release does nothing");
+  m = await ed.setPedalMap(false, pedalLearn(m.entries, 81, { kind: "on", b: dly }, switchMode([127])));
+  m = await ed.setPedalMap(false, pedalLearn(m.entries, 82, { kind: "preset", step: 1 }, switchMode([127, 0])));
+  m = await ed.setPedalMap(false, pedalLearn(m.entries, 4, { kind: "param", b: eq, k: 0 }, switchMode([30])));
+  ok(m.rc === 0 && m.entries.filter(Boolean).length === 4 && m.entries[1].mode === MAP_EACH && m.entries[2].dst === CC_NEXT && m.entries[3].mode === MAP_VALUE,
+     "MAP: four learned (a switch that alternates, the next preset, a knob as a setting)");
+  was = (await ed.state()).preset.on[dly];
+  s.cc(81, 127); await sleep(80); s.cc(81, 0); await sleep(80); s.cc(81, 127); await sleep(100);
+  ok((await ed.state()).preset.on[dly] === 1 - was, "EACH: three messages of CC 81 flip the delay three times");
+  const slot0 = (await ed.state()).slot;
+  s.cc(82, 127); await sleep(100); s.cc(82, 0); await sleep(100);
+  ok((await ed.state()).slot === (slot0 + 1) % 52, "CC 82 (learned as the next preset) steps one preset on");
+  s.cc(4, 127); await sleep(100);
+  ok((await ed.state()).preset.p[eq][0] === 100, "CC 4 (learned as the EQ's first setting) sets it by its value");
+  const bad = await ed.setPedalMap(false, [{ src: 90, dst: 3, mode: 0 }, null, null, null, null, null, null, null]);
+  const dup = await ed.setPedalMap(false, [{ src: 90, dst: 15, mode: 0 }, { src: 90, dst: 16, mode: 0 }, null, null, null, null, null, null]);
+  ok(bad.rc === 1 && dup.rc === 1 && bad.entries.filter(Boolean).length === 4, "MAP: a number the pedal does not read, or one controller number twice, is refused (the table kept)");
+  m = await ed.setPedalMap(true, m.entries);
+  ok(m.rc === 0 && m.each, "MAP: SWITCH set to LATCH (the flip numbers act at every message)");
+  ed.onMidiIn = null;
+}
 await bleCheck(s);
 await s.end();
 
@@ -286,6 +328,10 @@ list = await ed.list();
   ok(!u.recording && !u.playing && Object.keys(u.counts).length === 20, "USB audio: the streams' state and 20 counts");
   u = await ed.usbAudio(false);
   ok(!u.on && u.rc === 0 && !(await ed.usbAudio()).on, "USB audio: switched off again");
+}
+if (FX) {
+  const m = await ed.pedalMap();
+  ok(m.rc === 0 && m.each && m.entries.filter(Boolean).length === 4 && m.entries[0].src === 80, "power cycle: the controls learned on the pedal and LATCH are still there");
 }
 
 // ---- 7. v37: NAM models (an A2 file -> a user slot -> the AMP block's NAM type) ----

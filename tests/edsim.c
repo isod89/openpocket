@@ -28,6 +28,8 @@
  *   in   "#status"               one JSON line: slot, mode, focused block, volume, the whole current sound, ...
  *   in   "#screen"               "#screen " + 240*240 RGB565 pixels, 4 hex digits each, row by row
  *   in   "#flash PATH"           writes the 1 MiB flash to PATH
+ *   in   "#cc N V"               (built with -DPX_OWN_FX=1, test build 39) a Control Change N = V from a controller, as the
+ *                                footswitch's: through the controls learned on the pedal, then its map. "#cc ok"
  * Built with -DOP_BLE_TEST=1 it also answers DIAG, as the Bluetooth test image does, from the real text code (ble_diag.h):
  *   in   "#ble adv I T"          advertising; the counters i and t
  *   in   "#ble failed S C"       FAILED, step S, code C
@@ -421,7 +423,25 @@ static void command(const char *l)
         dsp_bypass = v != 0;
         printf("#dsp ok\n");
         fflush(stdout);
-    } else if (!strcmp(l, "#status")) status();
+    }
+#if PX_OWN_FX
+    else if (sscanf(l, "#cc %d %d", &v, &w) == 2 && v >= 0 && v < 128 && w >= 0 && w < 128) {
+        /* test build 39: a Control Change from a controller (the footswitch linked over Bluetooth, or one on USB), as
+         * px_midi_io.h's px_midi_in takes it: counted (MIDI_IN to a watching editor), read through the controls learned on the
+         * pedal, then the pedal's own map (118 / 119 step the preset; 64, 116, 117 are not simulated) */
+        uint32_t c = (uint32_t)v, x = (uint32_t)w, mv = master_vol;
+        int mset = 0;
+        mid_last[0] = PXM_CC; mid_last[1] = (uint8_t)v; mid_last[2] = (uint8_t)w;
+        mid_in_n++;
+        if (px_midi_map_in(&c, &x)) {
+            if (c == PXM_CC_NEXT || c == PXM_CC_PREV) { if (x >= 64u) ui_preset_step(c == PXM_CC_NEXT ? 1 : -1); }
+            else if (px_midi_cc_apply(&PRESET, c, x, &mv, &mset) == 0 && mset) master_vol = mv;
+        }
+        printf("#cc ok\n");
+        fflush(stdout);
+    }
+#endif
+    else if (!strcmp(l, "#status")) status();
     else if (!strcmp(l, "#screen")) screen();
     else if (!strncmp(l, "#flash ", 7)) {
         printf(write_flash(l + 7) ? "#flash err\n" : "#flash ok\n");

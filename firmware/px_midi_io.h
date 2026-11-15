@@ -14,6 +14,10 @@
  */
 #pragma once
 
+#if PX_OWN_FX && !defined(PXM_STEP)
+#define PXM_STEP(dd) ui_preset_step(dd)    /* test build 39: CC 118 / 119, as the footswitches (ui.h) */
+#endif
+
 static px_midi_tx_t mid_tx;
 static px_midi_clock_t mid_clk;
 
@@ -94,6 +98,14 @@ static void px_midi_in(uint32_t pkt, uint32_t ms, int free_ui, int *touched)
     }
     if (m.type == PXM_START || m.type == PXM_STOP) { px_midi_clock_reset(&mid_clk); return; }
     mid_last[0] = m.type; mid_last[1] = m.d1; mid_last[2] = m.d2;
+#if PX_OWN_FX
+    mid_in_n++;                                        /* (the controller's own number: the MIDI page and the editor show it) */
+    if (m.type == PXM_CC) {                            /* test build 39: a control learned on the pedal, as the pedal's own */
+        uint32_t c = m.d1, v = m.d2;
+        if (!px_midi_map_in(&c, &v)) return;           /* (a switch's release) */
+        m.d1 = (uint8_t)c; m.d2 = (uint8_t)v;
+    }
+#endif
     if (m.type == PXM_PC) {
         if (free_ui && m.d1 < px_preset_count()) {
             cur_preset = m.d1;
@@ -110,6 +122,9 @@ static void px_midi_in(uint32_t pkt, uint32_t ms, int free_ui, int *touched)
     } else if (m.d1 == PXM_CC_EXP) {                   /* CC 117: the expression pedal's position (test build 25). Not a
                                                         * preset change: nothing to save, nothing redrawn, on every page */
         PX_EXP_SET(m.d2);
+    } else if (m.d1 == PXM_CC_NEXT || m.d1 == PXM_CC_PREV) {   /* CC 118 / 119 at 64 and up: the next / previous preset, as
+                                                        * the footswitches (test build 39: a footswitch in its CC mode) */
+        if (m.d2 >= 64u && free_ui) { PXM_STEP(m.d1 == PXM_CC_NEXT ? 1 : -1); *touched = 1; }
 #endif
     } else {
         uint32_t mv = master_vol;

@@ -22,6 +22,9 @@ const LOOPS = join(ROOT, "assets", "loops");
 // ---- the native simulators, built with the host's C compiler (no JieLi toolchain, no Docker) ----
 const PROGRAMS = {
   pedal: { src: ["tests/edsim.c", "engine/px_dsp.c", "firmware/px_math.c"], libs: ["-lm"] },
+  // --fx: the Bluetooth audio image's own (engine/px_dsp.h PX_OWN_FX, test build 39): editor protocol 5, the controls learned
+  // on the pedal, MIDI_IN, and POST /api/cc/N/V, a Control Change from the footswitch linked to the pedal
+  pedal_fx: { src: ["tests/edsim.c", "engine/px_dsp.c", "firmware/px_math.c"], libs: ["-lm"], flags: ["-DPX_OWN_FX=1"] },
   update: { src: ["tests/devsim.c"], libs: [] },
 };
 function newest(dirs) {
@@ -32,12 +35,12 @@ function newest(dirs) {
   return t;
 }
 function compile(kind) {
-  const bin = join(BIN, kind === "pedal" ? "edsim" : "devsim");
+  const bin = join(BIN, kind === "pedal" ? "edsim" : kind === "pedal_fx" ? "edsim_fx" : "devsim");
   mkdirSync(BIN, { recursive: true });
   const stale = !existsSync(bin) || statSync(bin).mtimeMs < newest(["tests", "engine", "firmware", "firmware/bsp/chip", "loader"]);
   if (!stale) return bin;
   const p = PROGRAMS[kind];
-  const r = spawnSync(process.env.CC || "cc", ["-O1", "-Wall", "-Wno-unused-function", "-o", bin, ...p.src, ...p.libs], { cwd: ROOT, stdio: "inherit" });
+  const r = spawnSync(process.env.CC || "cc", ["-O1", "-Wall", "-Wno-unused-function", ...(p.flags || []), "-o", bin, ...p.src, ...p.libs], { cwd: ROOT, stdio: "inherit" });
   if (r.error || r.status !== 0) {
     throw new Error(r.error ? `no C compiler (${r.error.message}): install one (Xcode command line tools, build-essential) or set CC` : "the simulator did not compile");
   }
@@ -169,10 +172,11 @@ export async function startSim(opts = {}) {
   const update = opts.update ? resolve(opts.update) : null;
   const flash = resolve(opts.flash || join(BUILD, "flash.bin"));
   const kind = update ? "update" : "pedal";
+  const program = update ? "update" : opts.fx ? "pedal_fx" : "pedal";
   mkdirSync(dirname(flash), { recursive: true });
   const args = () => update ? [update, ...(opts.stock ? ["--stock", opts.stock] : []), "--dump", join(BUILD, "update-dump.bin")] : ["--persist", flash];
   if (!update && opts.reset) rmSync(flash, { force: true });
-  let pedal = new Pedal(kind, args());
+  let pedal = new Pedal(program, args());
   const clients = new Set();                          // SSE responses
   const attach = (p) => p.listeners.add((ev, v) => {
     const data = ev === "midi" ? Buffer.from(v).toString("hex") : v || "";
@@ -184,7 +188,7 @@ export async function startSim(opts = {}) {
     await busy;
     await pedal.stop();
     afterStop?.();
-    const next = new Pedal(kind, args());
+    const next = new Pedal(program, args());
     attach(next);
     pedal = next;
     busy = pedal.start();
@@ -242,6 +246,10 @@ export async function startSim(opts = {}) {
     if (what === "tuner") return json(res, await ok(`#hz ${num(a, 0, 5000, "tuner Hz")}`));
     if (what === "load") return json(res, await ok(`#dsp load ${Math.trunc(num(a, 0, 999, "DSP load"))}`));
     if (what === "bypass") return json(res, await ok(`#dsp bypass ${Math.trunc(num(a, 0, 1, "bypass"))}`));
+    if (what === "cc") {                              // (--fx) a Control Change from a controller linked to the pedal
+      if (!opts.fx) throw new HttpError(409, "start the simulator with --fx: only the Bluetooth audio image learns controls");
+      return json(res, await ok(`#cc ${Math.trunc(num(a, 0, 127, "CC number"))} ${Math.trunc(num(b, 0, 127, "CC value"))}`));
+    }
     throw new HttpError(404, "no such endpoint");
   }
 
@@ -292,10 +300,11 @@ export async function startSim(opts = {}) {
 }
 
 // ---- command line ----
-const USAGE = `usage: node tools/op.mjs sim [--port 8766] [--host 127.0.0.1] [--flash FILE] [--reset]
+const USAGE = `usage: node tools/op.mjs sim [--port 8766] [--host 127.0.0.1] [--flash FILE] [--reset] [--fx]
        node tools/op.mjs sim --update FLASH.bin [--stock IDENTITY] [--port N]
   --flash FILE   the pedal's flash, kept between runs (default build/sim/flash.bin); --reset starts from a blank one
-  --update FILE  the update flow (the installer's stand-in) on this 1 MiB flash image (never written) instead of the pedal`;
+  --update FILE  the update flow (the installer's stand-in) on this 1 MiB flash image (never written) instead of the pedal
+  --fx           the Bluetooth audio image's pedal (PX_OWN_FX): controls learned on the pedal; POST /api/cc/N/V plays a footswitch`;
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2), o = {};
   for (let i = 0; i < argv.length; i++) {
@@ -304,6 +313,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else if (a === "--host") o.host = val();
     else if (a === "--flash") o.flash = val();
     else if (a === "--reset") o.reset = true;
+    else if (a === "--fx") o.fx = true;
     else if (a === "--update") o.update = val();
     else if (a === "--stock") o.stock = val();
     else { console.error(USAGE); process.exit(a === "--help" || a === "-h" ? 0 : 2); }

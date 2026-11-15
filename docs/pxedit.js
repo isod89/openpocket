@@ -10,7 +10,7 @@ const H = [0x7D, 0x4F, 0x50];
 export const C = { INFO: 1, CAT_BLOCK: 2, CAT_TYPE: 3, TEXTS: 4, STATE: 5, SET: 6, ORDER: 7, NAME: 8, PUT: 9, SELECT: 10,
   FOCUS: 11, LIST: 12, SLOT_GET: 13, SLOT_PUT: 14, COMMIT: 15, SAVE: 16, WATCH: 17, PING: 18,
   NAM_LIST: 19, NAM_WRITE: 20, NAM_COMMIT: 21, NAM_ERASE: 22, DIAG: 23, IR_LIST: 24, IR_WRITE: 25, IR_COMMIT: 26, IR_ERASE: 27,
-  USB_AUDIO: 28 };
+  USB_AUDIO: 28, MIDI_IN: 29, MAP: 30 };
 export const NAM_CHUNK = 112;     // bytes per NAM_WRITE (firmware/px_models.h NM_CHUNK)
 export const P_SIZE = 110;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -57,6 +57,7 @@ export class Editor {
     this.onState = null;          // (state) => {}: pushed by the pedal
     this.onLost = null;           // () => {}: the pedal stopped answering
     this.onMidi = null;           // (bytes) => {}: a musical message the pedal sent (docs/MIDI.md), not SysEx
+    this.onMidiIn = null;         // ({ type: "cc" | "pc", n1, n2, count }) => {}: protocol 5, what a controller sent the pedal
     this.link = null;
     this.queue = Promise.resolve();
     this.waiting = null;          // { cmd, resolve, reject, timer }
@@ -75,6 +76,9 @@ export class Editor {
       return;
     }
     if (cmd === C.STATE && this.onState) { try { this.onState(this._state(args)); } catch (_) { } }
+    if (cmd === C.MIDI_IN && this.onMidiIn && args.length >= 4) {
+      try { this.onMidiIn({ type: args[0] === 1 ? "pc" : "cc", n1: args[1], n2: args[2], count: args[3] }); } catch (_) { }
+    }
   }
   _send(cmd, args) {
     if (!this.link) throw fail("closed", "not connected");
@@ -223,7 +227,8 @@ export class Editor {
   }
   async commit() { return (await this.request(C.COMMIT, [], 4000))[0]; }
   async save(slot) { return (await this.request(C.SAVE, [slot], 4000))[1]; }
-  async watch(on) { return (await this.request(C.WATCH, [on ? 1 : 0]))[0]; }
+  // (protocol 5: bit 1 also asks for MIDI_IN, what a controller sends the pedal, pushed while watched)
+  async watch(on) { return (await this.request(C.WATCH, [on ? (this.hasPedalLearn ? 3 : 1) : 0]))[0]; }
   async ping() {
     const r = await this.request(C.PING), p = { load: r[0], bypass: !!(r[1] & 1), c1: !!(r[1] & 2) };
     if (r.length >= 8) Object.assign(p, { peak: r[2], peakAll: r[3], xrun: r[4] | r[5] << 7, clip: r[6] | r[7] << 7 });   // v40.1
@@ -302,6 +307,22 @@ export class Editor {
       counts: Object.fromEntries(names.map((k, i) => [k, v[i] ?? 0])) };
   }
   // the CAB USER IR type's IR texts name the slots, which change: always asked again (not cached)
+  // test build 39 (protocol 5, the Bluetooth audio image): controls learned on the pedal (firmware/px_midi.h mid_map) and
+  // SWITCH (CC 8..19 flip on every message: "each"). pedalMap() reads them; setPedalMap(each, entries) writes all of them
+  // and the flash (the sound holds a moment, as a save). entries: PEDAL_MAP_N of { src, dst, mode } or null; mode 0 press,
+  // 1 each, 2 value (docs/pxmidi.js). -> { rc (0 ok, 1 invalid, 2 flash), each, entries }
+  get hasPedalLearn() { return !!(this.info && this.info.proto >= 5); }
+  _map(r) {
+    const q = new Reader(r), rc = q.b(), each = !!q.b(), n = q.b(), entries = [];
+    for (let i = 0; i < n; i++) { const on = q.b(), src = q.b(), dst = q.b(), mode = q.b(); entries.push(on ? { src, dst, mode } : null); }
+    return { rc, each, entries };
+  }
+  async pedalMap() { return this._map(await this.request(C.MAP)); }
+  async setPedalMap(each, entries) {
+    const a = [1, each ? 1 : 0];
+    for (const e of entries) a.push(...(e ? [1, e.src, e.dst, e.mode] : [0, 0, 0, 0]));
+    return this._map(await this.request(C.MAP, a, 4000));
+  }
   async irTexts() {
     const b = this.cat.blocks.findIndex((x) => x.label === "CAB");
     const t = b < 0 ? -1 : this.cat.blocks[b].types.findIndex((x) => x && x.name === "USER IR");

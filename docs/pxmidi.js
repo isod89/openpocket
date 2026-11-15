@@ -95,3 +95,43 @@ export function cleanMappings(list) {
      (m.tgt.kind === "type" && int(m.tgt.b, 0, NBLK - 1)) ||
      (m.tgt.kind === "preset" && (m.tgt.step === 1 || m.tgt.step === -1))));
 }
+
+// ---- test build 39 (editor protocol 5, the Bluetooth audio image): controls learned ON THE PEDAL ----
+// The pedal reads a controller's own number as one of its own before anything else (firmware/px_midi.h mid_map) and keeps
+// up to PEDAL_MAP_N such entries with the presets, so they work with no page open: a footswitch linked to the pedal over
+// Bluetooth, or a controller on its USB port. An entry: { src, dst, mode }, src the controller's number, dst the pedal's own,
+// mode 0 "press" (64 and up is a press, below it the switch's release), 1 "each" (every message is a press: a switch that
+// alternates 127 and 0) or 2 "value" (the value passes: a knob, a pedal).
+export const PEDAL_MAP_N = 8, CC_PAD = 64, CC_TAP = 116, CC_EXP = 117, CC_NEXT = 118, CC_PREV = 119;
+export const MAP_PRESS = 0, MAP_EACH = 1, MAP_VALUE = 2;
+// the pedal's own number for one of this page's targets: { dst, value } (value: the number reads a value), or null
+export function pedalDst(tgt) {
+  if (tgt.kind === "on") return { dst: ccToggle(tgt.b), value: false };
+  if (tgt.kind === "preset") return { dst: tgt.step > 0 ? CC_NEXT : CC_PREV, value: false };
+  if (tgt.kind === "param") return { dst: ccParam(tgt.b, tgt.k), value: true };
+  if (tgt.kind === "type") return { dst: ccType(tgt.b), value: true };
+  return null;
+}
+// what one of the pedal's own numbers does: ccTarget's, or { kind: "next" | "prev" | "pad" | "tap" | "exp" }, or null
+export function pedalTarget(cc) {
+  if (cc === CC_NEXT) return { kind: "next" };
+  if (cc === CC_PREV) return { kind: "prev" };
+  if (cc === CC_PAD) return { kind: "pad" };
+  if (cc === CC_TAP) return { kind: "tap" };
+  if (cc === CC_EXP) return { kind: "exp" };
+  return ccTarget(cc);
+}
+// the table with controller number `src` learned for `tgt` (mode: how the switch behaved while it was learned): a new array
+// with the entry in the first free place (an entry with the same src gives its place), or null when the table is full
+export function pedalLearn(entries, src, tgt, mode) {
+  const d = pedalDst(tgt);
+  if (!d || !Number.isInteger(src) || src < 0 || src > 127) return null;
+  const out = entries.map((x) => (x && x.src === src ? null : x));
+  const i = out.findIndex((x) => !x);
+  if (i < 0) return null;
+  out[i] = { src, dst: d.dst, mode: d.value ? MAP_VALUE : mode === MAP_EACH ? MAP_EACH : MAP_PRESS };
+  return out;
+}
+// how a switch behaves, from the messages one press gave (values, in order): "press" when a value of 64 or more is
+// followed by one below (it sends 127, then 0 when let go), else "each" (one message a press)
+export const switchMode = (values) => (values.length >= 2 && values[0] >= 64 && values.slice(1).some((v) => v < 64)) ? MAP_PRESS : MAP_EACH;

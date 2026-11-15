@@ -99,6 +99,37 @@ The editor's **MIDI** section ([`docs/editor.html`](editor.html), `docs/edmidi.j
 
 CHANNEL, SEND and CLOCK > DELAY stay on the pedal's MIDI page: the editor protocol has no command for them.
 
+## Learned on the pedal (the Bluetooth test image, test build 39)
+
+A footswitch linked to the pedal over Bluetooth (the M-VAVE Chocolate) talks to the pedal, not to the computer or phone that
+runs the editor, so the editor's learned controls above never hear it, and they would work only while the page is open anyway.
+The Bluetooth test image learns such controls itself:
+
+- **In the editor's MIDI section**, click a control in the table, then press the switch: the pedal tells the editor what it
+  received (`MIDI_IN`), and the editor writes it into the pedal's own table (`MAP`, docs/EDITOR-PROTOCOL.md). The pedal keeps it
+  with the presets (a flash write, like a save) and it works in every preset, with no page open. Up to 8.
+- **What a learned control does**: the controller's number is read as one of the pedal's own, before anything else (a learned
+  number wins over the map's meaning of it): a block's on/off is its flip number (8 to 19), the next or the previous preset
+  is 118 or 119, a setting is its own number and follows the value. A switch learned "press" acts when its value goes to 64
+  or more and ignores the value below (its release); one learned "each" acts at every message (a switch that alternates 127
+  and 0, one message a press). The editor tells the two apart while learning (a release within 1.2 s of the press: "press"),
+  and either can be changed in its list.
+- **Where it is kept**: in each copy of the preset store, after sector 1's slots, with its own mark and CRC
+  (`firmware/px_store.h`). Other firmware never reads it, and a save made by other firmware leaves none.
+
+Also in this image:
+
+| Number | What it does |
+| --- | --- |
+| 64 | at 64 and up: a SYN PAD catches the chord (test build 22) |
+| 116 | at 64 and up: a tap of the delay's tempo (test build 24) |
+| 117 | the expression pedal: WHAMMY, else AUTO WAH, else the volume (test build 25) |
+| 118, 119 | at 64 and up: the next, the previous preset, as the footswitches (test build 39) |
+
+and a fifth row on the MIDI page, **SWITCH** (MOMENT, LATCH): how the flip numbers 8 to 19 act. MOMENT (the default) flips on
+value 0, for a switch that sends 127, then 0 when let go; LATCH flips at every message, for a switch that alternates 127 and 0
+(the Chocolate's CC mode does). The page's USB line also counts the controls learned on the pedal ("LEARNED 2").
+
 ## Tempo for the delay
 
 Turn **CLOCK > DELAY** on (default off). When the host sends MIDI clock, the pedal times 24 clocks, and sets the delay TIME to
@@ -117,6 +148,7 @@ follow a tempo with another note value, set the delay's own TIME; this is not a 
 | SEND | ON, OFF | ON |
 | CLOCK > DELAY | ON, OFF | OFF |
 | USB AUDIO | ON, OFF | OFF |
+| SWITCH (the Bluetooth test image, test build 39) | MOMENT, LATCH | MOMENT |
 
 The knob changes the row, PUSH goes to the next one (after the last it leaves), HOME leaves. The page also shows whether a
 host is connected and the last Program or Control Change received ("LAST: CC 25 = 127"), which is what to look at first when

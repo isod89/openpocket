@@ -66,6 +66,8 @@ static int pad_presses;
 #define PX_PAD_PRESS() (pad_presses++)
 static int exp_last = -1, exp_n;
 #define PX_EXP_SET(v) (exp_last = (int)(v), exp_n++)
+static int steps, step_n;                                /* test build 39: CC 118 / 119, the footswitches' preset step */
+#define PXM_STEP(dd) (steps += (dd), step_n++)
 #endif
 #if ED_BT                                                /* the Bluetooth audio image (-DED_BT=1): the web editor's SysEx, kept
                                                         * across writes as px_editor.h keeps it (its ed_bt_write, one line) */
@@ -315,6 +317,65 @@ int main(void)
         ok(PRESET.p[PX_B_DELAY][0] == px_dly_value_for_ms(PX_DLY_DIGITAL, 780.0f) && PRESET.p[PX_B_DELAY][0] < 64,
            "a tap slower than 780 ms gives the shortened ring's top, 780 ms (TIME 63)");
 #endif
+    }
+    {   /* test build 39: CC 118 / 119 step to the next / previous preset at 64 and up (a release is nothing), not on the MIDI page */
+        reset();
+        steps = step_n = 0;
+        midi_enqueue(cc(0, 118, 127), 1); midi_enqueue(cc(0, 118, 0), 2); midi_enqueue(cc(0, 119, 127), 3); midi_enqueue(cc(0, 119, 127), 4);
+        px_midi_service();
+        int two = step_n == 3 && steps == -1;
+        ui_mode = M_MIDI;
+        midi_enqueue(cc(0, 118, 127), 5); px_midi_service();
+        ui_mode = M_CHAIN;
+        ok(two && step_n == 3, "CC 118 / 119 at 64 and up step to the next / previous preset (releases and the MIDI page do nothing)");
+    }
+    {   /* test build 39: SWITCH LATCH (mid_cfg.each): CC 8..19 flip on every message, for a switch that alternates 127 and 0 */
+        reset();
+        int was = PRESET.on[PX_B_EQ];
+        midi_enqueue(cc(0, 8 + PX_B_EQ, 127), 1); px_midi_service();
+        int moment = PRESET.on[PX_B_EQ] == was;             /* (MOMENT, the default: 127 is a press, the flip comes on 0) */
+        mid_cfg.each = 1;
+        midi_enqueue(cc(0, 8 + PX_B_EQ, 127), 2); px_midi_service();
+        int a = PRESET.on[PX_B_EQ] == !was;
+        midi_enqueue(cc(0, 8 + PX_B_EQ, 0), 3); px_midi_service();
+        int b = PRESET.on[PX_B_EQ] == was;
+        mid_cfg.each = 0;
+        ok(moment && a && b, "SWITCH LATCH: CC 15 flips the EQ on 127 and on 0 alike (MOMENT: only on 0)");
+        ok(px_midi_cfg_pack(&(px_midi_cfg_t){ .send = 1, .each = 1 }) == PXM_CFG_EACH, "LATCH is bit 7 of the settings byte");
+    }
+    {   /* test build 39: controls learned on the pedal: a controller's own number read as one of the pedal's */
+        reset();
+        px_midi_map_clear();
+        mid_map[0] = (px_map_t){ 80, 8 + PX_B_EQ, PXM_MAP_PRESS };    /* a momentary switch on CC 80: the EQ flips on its press */
+        mid_map[1] = (px_map_t){ 81, 8 + PX_B_DELAY, PXM_MAP_EACH };  /* an alternating switch on CC 81: the delay flips each time */
+        mid_map[2] = (px_map_t){ 82, PXM_CC_NEXT, PXM_MAP_PRESS };    /* CC 82: the next preset */
+        mid_map[3] = (px_map_t){ 4, 117, PXM_MAP_VALUE };             /* an expression pedal on CC 4: the pedal's own, 117 */
+        mid_map[4] = (px_map_t){ 20 + PX_B_AMP, 8 + PX_B_MOD, PXM_MAP_PRESS };   /* a learned number wins over the map's own */
+        int eq = PRESET.on[PX_B_EQ], dl = PRESET.on[PX_B_DELAY], amp = PRESET.on[PX_B_AMP], mod = PRESET.on[PX_B_MOD];
+        uint32_t n0 = mid_in_n;
+        midi_enqueue(cc(0, 80, 127), 1); px_midi_service();
+        int press = PRESET.on[PX_B_EQ] == !eq;
+        midi_enqueue(cc(0, 80, 0), 2); px_midi_service();
+        int release = PRESET.on[PX_B_EQ] == !eq && mid_last[1] == 80 && mid_last[2] == 0;   /* (the MIDI page shows the controller's number) */
+        midi_enqueue(cc(0, 81, 127), 3); midi_enqueue(cc(0, 81, 0), 4); midi_enqueue(cc(0, 81, 127), 5); px_midi_service();
+        int each = PRESET.on[PX_B_DELAY] == !dl;          /* three presses: flipped three times */
+        steps = step_n = 0;
+        midi_enqueue(cc(0, 82, 127), 6); midi_enqueue(cc(0, 82, 0), 7); px_midi_service();
+        int next = step_n == 1 && steps == 1;
+        exp_n = 0;
+        midi_enqueue(cc(0, 4, 90), 8); px_midi_service();
+        int value = exp_n == 1 && exp_last == 90;
+        midi_enqueue(cc(0, 20 + PX_B_AMP, 127), 9); px_midi_service();
+        int over = PRESET.on[PX_B_AMP] == amp && PRESET.on[PX_B_MOD] == !mod;
+        ok(press && release, "learned PRESS: CC 80's press flips the EQ, its release (0) does nothing");
+        ok(each, "learned EACH: every message of CC 81 flips the delay");
+        ok(next && value, "learned: CC 82 steps to the next preset, CC 4's value moves the expression pedal");
+        ok(over, "a learned number wins over the pedal's own meaning of it (CC 25 flips MOD instead of switching the amp)");
+        ok(mid_in_n - n0 == 9, "every message received is counted (the editor's monitor)");
+        px_map_t bad = { 83, 3, PXM_MAP_PRESS }, empty = { 0xFF, 0xFF, 0xFF }, mode = { 83, 8, 3 };
+        ok(!px_midi_map_valid(&bad) && px_midi_map_valid(&empty) && !px_midi_map_valid(&mode),
+           "an entry must name a number the pedal reads and a known mode (empty entries are valid)");
+        px_midi_map_clear();
     }
     {   /* CC 117 is the expression pedal (test build 25): every value goes to the engine, on any page, and the preset stays */
         reset();

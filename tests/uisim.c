@@ -455,12 +455,20 @@ int main(int argc, char **argv)
     /* v42: the fourth row, USB AUDIO: the setting follows the row only when the page is left */
     midi_push(); midi_knob(1); midi_draw(); shot(d, "midi_usb_audio_on");
     if (px_ua_on) { printf("midi: USB AUDIO must not change while the page is open\n"); return 1; }
+#if PX_OWN_FX   /* test build 39: a fifth row, SWITCH (MOMENT / LATCH), and the controls learned on the pedal counted */
+    midi_push(); midi_knob(1);
+    px_midi_map_clear();
+    mid_map[0] = (px_map_t){ 80, 8 + PX_B_EQ, PXM_MAP_PRESS }; mid_map[1] = (px_map_t){ 81, PXM_CC_NEXT, PXM_MAP_EACH };
+    mid_last[0] = PXM_CC; mid_last[1] = 80; mid_last[2] = 127; midi_draw(); shot(d, "midi_switch_latch_learned");
+    if (!mid_cfg.each) { printf("midi: SWITCH must turn to LATCH\n"); return 1; }
+    px_midi_map_clear();
+#endif
     midi_push(); poison(); uc.screen = -1; ui_invalidate(); ui_render(); status();
     if (midi_saved != 1 || ui_mode != M_CHAIN) { printf("midi: leaving the page after a change must save once and return to the chain\n"); return 1; }
     if (!px_ua_on) { printf("midi: leaving the page must set USB AUDIO as the row showed\n"); return 1; }
     midi_open(); midi_close();
     if (midi_saved != 1) { printf("midi: leaving without a change must not save\n"); return 1; }
-    midi_open(); midi_push(); midi_push(); midi_push(); midi_knob(-1); midi_close();
+    midi_open(); midi_push(); midi_push(); midi_push(); midi_knob(-1); midi_close();   /* (the fourth row: USB AUDIO) */
     if (midi_saved != 2 || px_ua_on) { printf("midi: USB AUDIO off again must save once more\n"); return 1; }
     mid_cfg.chan = 16; midi_open(); midi_knob(1); midi_draw(); shot(d, "midi_channel_wraps_to_omni");
     if (mid_cfg.chan != 0) { printf("midi: channel 16 + 1 must wrap to omni\n"); return 1; }

@@ -235,6 +235,9 @@ body[data-view="sound"] #view-sound, body[data-view="models"] #view-models, body
 .state.dirty { color: var(--acc-ink); background: var(--acc); padding: 3px 8px; border-radius: 999px; }
 .state.cmp { color: var(--bg); background: var(--ink); padding: 3px 8px; border-radius: 999px; }
 .pacts { display: flex; flex-wrap: wrap; gap: 8px; margin-inline-start: auto; }
+.plevel { --c: var(--acc); flex: 1 1 100%; max-inline-size: 520px; }
+.plevel label { color: var(--dim); }
+.plevel.dim { opacity: 0.5; }
 
 /* ---- the sound: chain ---- */
 .chain-wrap { container-type: inline-size; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
@@ -545,6 +548,9 @@ a.tone-u[href] { text-decoration: underline; }
   #compare, #revert { display: none; }
   .pacts { margin-inline-start: 0; flex: 1 1 100%; }
   .pacts .btn:not(.icon) { flex: 1; }
+  .plevel { grid-template-columns: 30px minmax(0, 1fr) 30px; row-gap: 0; max-inline-size: none; }
+  .plevel label { grid-column: 1 / 3; grid-row: 1; }
+  .plevel .val { grid-column: 2 / 4; grid-row: 1; }
   /* the control table: a block per row of cards */
   .cc, .cc tbody, .cc tr, .cc td, .cc tbody th { display: block; inline-size: auto; }
   .cc thead { display: none; }

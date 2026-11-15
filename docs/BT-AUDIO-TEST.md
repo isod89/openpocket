@@ -1021,6 +1021,39 @@ safe in an interrupt.
 - **The HCI line's words**: `TS used/peak` and `TU used/peak` the two tables, `TF` adds refused, `TI` adds from an interrupt,
   `TR` usr timeouts run, `TB` the waits.
 
+## Test build 39: the footswitch learned on the pedal, and the preset level in the editor
+
+Build 38 is the gig build (tag `bt-test-38`). Build 39 is build 38 with three things a player asked for after using it:
+
+- **Controls learned on the pedal.** The Chocolate talks to the pedal, so the editor's own learning (for controllers plugged
+  into the computer) never heard it. Now, in the editor's MIDI section, click a control (a block's on/off, the next or the
+  previous preset, a setting), then press the footswitch: the pedal reports what it received (`MIDI_IN`, editor protocol 5)
+  and the editor writes it into the pedal's own table (`MAP`). The pedal keeps up to 8 with the presets and they work with no
+  page open, in every preset. A switch is learned "press" (it sends 127, then 0: it acts on the press) or "each" (it
+  alternates 127 and 0: every message acts), told apart while learning and changeable in the list. docs/MIDI.md, "Learned on
+  the pedal"; `firmware/px_midi.h` `px_midi_map_in`, `firmware/px_store.h` (in each copy, with its own mark and CRC).
+- **SWITCH on the MIDI page** (hold FX): MOMENT (as before: CC 8 to 19 flip on value 0) or LATCH (they flip at every message,
+  for the Chocolate's CC mode, which alternates 127 and 0). The editor shows it with the learned controls. And **CC 118 / 119**:
+  the next / the previous preset, for a footswitch in its CC mode, which sends no Program Change.
+- **The preset level beside the preset's name** in the editor (the GT page's PRESET LVL on the pedal, -15 to +15 dB): only the
+  editor changed for it.
+
+### What to check
+
+1. The level: in the editor (Sound), move **Level** under the preset's name; the GT block's PRESET LVL follows, and the sound
+   gets louder or softer. Save, then load another preset and come back.
+2. The Chocolate in its CC mode (CubeSuite), linked to the pedal: open the pedal's MIDI page (hold FX), press each switch and
+   read `LAST: CC n = v`: that is the number the switch sends.
+3. Learn: in the editor's MIDI section, click EQ's **On / off**, press the Chocolate's switch once and let go. The editor says
+   what it learned and lists it under **Learned by the pedal**; the pedal's MIDI page counts it (`LEARNED 1`). Close the editor:
+   the switch still switches the EQ, in every preset. Power the pedal off and on: it still does.
+4. A switch for the next preset: click **Next preset**, press another switch.
+5. The log, with the pedal on USB, for the record:
+
+```bash
+cd "/Users/steponme/Lavori ext/mvave-blackbox-firmware/.claude/worktrees/goofy-fermat-9c0c07" && make log
+```
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate

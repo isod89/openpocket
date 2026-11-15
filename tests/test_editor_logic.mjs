@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { webcrypto } from "node:crypto";
-import { ccParam, ccOn, ccToggle, ccType, ccTarget, toCc, fromCc, typeToCc, typeFromCc, decode, learn, resolve, action, cleanMappings, NBLK, NPAR } from "../docs/pxmidi.js";
+import { ccParam, ccOn, ccToggle, ccType, ccTarget, toCc, fromCc, typeToCc, typeFromCc, decode, learn, resolve, action, cleanMappings, NBLK, NPAR,
+  pedalDst, pedalTarget, pedalLearn, switchMode, PEDAL_MAP_N, MAP_PRESS, MAP_EACH, MAP_VALUE, CC_NEXT, CC_PREV } from "../docs/pxmidi.js";
 import { knobIndex, indexKnob, slotRef, presetSlot, retarget, usage, packedName, renamePacked, cleanSlotName, Library, pedalKey, planMove } from "../docs/pxlib.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -201,5 +202,27 @@ await check("moving a slot's file: to an empty slot, two changing places, and wh
     assert.equal(t.t3kNoteRead().captures[0].name, "PLEXI");
     assert.equal(t.t3kNoteRead(), null);
   });
+}
+// ---- test build 39: controls learned on the pedal (firmware/px_midi.h mid_map; px_midi_map_in) ----
+{
+  assert.deepEqual(pedalDst({ kind: "on", b: 7 }), { dst: 15, value: false });                    // a block: its flip number
+  assert.deepEqual(pedalDst({ kind: "preset", step: -1 }), { dst: CC_PREV, value: false });
+  assert.deepEqual(pedalDst({ kind: "param", b: 9, k: 0 }), { dst: ccParam(9, 0), value: true });
+  assert.equal(pedalTarget(118).kind, "next"); assert.equal(pedalTarget(117).kind, "exp"); assert.equal(pedalTarget(15).kind, "toggle");
+  assert.equal(switchMode([127, 0]), MAP_PRESS);                     // 127, then 0 when let go
+  assert.equal(switchMode([127]), MAP_EACH);                         // one message a press
+  assert.equal(switchMode([0]), MAP_EACH);                           // an alternating switch caught going off
+  const empty = new Array(PEDAL_MAP_N).fill(null);
+  let t = pedalLearn(empty, 80, { kind: "on", b: 7 }, MAP_PRESS);
+  assert.deepEqual(t[0], { src: 80, dst: 15, mode: MAP_PRESS });
+  t = pedalLearn(t, 81, { kind: "param", b: 7, k: 0 }, MAP_EACH);  // a knob: always by its value
+  assert.equal(t[1].mode, MAP_VALUE);
+  t = pedalLearn(t, 80, { kind: "on", b: 9 }, MAP_EACH);           // the same controller number again: it moves, one meaning
+  assert.equal(t.filter((e) => e && e.src === 80).length, 1);
+  assert.equal(t.find((e) => e && e.src === 80).dst, 17);
+  const full = new Array(PEDAL_MAP_N).fill(0).map((_, i) => ({ src: i, dst: 8, mode: 0 }));
+  assert.equal(pedalLearn(full, 100, { kind: "on", b: 0 }, MAP_PRESS), null);   // full: nothing learned
+  assert.equal(pedalLearn(empty, 128, { kind: "on", b: 0 }, MAP_PRESS), null);  // not a controller number
+  assert.equal(CC_NEXT, 118);
 }
 console.log("editor logic test passed");

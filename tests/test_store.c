@@ -293,6 +293,66 @@ int main(void)
         reboot();
         CHECK(!px_ua_on && !st_usb, "USB audio: off survives a power cycle");
     }
+#if PX_OWN_FX
+    /* test build 39: the controls learned on the pedal ride in each copy (sector 1, after its slots, own mark and CRC) */
+    {
+        px_preset_t q;
+        px_preset_factory(&q, 6);
+        reboot();
+        CHECK(px_midi_map_count() == 0, "learned: none in a store that never had them (a copy of an earlier firmware)");
+        mid_map[0] = (px_map_t){ 80, 8 + PX_B_EQ, PXM_MAP_PRESS };
+        mid_map[3] = (px_map_t){ 81, PXM_CC_NEXT, PXM_MAP_EACH };
+        mid_cfg.each = 1; st_midi = px_midi_cfg_pack(&mid_cfg);
+        CHECK(st_commit() == 0, "learned: a commit");
+        reboot();
+        CHECK(px_midi_map_count() == 2 && mid_map[0].src == 80 && mid_map[0].dst == 8 + PX_B_EQ && mid_map[3].mode == PXM_MAP_EACH &&
+              mid_map[1].src == 0xFF && mid_cfg.each, "learned: two controls and LATCH survive a power cycle");
+        CHECK(st_save(6, &q) == 0, "learned: a preset save");
+        reboot();
+        CHECK(px_midi_map_count() == 2 && st_saved(6), "learned: still there after a preset save (each copy carries them)");
+        {   /* a damaged table (a bit flipped): nothing learned, the presets as they were */
+            nor[st_cur + ST_MAP_OFF + 5] ^= 0x01;
+            reboot();
+            CHECK(px_midi_map_count() == 0 && st_saved(6), "learned: a table whose CRC fails is dropped, the presets kept");
+            nor[st_cur + ST_MAP_OFF + 5] ^= 0x01;
+            reboot();
+            CHECK(px_midi_map_count() == 2, "learned: the same table read again once whole");
+        }
+        {   /* an earlier firmware writes its copy with nothing there: then nothing is learned, and its copy is read whole */
+            uint8_t blank[ST_MAP_LEN];
+            memset(blank, 0xFF, sizeof blank);
+            memcpy(nor + st_cur + ST_MAP_OFF, blank, sizeof blank);
+            reboot();
+            CHECK(px_midi_map_count() == 0 && st_saved(6), "learned: a copy without the table (written by an earlier firmware) = none");
+        }
+        {   /* a power cut while saving a new table: the old table or the new one, never a broken store */
+            uint32_t olds = 0, news = 0, bad = 0;
+            px_midi_map_clear();
+            mid_map[0] = (px_map_t){ 70, 8 + PX_B_DELAY, PXM_MAP_PRESS };
+            CHECK(st_commit() == 0, "learned: the old table");
+            for (int cut = 0; cut < 9000; cut += 11) {
+                uint8_t keep[0x100000];
+                memcpy(keep, nor, sizeof nor);
+                reboot();
+                px_midi_map_clear();
+                mid_map[0] = (px_map_t){ 71, 8 + PX_B_REVERB, PXM_MAP_EACH };
+                mid_map[1] = (px_map_t){ 72, 117, PXM_MAP_VALUE };
+                ops = 0; dead = 0; cut_at = cut;
+                st_commit();
+                cut_at = -1; dead = 0;
+                reboot();
+                if (px_midi_map_count() == 2 && mid_map[0].src == 71 && mid_map[1].dst == 117) news++;
+                else if (px_midi_map_count() == 1 && mid_map[0].src == 70) olds++;
+                else bad++;
+                if (!st_saved(6)) bad++;
+                memcpy(nor, keep, sizeof nor);
+            }
+            CHECK(bad == 0 && olds > 0 && news > 0, "learned: a power cut during a save leaves the old table or the new, never a broken one");
+        }
+        px_midi_map_clear(); mid_cfg.each = 0; st_midi = px_midi_cfg_pack(&mid_cfg);
+        CHECK(st_commit() == 0, "learned: cleared again");
+    }
+#endif
     loader_bytes_clear();
     printf(fails ? "%d FAILED\n" : "store tests passed\n", fails);
     return fails != 0;

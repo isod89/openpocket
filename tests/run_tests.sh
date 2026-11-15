@@ -91,6 +91,8 @@ $CC -O2 -DPXN_EMUVEC -Iengine tests/engine/nam_test.c engine/px_nam.c -o build/n
 if python3 -c "import numpy" 2>/dev/null; then mkdir -p build/nam; python3 tests/test_nam.py build/nam_test > build/nam/log.txt || { cat build/nam/log.txt; exit 1; }; tail -1 build/nam/log.txt; else echo "(numpy not installed: NAM comparison skipped)"; fi
 echo "== preset store"
 $CC -O1 -Iengine tests/test_store.c engine/px_dsp.c firmware/px_math.c -lm -o build/test_store && build/test_store | tail -2
+# (the Bluetooth audio image's, test build 39: the controls learned on the pedal ride in each copy, through power cuts)
+$CC -O1 -DPX_OWN_FX=1 -Iengine tests/test_store.c engine/px_dsp.c firmware/px_math.c -lm -o build/test_store_fx && { build/test_store_fx > build/test_store_fx.log; r=$?; tail -1 build/test_store_fx.log; [ $r -eq 0 ] || { grep FAIL build/test_store_fx.log; exit 1; }; }
 echo "== audio callbacks' order (the output block is its interrupt's, whichever callback the driver calls first)"
 $CC -O1 -Wall -Ifirmware tests/test_aorder.c -o build/test_aorder && build/test_aorder | tail -1
 echo "== USB audio (the device code and the audio glue against a model of the controller and a computer)"
@@ -180,6 +182,10 @@ node tests/test_editor.mjs
 $CC -O1 -Wall -Wno-unused-function -DED_BT=1 -DED_BT_LINKS=2u -o build/edsim_bt tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
 EDSIM_BLE=1 node tests/test_editor.mjs > build/editor_ble.log || { grep "FAIL" build/editor_ble.log; exit 1; }
 grep "^BLE:" build/editor_ble.log; tail -1 build/editor_ble.log
+# the Bluetooth audio image's own (test build 39, PX_OWN_FX): protocol 5, the controls learned on the pedal, MIDI_IN, over BLE MIDI
+$CC -O1 -Wall -Wno-unused-function -DPX_OWN_FX=1 -DED_BT=1 -DED_BT_LINKS=2u -o build/edsim_fx_bt tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm
+EDSIM=build/edsim_fx_bt EDSIM_FX=1 EDSIM_BLE=1 node tests/test_editor.mjs > build/editor_fx.log || { grep "FAIL" build/editor_fx.log; exit 1; }
+grep -c "ok$" build/editor_fx.log | sed 's/^/editor (FX, BLE): checks ok: /'; tail -1 build/editor_fx.log
 node tests/test_ping.mjs
 node tests/test_editor_logic.mjs
 echo "== log channel (tools/op.mjs log)"

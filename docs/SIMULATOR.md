@@ -17,6 +17,7 @@ node tools/op.mjs sim --update FLASH.bin # the update flow, for the installer (s
 | `--flash FILE` | the pedal's flash, kept between runs (default `build/sim/flash.bin`) |
 | `--reset` | delete the flash file first: factory presets only |
 | `--update FILE` | run the update flow on this 1 MiB flash image (it is never written), see "The installer" |
+| `--fx` | the Bluetooth test image's pedal (`-DPX_OWN_FX=1`, `build/sim/edsim_fx`): editor protocol 5, the controls learned on the pedal (test build 39); `POST cc/N/V` plays a footswitch |
 
 ## What runs
 
@@ -159,6 +160,7 @@ before it is answered, so a state read right after a press shows the press.
 | `POST battery/MV[/USB_MV]` | the battery voltage the screen shows; `USB_MV` above 4300 shows "USB" |
 | `POST tuner/HZ` | the pitch the tuner page hears (0: none) |
 | `POST bypass/0`, `POST bypass/1` | the bypass: `dsp.bypass`, the overload banner on the screen, the dry input in the sound |
+| `POST cc/N/V` | (`--fx` only) a Control Change N = V from a controller linked to the pedal, as the Chocolate's: through the controls learned on the pedal, then the pedal's map; the editor's MIDI section hears it (`MIDI_IN`) and can learn it |
 | `POST load/N` | the load in the status text and `dsp.load`, 0..999. The page sets it while the sound runs |
 | `GET screen.png[?scale=N]` | the screen as a PNG, 240 x 240 times N (1..8, nearest neighbour) |
 | `GET screen.rgb565` | the raw frame buffer: 240 x 240 pixels, 2 bytes each, big endian, row by row |

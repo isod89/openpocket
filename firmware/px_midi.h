@@ -18,12 +18,21 @@ typedef struct {
     uint8_t chan;          /* 0 = omni (receive any channel; send on 1), 1..16 = that channel */
     uint8_t send;          /* 1 = the pedal sends Program Change / Control Change when its sound changes */
     uint8_t clock;         /* 1 = MIDI clock sets the delay TIME to a quarter note */
+#if PX_OWN_FX
+    uint8_t each;          /* test build 39: 1 = CC 8..19 flip on every message (a switch that alternates 127 and 0, one
+                            * message a press); 0 = on value 0 only (a switch that sends 127, then 0 when let go) */
+#endif
 } px_midi_cfg_t;
 #define PXM_CFG_NOSEND 0x20u
 #define PXM_CFG_CLOCK  0x40u
+#define PXM_CFG_EACH   0x80u   /* (the Bluetooth audio image's; other firmware leaves this bit 0 and ignores it) */
 static uint8_t px_midi_cfg_pack(const px_midi_cfg_t *c)
 {
+#if PX_OWN_FX
+    return (uint8_t)((c->chan & 31u) | (c->send ? 0u : PXM_CFG_NOSEND) | (c->clock ? PXM_CFG_CLOCK : 0u) | (c->each ? PXM_CFG_EACH : 0u));
+#else
     return (uint8_t)((c->chan & 31u) | (c->send ? 0u : PXM_CFG_NOSEND) | (c->clock ? PXM_CFG_CLOCK : 0u));
+#endif
 }
 static void px_midi_cfg_unpack(px_midi_cfg_t *c, uint8_t b)
 {
@@ -31,6 +40,9 @@ static void px_midi_cfg_unpack(px_midi_cfg_t *c, uint8_t b)
     if (c->chan > 16u) c->chan = 0;                    /* a byte this firmware never wrote: omni */
     c->send = (b & PXM_CFG_NOSEND) ? 0u : 1u;
     c->clock = (b & PXM_CFG_CLOCK) ? 1u : 0u;
+#if PX_OWN_FX
+    c->each = (b & PXM_CFG_EACH) ? 1u : 0u;
+#endif
 }
 /* v42: USB AUDIO (docs/USB-AUDIO.md): 1 = the pedal is a USB sound card too. The MIDI page's fourth row and the editor
  * (USB_AUDIO) set it, the store keeps it (px_store.h, st_usb), px_usb.h presents the USB device with or without the
@@ -90,6 +102,62 @@ static void px_cc_build(void)
     px_cc_tab_ok = 1;
 }
 
+#if PX_OWN_FX
+/* ---- test build 39: controls learned on the pedal (docs/MIDI.md, "Learned on the pedal") ----
+ * A Control Change number from a controller (the footswitch over Bluetooth, or one over USB) is read as one of the pedal's
+ * own numbers before anything else: a switch becomes a block's flip, the next or the previous preset, a tap of the delay's
+ * tempo or the pad's catch; a knob or a pedal becomes a setting or the expression pedal. So a footswitch whose numbers
+ * cannot be changed still drives the pedal, and it does without the editor open. Up to PXM_MAP_N, kept with the presets
+ * (px_store.h). How a switch's messages count:
+ *   PXM_MAP_PRESS  a value of 64 and up is a press, a value below it the release (a switch that sends 127, then 0)
+ *   PXM_MAP_EACH   every message is a press (a switch that alternates 127 and 0, one message a press)
+ *   PXM_MAP_VALUE  the value passes as it is (a knob, an expression pedal, or a number the pedal reads by its value) */
+#define PXM_MAP_N 8u
+enum { PXM_MAP_PRESS, PXM_MAP_EACH, PXM_MAP_VALUE };
+typedef struct { uint8_t src, dst, mode; } px_map_t;     /* src 0xFF: an empty entry */
+static px_map_t mid_map[PXM_MAP_N];
+static uint32_t mid_in_n;                              /* the musical messages received since boot (the editor's monitor) */
+#define PXM_CC_PAD  64u                                /* (px_midi_io.h: 64 catches a SYN PAD's chord, 116 taps the tempo, */
+#define PXM_CC_NEXT 118u                               /* 117 is the expression pedal) 118 / 119 at 64 and up: the next / */
+#define PXM_CC_PREV 119u                               /* the previous preset, as the footswitches */
+static void px_midi_map_clear(void) { memset(mid_map, 0xFF, sizeof mid_map); }
+/* a number the pedal reads: its map, or one of the image's own (64, 116, 117, 118, 119) */
+static int px_midi_known(uint32_t cc)
+{
+    px_cc_build();
+    return cc < 128u && (px_cc_tab[cc].kind != PXM_NONE || cc == PXM_CC_PAD || cc == 116u || cc == 117u ||
+                         cc == PXM_CC_NEXT || cc == PXM_CC_PREV);
+}
+static uint32_t px_midi_map_count(void)                /* the entries in use */
+{
+    uint32_t i, n = 0;
+    for (i = 0; i < PXM_MAP_N; i++) n += mid_map[i].src < 128u && px_midi_known(mid_map[i].dst);
+    return n;
+}
+static int px_midi_map_valid(const px_map_t *e)        /* an entry as stored: empty, or a usable one */
+{
+    if (e->src == 0xFFu) return 1;
+    return e->src < 128u && e->mode <= PXM_MAP_VALUE && px_midi_known(e->dst);
+}
+/* a learned control's message, read as the pedal's own: 1 = go on with *cc / *val (rewritten when learned), 0 = nothing to
+ * do (a switch's release) */
+static int px_midi_map_in(uint32_t *cc, uint32_t *val)
+{
+    uint32_t i;
+    for (i = 0; i < PXM_MAP_N; i++) {
+        const px_map_t *e = &mid_map[i];
+        if (e->src != *cc || !px_midi_known(e->dst)) continue;
+        *cc = e->dst;
+        if (e->mode == PXM_MAP_VALUE) return 1;
+        if (e->mode == PXM_MAP_PRESS && *val < 64u) return 0;
+        /* a press: what the pedal's own number does for one (a flip happens on 0, everything else on 64 and up) */
+        *val = e->dst >= PXM_CC_TOGGLE0 && e->dst < PXM_CC_TOGGLE0 + PX_NBLK ? 0u : 127u;
+        return 1;
+    }
+    return 1;
+}
+#endif
+
 /* 0..100 <-> 0..127; a model number <-> the middle of its slice of 0..127 */
 static uint32_t pxm_to_cc(uint32_t v) { return (v * 127u + 50u) / 100u; }
 static uint32_t pxm_from_cc(uint32_t c) { return (c * 100u + 63u) / 127u; }
@@ -140,7 +208,11 @@ static int px_midi_cc_apply(px_preset_t *p, uint32_t cc, uint32_t val, uint32_t 
         p->on[t.blk] = (uint8_t)v;
         return 1;
     case PXM_TOGGLE:                                   /* the pedal holds the state, so a preset change cannot put a footswitch out of step */
+#if PX_OWN_FX
+        if (val && !mid_cfg.each) return 0;            /* (test build 39: EACH PRESS, every message flips) */
+#else
         if (val) return 0;
+#endif
         p->on[t.blk] = !p->on[t.blk];
         return 1;
     case PXM_TYPE:
