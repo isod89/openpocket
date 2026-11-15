@@ -308,18 +308,20 @@ export class Editor {
   }
   // the CAB USER IR type's IR texts name the slots, which change: always asked again (not cached)
   // test build 39 (protocol 5, the Bluetooth audio image): controls learned on the pedal (firmware/px_midi.h mid_map) and
-  // SWITCH (CC 8..19 flip on every message: "each"). pedalMap() reads them; setPedalMap(each, entries) writes all of them
-  // and the flash (the sound holds a moment, as a save). entries: PEDAL_MAP_N of { src, dst, mode } or null; mode 0 press,
-  // 1 each, 2 value (docs/pxmidi.js). -> { rc (0 ok, 1 invalid, 2 flash), each, entries }
+  // SWITCH (CC 8..19 flip on every message: "each") and INPUT (-10..+10 dB). pedalMap() reads them; setPedalMap(each,
+  // entries, inputDb) writes all of them and the flash (the sound holds a moment, as a save). entries: PEDAL_MAP_N of
+  // { src, dst, mode } or null; mode 0 press, 1 each, 2 value (docs/pxmidi.js). -> { rc (0 ok, 1 invalid, 2 flash), each,
+  // inputDb, entries }
   get hasPedalLearn() { return !!(this.info && this.info.proto >= 5); }
   _map(r) {
-    const q = new Reader(r), rc = q.b(), each = !!q.b(), n = q.b(), entries = [];
+    const q = new Reader(r), rc = q.b(), each = !!q.b(), inputDb = q.b() - 10, n = q.b(), entries = [];
     for (let i = 0; i < n; i++) { const on = q.b(), src = q.b(), dst = q.b(), mode = q.b(); entries.push(on ? { src, dst, mode } : null); }
-    return { rc, each, entries };
+    return { rc, each, inputDb, entries };
   }
   async pedalMap() { return this._map(await this.request(C.MAP)); }
-  async setPedalMap(each, entries) {
-    const a = [1, each ? 1 : 0];
+  // inputDb: the MIDI page's INPUT, -10..+10 dB (the guitar's level into the chain)
+  async setPedalMap(each, entries, inputDb = 0) {
+    const a = [1, each ? 1 : 0, Math.max(0, Math.min(20, Math.round(inputDb) + 10))];
     for (const e of entries) a.push(...(e ? [1, e.src, e.dst, e.mode] : [0, 0, 0, 0]));
     return this._map(await this.request(C.MAP, a, 4000));
   }

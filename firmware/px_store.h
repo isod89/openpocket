@@ -169,6 +169,9 @@ static void st_load(void)
             st_last = h.last;
             st_midi = h.pad[0];
             st_usb = h.pad[1];
+#if PX_OWN_FX
+            px_in_db = (int8_t)px_in_db_clamp((int8_t)h.pad[2]);   /* test build 39: INPUT (0 dB in every earlier save) */
+#endif
             bh = h;
         }
     }
@@ -182,6 +185,9 @@ static void st_load(void)
         st_last = 0;
         st_midi = 0;
         st_usb = 0;
+#if PX_OWN_FX
+        px_in_db = 0;
+#endif
     }
     if (st_last >= ST_NSLOT) st_last = 0;
 #if PX_OWN_FX
@@ -225,6 +231,9 @@ static int st_commit(void)
     if (!st_ok) return -1;
     memset(&h, 0, sizeof h);
     h.magic = ST_MAGIC; h.seq = st_seq + 1u; h.crc = (uint16_t)st_crc(); h.ver = ST_VER; h.nslot = ST_NSLOT; h.last = st_last; h.pad[0] = st_midi; h.pad[1] = st_usb;
+#if PX_OWN_FX
+    h.pad[2] = (uint8_t)px_in_db;                 /* test build 39: INPUT, dB (a signed byte) */
+#endif
     st_audio_hold(1);
     if (fl_erase4k(base, &k) || fl_erase4k(base + 0x1000u, &k)) rc = -2;
     for (k = ST_S0N; !rc && k < ST_NSLOT; k++)
@@ -284,4 +293,7 @@ static void px_store_boot(void)
     load_preset(cur_preset);
     px_midi_cfg_unpack(&mid_cfg, st_midi);
     px_ua_on = st_usb & 1u;
+#if PX_OWN_FX
+    a_in_gain_apply();                            /* test build 39: INPUT as stored */
+#endif
 }

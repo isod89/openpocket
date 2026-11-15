@@ -278,7 +278,7 @@ ok(oldDly.preset.p[dl][0] === 40 && oldDly.warn.length === 1 && newDly.preset.p[
 if (FX) {
   const eq = cat.blocks.findIndex((b) => b.label === "EQ"), dly = cat.blocks.findIndex((b) => b.label === "DLY");
   let m = await ed.pedalMap();
-  ok(ed.hasPedalLearn && m.rc === 0 && !m.each && m.entries.length === PEDAL_MAP_N && m.entries.every((e) => !e), "MAP: nothing learned, SWITCH MOMENT, 8 places");
+  ok(ed.hasPedalLearn && m.rc === 0 && !m.each && m.inputDb === 0 && m.entries.length === PEDAL_MAP_N && m.entries.every((e) => !e), "MAP: nothing learned, SWITCH MOMENT, INPUT 0 dB, 8 places");
   const got = [];
   ed.onMidiIn = (x) => got.push(x);
   ok(await ed.watch(true) === 3, "WATCH 3: the pedal also pushes what a controller sends it");
@@ -309,8 +309,8 @@ if (FX) {
   const bad = await ed.setPedalMap(false, [{ src: 90, dst: 3, mode: 0 }, null, null, null, null, null, null, null]);
   const dup = await ed.setPedalMap(false, [{ src: 90, dst: 15, mode: 0 }, { src: 90, dst: 16, mode: 0 }, null, null, null, null, null, null]);
   ok(bad.rc === 1 && dup.rc === 1 && bad.entries.filter(Boolean).length === 4, "MAP: a number the pedal does not read, or one controller number twice, is refused (the table kept)");
-  m = await ed.setPedalMap(true, m.entries);
-  ok(m.rc === 0 && m.each, "MAP: SWITCH set to LATCH (the flip numbers act at every message)");
+  m = await ed.setPedalMap(true, m.entries, 4);
+  ok(m.rc === 0 && m.each && m.inputDb === 4, "MAP: SWITCH set to LATCH (the flip numbers act at every message), INPUT +4 dB");
   ed.onMidiIn = null;
 }
 await bleCheck(s);
@@ -331,7 +331,7 @@ list = await ed.list();
 }
 if (FX) {
   const m = await ed.pedalMap();
-  ok(m.rc === 0 && m.each && m.entries.filter(Boolean).length === 4 && m.entries[0].src === 80, "power cycle: the controls learned on the pedal and LATCH are still there");
+  ok(m.rc === 0 && m.each && m.inputDb === 4 && m.entries.filter(Boolean).length === 4 && m.entries[0].src === 80, "power cycle: the controls learned on the pedal, LATCH and INPUT are still there");
 }
 
 // ---- 7. v37: NAM models (an A2 file -> a user slot -> the AMP block's NAM type) ----

@@ -382,14 +382,14 @@ static void ed_handle(const uint8_t *a, uint32_t n)   /* a: the args, after the 
 #endif
         break;
 #if PX_OWN_FX
-    case ED_MAP: {                                     /* test build 39: the controls learned on the pedal, and EACH PRESS */
+    case ED_MAP: {                                     /* test build 39: the controls learned on the pedal, SWITCH, INPUT */
         rc = 0;
-        if (n >= 1u && a[0] == 1u) {                   /* 1, each, then PXM_MAP_N x (present, src, dst, mode): all of them */
+        if (n >= 1u && a[0] == 1u) {                   /* 1, each, INPUT + 10, then PXM_MAP_N x (present, src, dst, mode) */
             static px_map_t mq[PXM_MAP_N];
-            uint32_t want = 2u + PXM_MAP_N * 4u;
-            if (n < want) rc = 1;
+            uint32_t want = 3u + PXM_MAP_N * 4u;
+            if (n < want || a[2] > (uint32_t)(PX_IN_DB_MAX - PX_IN_DB_MIN)) rc = 1;
             for (k = 0; !rc && k < PXM_MAP_N; k++) {
-                const uint8_t *e = a + 2u + k * 4u;
+                const uint8_t *e = a + 3u + k * 4u;
                 mq[k].src = e[0] ? e[1] : 0xFFu; mq[k].dst = e[2]; mq[k].mode = e[3];
                 if (!e[0]) mq[k].dst = mq[k].mode = 0xFFu;
                 if (!px_midi_map_valid(&mq[k])) rc = 1;
@@ -400,12 +400,14 @@ static void ed_handle(const uint8_t *a, uint32_t n)   /* a: the args, after the 
             if (!rc) {
                 memcpy(mid_map, mq, sizeof mid_map);
                 mid_cfg.each = a[1] ? 1u : 0u;
+                px_in_db = (int8_t)((int)a[2] + PX_IN_DB_MIN);
+                a_in_gain_apply();                     /* (heard at once) */
                 st_midi = px_midi_cfg_pack(&mid_cfg);
                 if (st_commit()) rc = 2;               /* (it stays in RAM and works: the next save writes it) */
                 st_gen++;
             }
         }
-        ed_b((uint32_t)rc); ed_b(mid_cfg.each); ed_b(PXM_MAP_N);
+        ed_b((uint32_t)rc); ed_b(mid_cfg.each); ed_b((uint32_t)(px_in_db - PX_IN_DB_MIN)); ed_b(PXM_MAP_N);
         for (k = 0; k < PXM_MAP_N; k++) {
             const px_map_t *e = &mid_map[k];
             const int on = e->src != 0xFFu;

@@ -13,6 +13,10 @@
 #include <string.h>
 #include "px_dsp.h"
 #include "../firmware/px_midi.h"
+#if PX_OWN_FX
+static int a_in_gain_n;                                  /* test build 39: INPUT applied (px_audio.h's, counted here) */
+static void a_in_gain_apply(void) { a_in_gain_n++; }
+#endif
 
 #include "simlcd.h"
 #define POISON 0xF81F
@@ -462,6 +466,17 @@ int main(int argc, char **argv)
     mid_last[0] = PXM_CC; mid_last[1] = 80; mid_last[2] = 127; midi_draw(); shot(d, "midi_switch_latch_learned");
     if (!mid_cfg.each) { printf("midi: SWITCH must turn to LATCH\n"); return 1; }
     px_midi_map_clear();
+    {   /* INPUT: -10..+10 dB, applied at once (each knob step), saved on leaving with the rest */
+        const int n0 = a_in_gain_n;
+        midi_push(); midi_knob(1); midi_knob(1); midi_knob(1); midi_draw(); shot(d, "midi_input_plus3");
+        if (px_in_db != 3 || a_in_gain_n - n0 != 3) { printf("midi: INPUT must step by 1 dB and apply each step\n"); return 1; }
+        for (int i = 0; i < 30; i++) midi_knob(1);
+        if (px_in_db != PX_IN_DB_MAX) { printf("midi: INPUT must stop at +10 dB\n"); return 1; }
+        for (int i = 0; i < 40; i++) midi_knob(-1);
+        if (px_in_db != PX_IN_DB_MIN) { printf("midi: INPUT must stop at -10 dB\n"); return 1; }
+        midi_draw(); shot(d, "midi_input_minus10");
+        px_in_db = 3;
+    }
 #endif
     midi_push(); poison(); uc.screen = -1; ui_invalidate(); ui_render(); status();
     if (midi_saved != 1 || ui_mode != M_CHAIN) { printf("midi: leaving the page after a change must save once and return to the chain\n"); return 1; }

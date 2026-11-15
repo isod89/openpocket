@@ -133,7 +133,7 @@ async function finishCatch() {
     return;
   }
   try {
-    const r = await app.ed.setPedalMap(pmap.each, next);
+    const r = await app.ed.setPedalMap(pmap.each, next, pmap.inputDb);
     if (r.rc === 0) {
       pmap = r;
       const e = r.entries.find((y) => y && y.src === c.src);
@@ -144,9 +144,9 @@ async function finishCatch() {
   catching = null;
   renderMap();
 }
-async function savePmap(entries, each = pmap.each) {
+async function savePmap(entries, each = pmap.each, inputDb = pmap.inputDb) {
   try {
-    const r = await app.ed.setPedalMap(each, entries);
+    const r = await app.ed.setPedalMap(each, entries, inputDb);
     if (r.rc === 0) pmap = r; else say(r.rc === 2 ? "The pedal could not save it (flash)." : "The pedal refused it.", "err");
   } catch (e) { say(`Not changed: ${e.message}`, "err"); }
   renderMap();
@@ -314,10 +314,15 @@ function renderPmap() {
     h("option", { value: "0", text: "when the switch is let go (it sends 127, then 0)" }),
     h("option", { value: "1", text: "at each message (it alternates 127 and 0)" }));
   sw.value = pmap.each ? "1" : "0";
+  const inp = h("select", { id: "pmapinput", "aria-label": "The guitar's input level", onchange: () => savePmap(pmap.entries, pmap.each, +inp.value) },
+    Array.from({ length: 21 }, (_, i) => i - 10).map((d) => h("option", { value: String(d), text: `${d > 0 ? "+" : d < 0 ? "−" : ""}${Math.abs(d)} dB` })));
+  inp.value = String(pmap.inputDb);
   const used = pmap.entries.map((e, i) => [e, i]).filter(([e]) => e);
   return h("div", { class: "learned", id: "pmap" },
     h("div", { class: "lrow" }, h("span", { text: "The flip numbers, CC 8 to 19, act" }), sw, h("span", { class: "grow" }),
-      h("span", { class: "dim small", text: "(on the pedal: MIDI page, SWITCH)" })),
+      h("span", { class: "dim small", text: "(on the pedal: SETTINGS, SWITCH)" })),
+    h("div", { class: "lrow" }, h("span", { text: "The guitar's input level" }), inp, h("span", { class: "grow" }),
+      h("span", { class: "dim small", text: "(on the pedal: SETTINGS, INPUT)" })),
     used.length ? used.map(([e, i]) => {
       const t = pedalTarget(e.dst), isValue = e.mode === MAP_VALUE || (t && (t.kind === "param" || t.kind === "type" || t.kind === "exp" || t.kind === "master"));
       const mode = !isValue && h("select", { "aria-label": `How CC ${e.src} acts`, onchange: () => {

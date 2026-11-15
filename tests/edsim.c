@@ -133,6 +133,10 @@ static uint32_t a_wcut;                    /* v39: wet blocks cut short */
 static volatile uint8_t a_tmute;
 static float tuner_hz;
 #include "../firmware/px_midi.h"          /* (ui.h's MIDI page, #10) */
+#if PX_OWN_FX
+static int a_in_gain_n;                                  /* test build 39: INPUT applied (px_audio.h's, counted here) */
+static void a_in_gain_apply(void) { a_in_gain_n++; }
+#endif
 static void midi_persist(void) { }
 static void b_num(char *d, uint32_t v) { char t[12]; int n = 0; while (*d) d++; do { t[n++] = (char)('0' + v % 10u); v /= 10u; } while (v); while (n) *d++ = t[--n]; *d = 0; }
 static void b_str(char *d, const char *s) { while (*d) d++; while (*s) *d++ = *s++; *d = 0; }

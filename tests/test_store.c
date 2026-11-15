@@ -9,6 +9,10 @@
 #include <string.h>
 #include "px_dsp.h"
 #include "../firmware/px_midi.h"
+#if PX_OWN_FX
+static int a_in_gain_n;                                  /* test build 39: INPUT applied (px_audio.h's, counted here) */
+static void a_in_gain_apply(void) { a_in_gain_n++; }
+#endif
 
 static uint8_t nor[0x100000];
 static int fails, ops, cut_at = -1, dead;          /* power cut: after cut_at flash operations nothing more happens */
@@ -351,6 +355,27 @@ int main(void)
         }
         px_midi_map_clear(); mid_cfg.each = 0; st_midi = px_midi_cfg_pack(&mid_cfg);
         CHECK(st_commit() == 0, "learned: cleared again");
+        /* INPUT (test build 39): the header's third spare byte, signed dB; applied at boot */
+        reboot();
+        CHECK(px_in_db == 0, "INPUT: 0 dB in a store that never set it (every earlier save wrote 0 there)");
+        px_in_db = -7;
+        CHECK(st_commit() == 0, "INPUT: a commit of -7 dB");
+        a_in_gain_n = 0;
+        reboot();
+        CHECK(px_in_db == -7 && a_in_gain_n >= 1, "INPUT: -7 dB survives a power cycle and is applied at boot");
+        CHECK(st_save(6, &q) == 0, "INPUT: a preset save");
+        reboot();
+        CHECK(px_in_db == -7, "INPUT: still there after a preset save");
+        {   /* a byte out of range (another firmware's use of the byte): clamped */
+            st_hdr_t hh;
+            memcpy(&hh, nor + st_cur, sizeof hh);
+            hh.pad[2] = 100;
+            memcpy(nor + st_cur, &hh, sizeof hh);
+            reboot();
+            CHECK(px_in_db == PX_IN_DB_MAX, "INPUT: a stored value out of range is clamped to +10 dB");
+        }
+        px_in_db = 0;
+        CHECK(st_commit() == 0, "INPUT: back to 0 dB");
     }
 #endif
     loader_bytes_clear();

@@ -79,6 +79,11 @@ int gpio_set_pull_down(uint32_t g, int on)   { jl_rmw(g, 0x14, on); return 0; }
 
 static px_engine g_eng __attribute__((section(".pool"), aligned(8)));   /* ~250 KB: "POOL" RAM region */
 static float a_in[A_FR], a_out[A_FR];
+#if PX_OWN_FX
+/* test build 39: INPUT (px_midi.h px_in_db) as the input's scale: the interrupt reads one float, set from the main loop */
+static volatile float a_in_k = 0.5f / 8388608.0f;
+static void a_in_gain_apply(void) { a_in_k = (0.5f / 8388608.0f) * powf(10.0f, (float)px_in_db * 0.05f); }
+#endif
 #if OP_BT_AUDIO
 /* output, 24-bit right-aligned, in the RAM code window's free end (app-bt.ld .bss_hi), where test builds 12 and 13 kept two
  * slots against the callbacks' order; v42's px_aorder.h sends each block in its own interrupt whichever callback comes first */
@@ -692,9 +697,13 @@ static void a_block(const uint8_t *data, int len)      /* a guitar block: its DS
     for (uint32_t i = 0; i < n; i++) {
         float l = (float)((int32_t)(s[2u * i] << 8) >> 8), r = (float)((int32_t)(s[2u * i + 1u] << 8) >> 8);
         sl += l * l; sr += r * r;
+#if PX_OWN_FX
+        a_in[i] = l * a_in_k;                          /* (test build 39: x0.5 and INPUT, -10..+10 dB) */
+#else
         a_in[i] = l * (0.5f / 8388608.0f);             /* guitar = L channel only (like the official fw); R carries
                                                           only noise (~ -77 dBFS, measured v26). x0.5: same level
                                                           as the old (L + R) / 2, settings are unchanged */
+#endif
     }
     for (uint32_t i = n; i < A_FR; i++) a_in[i] = 0.0f;
     if (n) {                                           /* input levels L / R (tuner screen) */

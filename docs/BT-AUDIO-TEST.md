@@ -1035,6 +1035,8 @@ Build 38 is the gig build (tag `bt-test-38`). Build 39 is build 38 with three th
 - **SWITCH on the MIDI page** (hold FX): MOMENT (as before: CC 8 to 19 flip on value 0) or LATCH (they flip at every message,
   for the Chocolate's CC mode, which alternates 127 and 0). The editor shows it with the learned controls. And **CC 118 / 119**:
   the next / the previous preset, for a footswitch in its CC mode, which sends no Program Change.
+- **INPUT**, the guitar's level into the chain, -10 to +10 dB, as the official firmware's Input Gain: a row of the page FX
+  opens (now titled SETTINGS) and a menu in the editor's MIDI section. Heard at once, kept in the store's header.
 - **The preset level beside the preset's name** in the editor (the GT page's PRESET LVL on the pedal, -15 to +15 dB): only the
   editor changed for it.
 
@@ -1042,13 +1044,15 @@ Build 38 is the gig build (tag `bt-test-38`). Build 39 is build 38 with three th
 
 1. The level: in the editor (Sound), move **Level** under the preset's name; the GT block's PRESET LVL follows, and the sound
    gets louder or softer. Save, then load another preset and come back.
-2. The Chocolate in its CC mode (CubeSuite), linked to the pedal: open the pedal's MIDI page (hold FX), press each switch and
-   read `LAST: CC n = v`: that is the number the switch sends.
-3. Learn: in the editor's MIDI section, click EQ's **On / off**, press the Chocolate's switch once and let go. The editor says
-   what it learned and lists it under **Learned by the pedal**; the pedal's MIDI page counts it (`LEARNED 1`). Close the editor:
-   the switch still switches the EQ, in every preset. Power the pedal off and on: it still does.
-4. A switch for the next preset: click **Next preset**, press another switch.
-5. The log, with the pedal on USB, for the record:
+2. INPUT: hold FX (SETTINGS), PUSH to the INPUT row, turn the knob while playing: the guitar gets louder into the amp at
+   once. HOME saves it; power off and on: it is kept.
+3. The Chocolate in its CC mode (CubeSuite), linked to the pedal: open the pedal's SETTINGS page (hold FX), press each switch
+   and read `LAST: CC n = v`: that is the number the switch sends.
+4. Learn: in the editor's MIDI section, click EQ's **On / off**, press the Chocolate's switch once and let go. The editor says
+   what it learned and lists it under **Learned by the pedal**; the pedal's SETTINGS page counts it (`LEARNED 1`). Close the
+   editor: the switch still switches the EQ, in every preset. Power the pedal off and on: it still does.
+5. A switch for the next preset: click **Next preset**, press another switch.
+6. The log, with the pedal on USB, for the record:
 
 ```bash
 cd "/Users/steponme/Lavori ext/mvave-blackbox-firmware/.claude/worktrees/goofy-fermat-9c0c07" && make log
