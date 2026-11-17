@@ -1571,8 +1571,9 @@ place of `SCENE 2`). A name typed makes the preset `EDITED`: SAVE writes it. The
 (26 presets each); only the playing preset's are in RAM (24 bytes). Free text of 8 letters would have fitted 22 presets of the
 52 in the store's room; the player chose 3 letters for all of them.
 
-Room (the pedal's part, before the editor's): the image is 635,292 bytes (9.4 KB of the slot left), the RAM code window has
-760 bytes free, the RAM 1,248, the pool 852. The release image is v42's, byte for byte.
+Room: the image is 635,724 bytes (9.0 KB of the slot left; the names 1.1 KB with the editor's part), the RAM code window has
+760 bytes free, the RAM 1,248 (the names: 32), the pool 852. The release image is v42's, byte for byte. On the simulated pedal
+a name typed through the editor's request shows on its tile with `EDITED`, SAVE keeps it, and it is there after a restart.
 
 ### What to check
 
