@@ -176,8 +176,10 @@ static void ed_handle(const uint8_t *a, uint32_t n)   /* a: the args, after the 
 #if PX_OWN_FX   /* the Bluetooth audio image's own models (LOW OCTAVE, PAD, TREBLE BOOST): a version text of its own, because
                  * the web editor keeps each firmware's catalogue under its identity and version (docs/pxedit.js) and would
                  * otherwise show a v42 pedal's, without them. "v42 FX2" since test build 40 (TREBLE BOOST): an editor that
-                 * kept build 38's "v42 FX" catalogue reads it again. "v42 FX3" since test build 44 (TAPE FLUTE) */
-        ed_b(ED_PROTO); ed_str(OP_VERSION " FX3", 15); ed_str(FELUCCA_ID_PTR, 27);
+                 * kept build 38's "v42 FX" catalogue reads it again. "v42 FX3" since test build 44 (TAPE FLUTE); "v42 FX4" since
+                 * test build 45 (SFX's WAH, WHAMMY's PEDAL); "v42 FX5" since test build 47 (12-STRING's DETUNE in cents to 3.0);
+                 * "v42 FX6" since test build 48 (PRESET LVL down to -INF) */
+        ed_b(ED_PROTO); ed_str(OP_VERSION " FX6", 15); ed_str(FELUCCA_ID_PTR, 27);
 #else
         ed_b(ED_PROTO); ed_str(OP_VERSION, 15); ed_str(FELUCCA_ID_PTR, 27);
 #endif
@@ -297,6 +299,10 @@ static void ed_handle(const uint8_t *a, uint32_t n)   /* a: the args, after the 
         break;
     case ED_SAVE:
         if (n < 1u || a[0] >= ST_NSLOT) return;
+#if PX_OWN_FX
+        if (a[0] != cur_preset) (void)px_midi_pl_copy(cur_preset, a[0]);   /* (test build 46: its learned controls go with it) */
+        sc_fold(); px_sc_tab[a[0]] = px_sc;            /* (test build 49: and its scenes) */
+#endif
         rc = st_save(a[0], &PRESET) ? 2 : 0;
         if (!rc) cur_preset = a[0];
         st_gen++;
