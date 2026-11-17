@@ -182,7 +182,8 @@ a block page, and drives it in that preset only.
   48, 64 entries of slot, controller's number, the pedal's number, how it counts, its heel's and toe's values and where the
   pedal was at each, a CRC: `firmware/px_store.h`; 47's "OPP2" is read with the pedal's whole travel, 46's "OPPL" no longer). Saving a sound into another
   slot (SAVE, or the editor's SAVE) takes its controls along, in place of that slot's; a slot saved back to its FACTORY sound
-  loses its own. Other firmware never reads it; the web editor does not show them (yet).
+  loses its own. Other firmware never reads it. The web editor (editor protocol 6, test build 49) lists the preset's own in
+  its MIDI section, their heel and toe editable, and learns one for this preset only.
 
 ## Scenes (the Bluetooth test image, test build 49)
 
@@ -209,7 +210,9 @@ switches the blocks to it at once (each block fades, as when switched by hand).
   The view is kept with the settings at the next save.
 - **Where it is kept**: in each copy of the preset store, after the learned controls ("OPSC": for each preset the four scenes,
   the one playing, the ones stored; a CRC: `firmware/px_store.h`). Saving a sound into another slot takes its scenes along; a
-  slot saved back to its FACTORY sound loses them. Other firmware never reads it.
+  slot saved back to its FACTORY sound loses them. Other firmware never reads it. The web editor (editor protocol 6) shows the
+  four under the chain in its Sound view: a tap recalls one, a grid sets each one's blocks; its MIDI section learns a switch
+  on a scene and holds SCENE+SWITCH, SCENE FOOTSW and PLAY VIEW.
 
 ## PLAY VIEW: what the switches turn on and off (the Bluetooth test image, test build 47)
 

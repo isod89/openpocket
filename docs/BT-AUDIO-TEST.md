@@ -1538,10 +1538,14 @@ Build 48 with Helix-style scenes, for the blocks' on and off ([MIDI.md](MIDI.md)
   **SCENE FOOTSW** (SCENES, or PRESETS: the footswitches stay on the presets in SCENES' view). PLAY VIEW has the three.
 - The screen draws lowercase letters as capitals (`4X12 GREEN`): the fonts without them leave 11 KB of flash for this and what
   comes next. The release's screen is as it was.
+- The web editor, editor protocol 6: its MIDI section has GUITAR TONE, PICKUP, PLAY VIEW, SCENE+SWITCH and SCENE FOOTSW, the
+  preset's own learned controls with their heel and toe, a control learned for this preset only (the footswitch's too), and
+  SCENE 1 to 4 among what a control can learn; its Sound view has the four scenes under the chain (a tap recalls one, a grid
+  sets their blocks). Its own copy of the preset, for EDITED, is gone: the pedal's is used (128 bytes of RAM).
 
-Room: the image is 634,156 bytes (10.8 KB of the slot left, from 2.6: the fonts gave 11 KB, the scenes took
-about 3), the RAM code window has 744 bytes free, the RAM 1,152 (the presets' scenes: 520), the pool 852. The release image is
-v42's, byte for byte.
+Room: the image is 634,816 bytes (10.1 KB of the slot left, from 2.6: the fonts gave 11 KB, the scenes took about 3, the
+editor's protocol 6 0.7), the RAM code window has 744 bytes free, the RAM 1,280 (the presets' scenes: 520), the pool 852. The
+release image is v42's, byte for byte.
 
 ### What to check
 
