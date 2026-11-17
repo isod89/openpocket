@@ -1563,6 +1563,25 @@ start-up screen reads `v42 BT AUDIO TEST 49`:
 make serve-bt
 ```
 
+## Test build 50: the scenes' names
+
+Build 49 with names for the scenes ([MIDI.md](MIDI.md), "Scenes"): up to 3 letters a scene, in every preset, typed in the web
+editor (its Sound view, beside each scene); the pedal shows them on SCENES' and SWITCHES' tiles and on PLAY's top (`CHS` in
+place of `SCENE 2`). A name typed makes the preset `EDITED`: SAVE writes it. They are kept in two records after the scenes
+(26 presets each); only the playing preset's are in RAM (24 bytes). Free text of 8 letters would have fitted 22 presets of the
+52 in the store's room; the player chose 3 letters for all of them.
+
+Room (the pedal's part, before the editor's): the image is 635,292 bytes (9.4 KB of the slot left), the RAM code window has
+760 bytes free, the RAM 1,248, the pool 852. The release image is v42's, byte for byte.
+
+### What to check
+
+1. In the web editor's Sound view, name a preset's scenes (`INT`, `VRS`, `CHS`, `SOL`); on the pedal the tiles and PLAY's top
+   show them. Hold PUSH, SAVE.
+2. Change preset and back: the names are there. Power off and on: still there.
+
+Install it from this branch's folder, as before; the start-up screen reads `v42 BT AUDIO TEST 50`.
+
 ## Checked on a computer
 
 - `tests/test_bt_ring.c`: a phone at 44.1 kHz with 15 ms of jitter, the pedal at its real 44,117.6 Hz, 60 s: no underrun, the rate
