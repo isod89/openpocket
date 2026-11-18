@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 import { Editor, presetToJSON, presetFromJSON, filePresets, parsePresetFile, clonePreset } from "../docs/pxedit.js";
 import { parseNam, levelTrim, packModel, readDi, a2Run, KERNELS, DILATIONS, NW } from "../docs/pxnam.js";
 import { parseWav, prepareIr, packIr, irName, resample, IR_LEN } from "../docs/pxir.js";
-import { pedalLearn, switchMode, MAP_EACH, MAP_VALUE, PEDAL_MAP_N, CC_NEXT, MAP_PRESS, ccParam, presetEntry, PRESET_MAP_N, CC_SCENE0 } from "../docs/pxmidi.js";
+import { pedalLearn, switchMode, MAP_EACH, MAP_VALUE, PEDAL_MAP_N, CC_NEXT, MAP_PRESS, ccParam, presetEntry, PRESET_MAP_N, CC_SCENE0,
+  PL_DUAL, B_GATE, B_PITCH, B_SFX, dualOk, dualDefault } from "../docs/pxmidi.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 // EDSIM_BLE=1: the same tests over BLE MIDI, as the Bluetooth audio image (test build 27) talks to the editor, against
@@ -480,6 +481,14 @@ if (FX) {
     ok(r1.rc === 1 && r2.rc === 1 && r3.rc === 1 && r4.rc === 1 && r4.more.tone === 8 && r4.more.view === 2,
        "MAP: a GUITAR TONE, PICKUP or PLAY VIEW no build writes is refused, the ones set kept");
   }
+  // test build 51 (protocol 7): VOL PEDAL, bit 4 of the last settings byte (the editor's "Volume pedal" row)
+  ok(ed.hasTwoJobs && m.more.volAt === 0, "MAP: VOL PEDAL AT INPUT, the default (protocol 7)");
+  m = await ed.setPedalMap(m.each, m.entries, m.inputDb, m.tails, m.btPower, m.outMode, m.usb, { ...m.more, volAt: 1 });
+  ok(m.rc === 0 && m.more.volAt === 1 && m.more.tone === 8 && m.more.view === 2 && m.more.sceneWins && m.more.feetPresets,
+     "MAP: VOL PEDAL BEFORE DLY, the other settings kept");
+  m = await ed.setPedalMap(m.each, m.entries, m.inputDb, m.tails, m.btPower, m.outMode, m.usb, { ...m.more, view: 1 });
+  ok(m.rc === 0 && m.more.volAt === 1 && m.more.view === 1, "MAP: another setting changed, VOL PEDAL kept");
+  m = await ed.setPedalMap(m.each, m.entries, m.inputDb, m.tails, m.btPower, m.outMode, m.usb, { ...m.more, view: 2 });
   // PL: a preset's own controls
   const slot = (await ed.state()).slot, other = (slot + 7) % 52;
   let pl = await ed.presetMap(slot);
@@ -517,6 +526,24 @@ if (FX) {
     ok(two.rc === 0 && e41 && e41.mode === (MAP_VALUE | 0x40) && onGt.rc === 1 && onSw.rc === 1 && onSw.entries.length === 3,
        "PL (protocol 7): a two-job pedal (mode bit 6) on the delay's setting kept as sent; on PRESET LVL or on a switch refused");
     pl = await ed.presetForget(slot, 41);
+  }
+  {   // the editor's "or VOLUME when ... is off" on a preset's own pedal (test build 51): set, one a preset, taken off
+    let r = await ed.presetPut(slot, { ...presetEntry(43, { kind: "param", b: eq, k: 1 }, MAP_PRESS), mode: MAP_VALUE | PL_DUAL });
+    const a43 = r.entries.find((e) => e.src === 43);
+    r = await ed.presetPut(slot, { ...presetEntry(44, { kind: "param", b: dly, k: 2 }, MAP_PRESS), mode: MAP_VALUE | PL_DUAL });
+    ok(a43 && a43.mode === (MAP_VALUE | PL_DUAL) && dualOk(a43) && r.entries.find((e) => e.src === 44).mode === (MAP_VALUE | PL_DUAL) &&
+       r.entries.find((e) => e.src === 43).mode === MAP_VALUE, "PL: +VOL on the EQ's pedal, then on the delay's: one two-job pedal a preset");
+    r = await ed.presetPut(slot, { ...r.entries.find((e) => e.src === 44), mode: MAP_VALUE });
+    ok(r.rc === 0 && r.entries.find((e) => e.src === 44).mode === MAP_VALUE && r.entries.find((e) => e.src === 44).dst === ccParam(dly, 2),
+       "PL: +VOL taken off again, the pedal kept on its setting");
+    await ed.presetForget(slot, 43); pl = await ed.presetForget(slot, 44);
+    // where the editor begins a learned pedal with two jobs: the catalogue's own names, as dualDefault reads them
+    const sfx = cat.blocks[B_SFX], pit = cat.blocks[B_PITCH];
+    const wah = sfx.types.find((t) => t.name === "WAH"), aw = sfx.types.find((t) => t.name === "AUTO WAH"), wh = pit.types.find((t) => t.name === "WHAMMY");
+    ok(cat.blocks[B_GATE].label === "GT" && sfx.label === "SFX" && pit.label === "PIT" && wah && aw && wh &&
+       wah.params[0].name === "PEDAL" && aw.params[3].name === "CENTER" && wh.params[3].name === "PEDAL" &&
+       dualDefault(B_SFX, wah.name, 0) && dualDefault(B_SFX, aw.name, 3) && dualDefault(B_PITCH, wh.name, 3) && !dualDefault(B_SFX, wah.name, 1),
+       "a pedal learned on WAH's PEDAL, AUTO WAH's CENTER or WHAMMY's PEDAL begins with two jobs, as on the pedal (the catalogue's names)");
   }
   pl = await ed.presetForget(slot, 33);
   ok(pl.rc === 0 && pl.entries.length === 1 && pl.used === 1 && pl.entries[0].src === 32, "PL: CC 33 forgotten");
@@ -586,6 +613,7 @@ if (FX) {
   m = await ed.pedalMap();
   ok(m.more && m.more.tone === 8 && m.more.pickup === 1 && m.more.view === 2 && m.more.sceneWins && m.more.feetPresets,
      "power cycle: GUITAR TONE, PICKUP, PLAY VIEW and the two scene rows are still there");
+  ok(m.more.volAt === 1, "power cycle: VOL PEDAL still BEFORE DLY (test build 51)");
   ok((await ed.state()).slot === other, "power cycle: the pedal starts on the slot saved last");
   pl = await ed.presetMap(other);
   sc = await ed.scenes();

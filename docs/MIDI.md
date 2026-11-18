@@ -248,6 +248,10 @@ effect on and off (a Chocolate switch learned on its ON row, a scene, its button
   setting.
 - **Where it is kept**: bit 6 of the control's "how it counts" in "OPP3" (no more room taken); VOL PEDAL in bit 1 of the USB
   settings byte. The web editor (editor protocol 7) shows and sets both.
+- **In the web editor**: the MIDI section's list of the preset's own controls ("Learned by the pedal, only in ...") marks a
+  two-job pedal `+VOL` and gives a pedal on a block's setting (not the GT's) a box, **or VOLUME when SFX is off** (the block's
+  label), one a preset; a pedal learned there on a WAH's PEDAL, an AUTO WAH's CENTER or a WHAMMY's PEDAL begins with it ticked,
+  as the pedal's own learn begins on VOLUME. VOL PEDAL is the **Volume pedal** row, beside the scene rows.
 
 ## PLAY VIEW: what the switches turn on and off (the Bluetooth test image, test build 47)
 
