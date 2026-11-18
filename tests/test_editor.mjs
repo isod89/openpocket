@@ -128,7 +128,7 @@ let s = sim(["--dump", flash1]);
 await s.ready;
 let ed = new Editor(s.access);
 const info = await ed.connect();
-ok(info && info.proto === (FX ? 6 : 4) && info.version === (FX ? "v39 FX6" : "v39") && info.identity === "PocketX_939", `INFO: ${info && `${info.version} ${info.identity}`}`);
+ok(info && info.proto === (FX ? 7 : 4) && info.version === (FX ? "v39 FX7" : "v39") && info.identity === "PocketX_939", `INFO: ${info && `${info.version} ${info.identity}`}`);
 ok(info && info.nblk === 12 && info.npar === 5 && info.nslot === 52 && info.nameMax === 13, "INFO: 12 blocks, 5 parameters, 52 slots, names of 13");
 const t0 = Date.now();
 const cat = await ed.catalog();
@@ -461,7 +461,7 @@ if (FX) {
   ed = new Editor(s.access);
   const inf = await ed.connect();
   const eq = cat.blocks.findIndex((b) => b.label === "EQ"), dly = cat.blocks.findIndex((b) => b.label === "DLY");
-  ok(inf.proto === 6 && ed.hasPresetLearn && ed.hasScenes, "protocol 6: a preset's own controls, scenes, MAP's settings bytes");
+  ok(inf.proto === 7 && ed.hasPresetLearn && ed.hasScenes, "protocol 6 (7 since test build 51): a preset's own controls, scenes, MAP's settings bytes");
   // MAP: GUITAR TONE and PICKUP, PLAY VIEW, SCENE+SWITCH, SCENE FOOTSW
   let m = await ed.pedalMap();
   ok(m.rc === 0 && m.more && m.more.tone === 0 && m.more.pickup === 0 && m.more.view === 0 && !m.more.sceneWins && !m.more.feetPresets,
@@ -476,7 +476,7 @@ if (FX) {
     const raw = [1, m.each ? 1 : 0, m.inputDb + 10, (m.tails ? 1 : 0) | m.btPower << 1 | m.outMode << 3,
       ...m.entries.flatMap((e) => (e ? [1, e.src, e.dst, e.mode] : [0, 0, 0, 0])), m.usb.send | (m.usb.cut ? 4 : 0) | m.usb.ret << 3];
     const r1 = ed._map(await ed.request(30, [...raw, 9, 2], 4000)), r2 = ed._map(await ed.request(30, [...raw, 3 << 4, 2], 4000));
-    const r3 = ed._map(await ed.request(30, [...raw, 8, 3], 4000)), r4 = ed._map(await ed.request(30, [...raw, 8, 16], 4000));
+    const r3 = ed._map(await ed.request(30, [...raw, 8, 3], 4000)), r4 = ed._map(await ed.request(30, [...raw, 8, 32], 4000));   // (51: bit 4 is VOL PEDAL; bit 5 none)
     ok(r1.rc === 1 && r2.rc === 1 && r3.rc === 1 && r4.rc === 1 && r4.more.tone === 8 && r4.more.view === 2,
        "MAP: a GUITAR TONE, PICKUP or PLAY VIEW no build writes is refused, the ones set kept");
   }
@@ -507,6 +507,17 @@ if (FX) {
   const bad1 = await ed.presetPut(slot, { src: 40, dst: 3, mode: 0, lo: 0, hi: 100, clo: 0, chi: 127 });
   const bad2 = await ed.presetPut(slot, { src: 40, dst: ccParam(eq, 1), mode: MAP_VALUE, lo: 0, hi: 101, clo: 0, chi: 127 });
   ok(bad1.rc === 1 && bad2.rc === 1 && bad2.entries.length === 2, "PL: a number the pedal does not read, or a value out of range, is refused (the preset's kept)");
+  {   // test build 51 (protocol 7): a two-job pedal, mode bit 6 (0x40, 7 bits a byte on the wire): only a pedal on a block's
+      // setting (not the GT page's PRESET LVL), kept as sent
+    const gt = cat.blocks.findIndex((b) => b.label === "GT");
+    const two = await ed.presetPut(slot, { src: 41, dst: ccParam(dly, 2), mode: MAP_VALUE | 0x40, lo: 0, hi: 100, clo: 0, chi: 127 });
+    const e41 = two.entries.find((e) => e.src === 41);
+    const onGt = await ed.presetPut(slot, { src: 42, dst: ccParam(gt, 2), mode: MAP_VALUE | 0x40, lo: 0, hi: 100, clo: 0, chi: 127 });
+    const onSw = await ed.presetPut(slot, { ...presetEntry(42, { kind: "on", b: dly }, MAP_PRESS), mode: MAP_PRESS | 0x40 });
+    ok(two.rc === 0 && e41 && e41.mode === (MAP_VALUE | 0x40) && onGt.rc === 1 && onSw.rc === 1 && onSw.entries.length === 3,
+       "PL (protocol 7): a two-job pedal (mode bit 6) on the delay's setting kept as sent; on PRESET LVL or on a switch refused");
+    pl = await ed.presetForget(slot, 41);
+  }
   pl = await ed.presetForget(slot, 33);
   ok(pl.rc === 0 && pl.entries.length === 1 && pl.used === 1 && pl.entries[0].src === 32, "PL: CC 33 forgotten");
   {   // the 64 places, all the presets together
