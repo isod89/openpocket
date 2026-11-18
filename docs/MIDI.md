@@ -99,6 +99,170 @@ The editor's **MIDI** section ([`docs/editor.html`](editor.html), `docs/edmidi.j
 
 CHANNEL, SEND and CLOCK > DELAY stay on the pedal's MIDI page: the editor protocol has no command for them.
 
+## Learned on the pedal (the Bluetooth test image, test build 40)
+
+A footswitch linked to the pedal over Bluetooth (the M-VAVE Chocolate) talks to the pedal, not to the computer or phone that
+runs the editor, so the editor's learned controls above never hear it, and they would work only while the page is open anyway.
+The Bluetooth test image learns such controls itself:
+
+- **In the editor's MIDI section**, click a control in the table, then press the switch: the pedal tells the editor what it
+  received (`MIDI_IN`), and the editor writes it into the pedal's own table (`MAP`, docs/EDITOR-PROTOCOL.md). The pedal keeps it
+  with the presets (a flash write, like a save) and it works in every preset, with no page open. Up to 8.
+- **What a learned control does**: the controller's number is read as one of the pedal's own, before anything else (a learned
+  number wins over the map's meaning of it): a block's on/off is its flip number (8 to 19), the next or the previous preset
+  is 118 or 119, a setting is its own number and follows the value. A switch learned "press" acts when its value goes to 64
+  or more and ignores the value below (its release); one learned "each" acts at every message (a switch that alternates 127
+  and 0, one message a press). The editor tells the two apart while learning (a release within 1.2 s of the press: "press"),
+  and either can be changed in its list.
+- **Where it is kept**: in each copy of the preset store, after sector 1's slots, with its own mark and CRC
+  (`firmware/px_store.h`). Other firmware never reads it, and a save made by other firmware leaves none.
+
+Also in this image:
+
+| Number | What it does |
+| --- | --- |
+| 64 | at 64 and up: a SYN PAD catches the chord (test build 22) |
+| 116 | at 64 and up: a tap of the delay's tempo (test build 24) |
+| 117 | the expression pedal: WHAMMY (the note to SHIFT's interval), else WAH or AUTO WAH, else the volume (test build 25; WAH and the ends 4 values wide: test build 45) |
+| 118, 119 | at 64 and up: the next, the previous preset, as the footswitches (test build 40) |
+| 65, 66, 67, 68 | any value: SCENE 1, 2, 3, 4 of the preset playing (test build 49; below) |
+
+and more rows on the MIDI page, which this image calls **SETTINGS**: **GUITAR TONE** and **PICKUP** (test build 46: the pickup's
+tone as a lower input impedance would load it, for a single coil, a humbucker or a P90; named by its sound since test build 47,
+BRIGHT, NATURAL, SMOOTH, WARM, WARMER, PUNCHY, DARK, DARKER, MUDDY; docs/BT-AUDIO-TEST.md, "Test build 47"), **PLAY VIEW**
+(test build 47: CHAIN, or SWITCHES, the blocks the controllers' switches turn on and off, big on PLAY; below), **INPUT** (-10
+to +10 dB, the guitar's level into the chain, as the official firmware's Input Gain), **TAILS**, **BT POWER** and **SWITCH**
+(MOMENT, LATCH): how the flip numbers 8 to 19 act. MOMENT (the default) flips on
+value 0, for a switch that sends 127, then 0 when let go; LATCH flips at every message, for a switch that alternates 127 and 0
+(the Chocolate's CC mode does). The page's USB line also counts the controls learned on the pedal ("LEARNED 2").
+
+## Learned live, one preset's own (the Bluetooth test image, test build 46)
+
+The same idea without the editor, and kept per preset: on the pedal itself, a controller's switch or pedal is taught to a row of
+a block page, and drives it in that preset only.
+
+- **Learn** (test build 48: a page of its own, a step at a time): open a block's page (PUSH on PLAY, or its button), select
+  its **ON** row or one of its settings with the knob, **hold FX** (0.8 s). The **LEARN** page names the row (`GT PRESET LVL`)
+  and lists the steps; the one to do now is lit, with what to do in big letters, and the footer says which control does it.
+  1. **PEDAL OR SWITCH**: turn the knob to choose (a setting starts on PEDAL, ON on SWITCH), PUSH.
+  2. **MOVE THE PEDAL** (or **PRESS THE SWITCH**): a pedal is taken at its first message; a switch is pressed and let go (a
+     momentary switch: it acts on its press) or not (one that sends a message a press: each one acts), told apart in 1.2 s.
+     The page waits as long as it takes. On ON that is all.
+  3. On a setting, **PEDAL AT THE HEEL** (a switch: **SWITCH OFF**): put the pedal at its heel, turn the knob to the value you
+     want there (you hear it: down to `-INF` on PRESET LVL), PUSH.
+  4. **PEDAL AT THE TOE** (a switch: **SWITCH ON**): put the pedal at its toe, turn the knob to the value there; it starts from
+     the preset's own value, so PUSH alone keeps that. PUSH: done, `LEARNED: CC 7` (green) on the block page, written to the
+     flash (as a save: an unsaved sound stays unsaved).
+
+  HOME at any step: `LEARN: CANCELLED`, nothing learned or changed. Nothing else does anything on the page (FX, the
+  footswitches, the blocks' buttons); a long PUSH is a PUSH. The controller moves nothing while it is being learned, and the
+  setting goes back to the preset's own value, which the preset keeps until the pedal moves. Where the pedal was at the heel
+  and at the toe is kept too: a pedal that sends 3 to 120 gives the heel's value at 3 and the toe's at 120 (one sending 120 at
+  the heel works the other way round); not moved between the two, its whole 0..127. Examples: PRESET LVL from `-INF` at the
+  heel to the preset's level at the toe (a volume pedal at the chain's end: the delay's and the reverb's tails go with it), or
+  from the preset's level to `+4.2 DB` (a boost); a delay's MIX from 10 to 40. Test builds 46 and 47 asked in the footer, and
+  any control but PUSH gave the setting the whole range while still saying `LEARNED`.
+- **What it does**: on **ON**, a switch flips the block (a momentary switch: on its press; one that sends a message a press: on
+  each one), a pedal switches it (on at 64 and up, off below); on a **setting**, the value between the heel's and the toe's (a
+  switch: its OFF and ON values). Only in the preset where it was learned: in another preset the same control does what the
+  editor's learned controls or the pedal's own map say. In the preset's MIDI table, the footer shows the selected one's range
+  in the setting's own units (`RANGE -INF TO +0.0 DB`).
+- **See and clear**: a setting that has one shows its number after its name (`GAIN CC4`), and ON after the block's name in
+  the band where it fits; while selected, the footer says it too (`CC 30  HOLD FX: CLEAR`): hold FX on it clears it
+  (`CC 30 CLEARED`, written too). A row has one control, a control one row in a preset: learning another one on a row, or the
+  same control on another row, replaces it.
+- **The preset's MIDI table**: hold FX on the MODEL row (its footer says `2 LEARNED  HOLD FX` when the preset has some): every
+  control of this preset, `CC 30  DLY ON/OFF`, `CC 4  AMP GAIN`; KNOB picks one, hold FX forgets it, HOME goes back. The
+  editor's learned controls follow in grey (`ALL: ...`): they work in every preset and the editor changes them.
+- **MODEL and PLAY**: hold FX on the MODEL row opens the preset's MIDI table (above); on PLAY, hold FX still opens SETTINGS.
+- **Room and order**: up to 64 for all the presets together (`LEARN: 64 IN USE, FULL`). A preset's own control comes before
+  the editor's learned controls (which work in every preset), which come before the pedal's own map. CC 117 learned on a row is
+  that row's, in that preset, instead of the expression pedal's job.
+- **Where it is kept**: in each copy of the preset store, right after the editor's learned controls ("OPP3" since test build
+  48, 64 entries of slot, controller's number, the pedal's number, how it counts, its heel's and toe's values and where the
+  pedal was at each, a CRC: `firmware/px_store.h`; 47's "OPP2" is read with the pedal's whole travel, 46's "OPPL" no longer). Saving a sound into another
+  slot (SAVE, or the editor's SAVE) takes its controls along, in place of that slot's; a slot saved back to its FACTORY sound
+  loses its own. Other firmware never reads it. The web editor (editor protocol 6, test build 49) lists the preset's own in
+  its MIDI section, their heel and toe editable, and learns one for this preset only.
+
+## Scenes (the Bluetooth test image, test build 49)
+
+Helix's snapshots for the blocks' on and off: each preset has four **scenes**, each a set of blocks on and off; recalling one
+switches the blocks to it at once (each block fades, as when switched by hand).
+
+- **Recall**: CC 65, 66, 67, 68 (any value) recall SCENE 1 to 4; or a controller's switch learned on a scene in a preset (in
+  SCENES' view, below: select the scene with the knob, **hold FX**, press the switch: `LEARNED: CC 20`; held again on it,
+  cleared); or the footswitches in SCENES' view; or the knob and PUSH there.
+- **What a scene keeps**: the scene playing keeps what is switched while it plays (Helix's way): switch a block, go to another
+  scene and back, the block is as you left it. **SAVE** (hold PUSH) writes the preset with its scenes, and the preset opens in
+  the scene it was saved in. A scene never stored begins as things are when it is first recalled. Recalling a scene does not
+  make the preset `EDITED`; switching a block in it does, until SAVE. On PLAY, `SCENE 2` shows where `EDITED` goes.
+- **Scenes and switches**: a block can have its own switch in the preset (a learned ON row) and still be in the scenes.
+  SETTINGS' **SCENE+SWITCH** chooses: **SWITCH WINS** (the default) leaves such a block to its switch, the scenes set every
+  other one; **SCENE WINS**: the scenes set it too (the switch's change lasts until the next scene). With a Chocolate's four
+  switches: two scenes and two blocks, for example.
+- **PLAY's views**: **hold CAB** (0.8 s; a short press still opens the CAB page) turns PLAY's view round: **CHAIN** (as
+  always), **SWITCHES** (what each controller switch does in this preset: a block, lit when on, or a scene, lit while it plays,
+  in the switches' order), **SCENES** (the four, the one playing lit, the knob's in a ring, each with its switch's number). In
+  SCENES' view the knob picks a scene, PUSH recalls it, hold FX learns or clears its switch, and the **footswitches** step
+  through the scenes, round (SETTINGS' **SCENE FOOTSW**: **SCENES**, the default, or **PRESETS** to keep them on the presets;
+  both together still open the tuner, the scene stepped back). To reach SETTINGS from SCENES' view: hold CAB to CHAIN first.
+  The view is kept with the settings at the next save.
+- **Names** (test build 50): up to 3 letters a scene (`VRS`, `CHS`, `SOL`), in every preset, typed in the web editor; the
+  pedal shows them on the tiles and on PLAY in place of `SCENE 2`. A name typed makes the preset `EDITED`: SAVE writes it with
+  the sound (a sound saved into another slot takes them along, a FACTORY slot loses its own). Kept after the scenes in each
+  copy of the store ("OPN1" for presets 1 to 26, "OPN2" for 27 to 52); only the playing preset's are in RAM. Three letters is
+  what the store's room allows for all 52 presets (8 letters would have fitted 22 of them).
+- **Where it is kept**: in each copy of the preset store, after the learned controls ("OPSC": for each preset the four scenes,
+  the one playing, the ones stored; a CRC: `firmware/px_store.h`). Saving a sound into another slot takes its scenes along; a
+  slot saved back to its FACTORY sound loses them. Other firmware never reads it. The web editor (editor protocol 6) shows the
+  four under the chain in its Sound view: a tap recalls one, a grid sets each one's blocks; its MIDI section learns a switch
+  on a scene and holds SCENE+SWITCH, SCENE FOOTSW and PLAY VIEW.
+
+## Two jobs for one pedal: the volume or an effect (the Bluetooth test image, test build 51)
+
+As a multi-effect's expression pedal with a toe switch: the controller's pedal is the **volume** while an effect is off, and
+that **effect's setting** while it is on (a wah, a whammy, any setting of a block that has an on/off). Whatever turns the
+effect on and off (a Chocolate switch learned on its ON row, a scene, its button on the pedal) changes the pedal's job.
+
+- **Set it**: learn the pedal on the effect's setting (hold FX on it, above). After the toe, a fifth step asks **WHEN SFX IS
+  OFF**: **VOLUME** (the two jobs) or **NOTHING** (as before: the pedal moves the setting, the block on or off). VOLUME to begin
+  with on a WAH's PEDAL, an AUTO WAH's CENTER and a WHAMMY's PEDAL, NOTHING elsewhere. Not on the GT page (PRESET LVL is the
+  preset's own level). One a preset: another one learned so takes its place. The preset's MIDI table shows it as
+  `CC 7  SFX PEDAL +VOL`.
+- **What it does**: with the effect on, the pedal is its setting, between the heel's and the toe's values (a WAH's sweep, an
+  AUTO WAH's CENTER and a WHAMMY's PEDAL go as the expression pedal, CC 117: smoothed sample by sample, as since test build
+  25), and the volume stays at unity. With the effect off, the pedal is the volume, along its own travel: the heel silent, the
+  toe at unity, -18 dB half way. Turned off with the pedal anywhere, the volume stays at unity until the pedal moves (a wah
+  left at the heel does not silence the next song). In a preset without one, the pedal does what it learned there or what the
+  editor's learned controls say (a PRESET LVL from -INF to +4.2 DB, for example).
+- **The line**: on PLAY and the block pages, a line down the screen's right edge says the pedal's job, as the LED by a
+  multi-effect's pedal: **green** the volume, **red** the effect. None in a preset without a two-job pedal.
+- **Scenes**: a scene sets the effect on or off, so the pedal's job follows it (a solo scene with the wah on: red). If the effect
+  also has its own switch, SETTINGS' SCENE+SWITCH on SCENE WINS lets the scenes set it too.
+- **Where the volume acts**: SETTINGS' **VOL PEDAL**, for every preset. **AT INPUT** (the default; right after the input, after
+  the gate when it comes first) works as the guitar's own volume knob: a drive or a high-gain amp cleans up as the pedal goes
+  back, and the level falls mostly near the heel (through a saturated drive, half way is only 0.3 dB down). **BEFORE DLY**
+  (before the first delay or reverb, else at the chain's end) keeps the tone: half way is 18 dB down at any gain. In both, the
+  delay's repeats and the reverb's tail ring on when the pedal goes back. CC 117's own volume (test build 25) follows the same
+  setting.
+- **Where it is kept**: bit 6 of the control's "how it counts" in "OPP3" (no more room taken); VOL PEDAL in bit 1 of the USB
+  settings byte. The web editor (editor protocol 7) shows and sets both.
+- **In the web editor**: the MIDI section's list of the preset's own controls ("Learned by the pedal, only in ...") marks a
+  two-job pedal `+VOL` and gives a pedal on a block's setting (not the GT's) a box, **or VOLUME when SFX is off** (the block's
+  label), one a preset; a pedal learned there on a WAH's PEDAL, an AUTO WAH's CENTER or a WHAMMY's PEDAL begins with it ticked,
+  as the pedal's own learn begins on VOLUME. VOL PEDAL is the **Volume pedal** row, beside the scene rows.
+
+## PLAY VIEW: what the switches turn on and off (the Bluetooth test image, test build 47)
+
+SETTINGS' **PLAY VIEW** on **SWITCHES**: on PLAY, in place of the chain's tiles and the selected block, the blocks that this
+preset's controller switches turn on and off, each in a big tile: the block (`DLY`), the controller's number (`CC 21`), the model
+(`DIGITAL`), in the block's colour when it is on, grey when off. The preset's own learned switches first, then the editor's
+learned controls (every preset) that the preset's own do not hide, in the order of the controllers' numbers (a Chocolate's A,
+B, C, D in order), a block once, 6 at most (2 by 2 up to 4, 3 by 2 above). A preset with no switch learned shows the chain as
+before. Turning the knob shows the chain for 5 seconds (to pick a block and PUSH to its page); PUSH, HOME and the rest work as
+on the chain. CHAIN (the default) is PLAY as always. Saved with the settings (bit 4 of the USB settings byte).
+
 ## Tempo for the delay
 
 Turn **CLOCK > DELAY** on (default off). When the host sends MIDI clock, the pedal times 24 clocks, and sets the delay TIME to
@@ -117,8 +281,35 @@ follow a tempo with another note value, set the delay's own TIME; this is not a 
 | SEND | ON, OFF | ON |
 | CLOCK > DELAY | ON, OFF | OFF |
 | USB AUDIO | ON, OFF | OFF |
+| SWITCH (the Bluetooth test image, test build 40) | MOMENT, LATCH | MOMENT |
+| INPUT (the Bluetooth test image, test build 40) | -10 DB to +10 DB, steps of 1 dB | 0 DB |
+| TAILS (the Bluetooth test image, test build 40) | OFF, ON | OFF |
+| BT POWER (the Bluetooth test image, test build 40) | HIGH, MID, LOW | HIGH |
+| PLAY VIEW (the Bluetooth test image, test build 47; SCENES and CAB held: 49) | CHAIN, SWITCHES, SCENES | CHAIN |
+| SCENE+SWITCH (the Bluetooth test image, test build 49) | SWITCH WINS, SCENE WINS | SWITCH WINS |
+| SCENE FOOTSW (the Bluetooth test image, test build 49) | SCENES, PRESETS | SCENES |
+| VOL PEDAL (the Bluetooth test image, test build 51) | AT INPUT, BEFORE DLY | AT INPUT |
+| GUITAR TONE (the Bluetooth test image, test build 46; named by its sound since 47) | BRIGHT, NATURAL, SMOOTH, WARM, WARMER, PUNCHY, DARK, DARKER, MUDDY | NATURAL |
+| PICKUP (the Bluetooth test image, test build 46) | SINGLE, HUMBUCK, P90 | SINGLE |
+| OUTPUT (the Bluetooth test image, test build 42) | MONO, STEREO, GTR+BASS | MONO |
+| USB SEND (the Bluetooth test image, test build 43) | OUTPUT, DI, DI + OUT | OUTPUT |
+| USB RETURN (the Bluetooth test image, test build 43) | OUTPUT, INPUT, BEFORE GT ... BEFORE SYN | OUTPUT |
+| GUITAR (the Bluetooth test image, test build 43) | MIX, CUT | MIX |
 
-The knob changes the row, PUSH goes to the next one (after the last it leaves), HOME leaves. The page also shows whether a
+In the Bluetooth test image the page's title is **SETTINGS**: it also holds INPUT, the guitar's level into the chain, as the
+official firmware's Input Gain (a digital gain at the input, heard at once while you turn it; the input meters of the
+diagnostics page show the level before it, so the converter's clipping still shows); TAILS, the delay and the reverb ringing
+out when they go off or the next preset has them off (as the official firmware's Delay Tail and Reverb Tail, one switch for
+both); BT POWER, the radio's transmit power; and OUTPUT: MONO (the same sound on both channels, as before), STEREO (the
+delay, the reverb and the modulations spread to the sides, the two channels summed being the mono sound) or GTR+BASS (the guitar on the left,
+LOW OCTAVE's octave alone on the right; [OWN-FX.md](OWN-FX.md)). The editor's MIDI section sets them too. Since test build 43
+its rows end with USB PORT, then USB AUDIO and its three routing rows, USB SEND, USB RETURN and GUITAR (what the computer
+records, where its sound comes back into the chain, the guitar cut there; [BT-AUDIO-TEST.md](BT-AUDIO-TEST.md), "Test build
+43"); 19 rows since test build 51 (VOL PEDAL, after the scene rows), so the page shows 8 at a time and scrolls with the one
+selected.
+
+The knob changes the row, PUSH goes to the next one (after the last it leaves), HOME leaves. In the Bluetooth test image (test
+build 47) the footswitches walk the rows as well: the right one down, the left one up, round. The page also shows whether a
 host is connected and the last Program or Control Change received ("LAST: CC 25 = 127"), which is what to look at first when
 nothing happens. Leaving saves the settings only if you changed something (one flash write, about 0.3 s of silence, like SAVE).
 

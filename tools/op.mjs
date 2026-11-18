@@ -87,11 +87,12 @@ const commands = {
   image,
   build: () => inContainer(["sh", "firmware/build.sh"]),
   ble: () => inContainer(["sh", "-c", "OP_BLE=1 sh firmware/build.sh && sha256sum firmware/openpocket-ble.bin build/ble/*.fwsc"]),   // the Bluetooth MIDI test image (docs/BLE-TEST.md)
+  bt: () => inContainer(["sh", "-c", "OP_BT=1 sh firmware/build.sh && mkdir -p build/bt && sha256sum firmware/openpocket-bt.bin build/bt/*.fwsc | tee build/bt/SHA256SUMS"]),   // the Bluetooth audio test image (docs/BT-AUDIO-TEST.md)
   test: () => inContainer(["sh", "tests/run_tests.sh"]),
   package: () => inContainer(["sh", "-c", `sh firmware/build.sh && mkdir -p build && sha256sum ${OUTS} > build/SHA256SUMS && cat build/SHA256SUMS`]),
   "package-test": () => inContainer(["sh", "-c", `OP_CHANNEL=midi-test sh firmware/build.sh && mkdir -p build && sha256sum ${TEST} > build/SHA256SUMS-midi-test && cat build/SHA256SUMS-midi-test`]),
   clean() {
-    for (const p of ["build", "firmware/build", "firmware/build-ble", "firmware/openpocket.bin", "firmware/openpocket-ble.bin", "firmware/openpocket-midi-test.bin", "docs/firmware/midi-test", "docs/firmware/manifest.json", "engine/px_render"]) {
+    for (const p of ["build", "firmware/build", "firmware/build-ble", "firmware/build-bt", "firmware/openpocket.bin", "firmware/openpocket-ble.bin", "firmware/openpocket-bt.bin", "firmware/openpocket-midi-test.bin", "docs/firmware/midi-test", "docs/firmware/manifest.json", "engine/px_render"]) {
       rmSync(resolve(root, p), { recursive: true, force: true });
     }
     const dir = resolve(root, "docs/firmware");
@@ -109,13 +110,14 @@ const commands = {
     return (await import("./dsp.mjs")).main(args);
   },
   serve([arg]) {
-    const ble = arg === "ble";                 // the Bluetooth test packages (build/ble) instead of docs/firmware
-    if (ble ? !existsSync(resolve(root, "build/ble/manifest.json")) : arg === "build" || !existsSync(resolve(root, "docs/firmware/manifest.json"))) {
-      const built = ble ? commands.ble() : commands.build();
+    const ble = arg === "ble" || arg === "bt";  // the Bluetooth test packages (build/ble, build/bt) instead of docs/firmware
+    const dir = arg === "bt" ? "build/bt" : "build/ble";
+    if (ble ? !existsSync(resolve(root, dir, "manifest.json")) : arg === "build" || !existsSync(resolve(root, "docs/firmware/manifest.json"))) {
+      const built = ble ? commands[arg]() : commands.build();
       if (built !== 0) return built;
     }
     const py = python;
-    const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", arg === "editor" ? "editor.html" : "index.html", ...(ble ? ["build/ble"] : [])], { stdio: "inherit", cwd: root });
+    const r = spawnSync(py[0], [...py.slice(1), "tools/serve.py", arg === "editor" ? "editor.html" : "index.html", ...(ble ? [dir] : [])], { stdio: "inherit", cwd: root });
     if (r.error) fail("Python 3 is needed to serve the installer offline (python.org).");
     return r.status ?? 0;
   },

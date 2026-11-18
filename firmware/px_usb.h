@@ -14,11 +14,29 @@
  * pedal is then a class-compliant USB sound card as well (USB Audio Class 1, felucca-bsp's streams in usb.c, both on
  * endpoint 4, isochronous): the computer records the pedal's sound and plays through its output. 16-bit stereo at
  * 44.1 kHz. With the setting off the USB device is the same as before, byte for byte (tests/test_usb_audio.c).
+ *
+ * Test build 41 (the Bluetooth audio image only): the port can also be the USB MIDI host of a footswitch by cable, an M-VAVE
+ * Chocolate (felucca-bsp's chip/usb_host.c; px_usbhost.h; docs/BT-AUDIO-TEST.md). Only while SETTINGS' USB PORT row says
+ * FOOTSW, never at power-on: the installer, the editor over USB and the rescue always find the USB device first.
  */
 #pragma once
 
 #define FELUCCA_OTA 1
 #define FELUCCA_CDC 0
+#if OP_BT_AUDIO
+/* test build 41: felucca-bsp's USB MIDI host (chip/usb_host.c) built in. The port is the USB device at every power-on, as
+ * always; it becomes the host of a footswitch by cable only while SETTINGS' USB PORT row says FOOTSW (px_midi.h px_usb_foot,
+ * not saved; px_usbhost.h; docs/BT-AUDIO-TEST.md, "Test build 41"). The host's waits on the main loop serve the radio as
+ * ui.h's do (UI_IDLE, openpocket.c): the music goes on while a footswitch is found */
+#if !PX_OWN_FX
+#error "the USB footswitch (test build 41) is the Bluetooth audio image's: PX_OWN_FX (px_midi.h px_uh, ui.h's row)"
+#endif
+#define FELUCCA_USB_HOST 1
+#ifdef UI_IDLE
+#define UH_IDLE() do { fm1_wdt_feed(); UI_IDLE(); } while (0)
+#endif
+#include "px_usbhost.h"
+#endif
 #if OP_UAUDIO
 #include "px_uaconf.h"                          /* the streams and their rings (also tests/test_usb_audio.c's) */
 #if OP_UADEV                                    /* the measurement option (px_audio.h): the band and the target set at run time */
@@ -35,8 +53,16 @@ static uint32_t uad_lo = 52u, uad_hi = 108u, uad_prime = 80u, uad_tgt = 208u;
 #define RING_PUBLISH() __asm__ volatile("" ::: "memory")
 /* the app may only write the OTA staging area (its loader + update record), the preset store (px_store.h) and,
  * v37, the NAM user models (px_models.h) */
+#if OP_BT_AUDIO
+/* the Bluetooth audio image (test build 14) also the pairings' two sectors [0xEE000, 0xF0000) (bt/bt_ps.h). Adjacent areas as
+ * one range: the NAM models and the staging [0xC0000, 0xE5000), the pairings, the presets and v38's cabinet IRs
+ * [0xEE000, 0xFC000). An erase is one aligned sector and a program one page, so no call the RAM driver accepts can straddle two
+ * areas: every call gets the answer of one range per area (tests/test_bt_ps.c), in fewer instructions of RAM code */
+#define FL_RANGE_OK(off, n) (FL_IN(off, n, 0xC0000u, FL_OTA_HI) || FL_IN(off, n, 0xEE000u, 0xFC000u))
+#else
 #define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, 0xF0000u, 0xF4000u) || \
                              FL_IN(off, n, 0xC0000u, 0xE0000u) || FL_IN(off, n, 0xF4000u, 0xFC000u))
+#endif
 
 /* the package identity, patched by pxpkg.py ("OP-PRODUCT:" + identity, 32 bytes, exactly once in the app) */
 static const volatile char OP_PRODUCT[32] __attribute__((used, aligned(4))) = "OP-PRODUCT:PocketX_9" OP_VERSION_NUM;
@@ -45,6 +71,9 @@ static const volatile char OP_PRODUCT[32] __attribute__((used, aligned(4))) = "O
 #include "fm1_timer.h"
 #if OP_BLE_TEST
 static int ble_stall_tick(void);                /* ble/ble_status.h, included after this file */
+#if OP_BT_AUDIO
+static void bt_stall_tick(int firing);          /* bt/bt_a2dp.c: the stall record's samples (bt/bt_stall.h) */
+#endif
 #endif
 #include "fm1_flash.h"
 #include "fm1_cpu1_stop.h"
@@ -55,24 +84,57 @@ static uint8_t *ota_scratch(void);              /* px_models.h: the upload stagi
 
 static uint8_t px_flash_ok;                     /* the flash is a 1 MiB SPI NOR: the update entry may stage */
 static volatile uint32_t px_t5_sub;
+#if FELUCCA_USB_HOST
+/* the host's clock (px_usbhost.h pxu_ms_add): usb.c's fm1_ms, which chip/usb_host.c's waits and timeouts read, advanced at each
+ * USB poll by the TIMER4 ticks since the last, so it counts milliseconds and never wraps as ms_now does */
+typedef char pxu_msg_check[(UH_MSG_ON == PXU_MSG_ON && UH_MSG_OFF == PXU_MSG_OFF && UH_MSG_MIDI == PXU_MSG_MIDI &&
+                            UH_MSG_NOMIDI == PXU_MSG_NOMIDI && UH_MSG_LOW == PXU_MSG_LOW && UH_MSG_LOST == PXU_MSG_LOST) ? 1 : -1];
+static pxu_ms_t px_uh_clk;
+#endif
 #if OP_UADEV
 static void uad_poll(void);                     /* px_uaudio.h: the gaps between USB polls */
 #endif
 
+#if OP_BLE_TEST
+static volatile uint32_t px_t5_in_s, px_t5_in;  /* its longest stay, this second and since boot, TIMER4 ticks (the log's isr line) */
+#endif
 void fm1_timer5_irq(void)                       /* 10 kHz; USB at 2 kHz */
 {
+#if OP_BLE_TEST
+    const uint32_t t0 = fm1_ticks();
+#endif
     fm1_timer5_ack();
 #if OP_BLE_TEST                                 /* a ble_poll that does not return: the crash screen says where (ble_status.h) */
-    if (ble_stall_tick())
-        FM1_VEC[FM1_IRQ_TIMER5] = (uint32_t)(uintptr_t)(fm1_fatal_stubs + 6u * FM1_IRQ_TIMER5);
+    {
+        const int stalled = ble_stall_tick();
+#if OP_BT_AUDIO
+        bt_stall_tick(stalled);                 /* (its last second sampled, the record completed when it fires) */
+#endif
+        if (stalled) {
+#if DSP_CPU1
+            fm1_cpu1_nobar = 1;                 /* (this crash is the watch's own, not the second core's fault: no bar) */
+#endif
+            FM1_VEC[FM1_IRQ_TIMER5] = (uint32_t)(uintptr_t)(fm1_fatal_stubs + 6u * FM1_IRQ_TIMER5);
+        }
+    }
 #endif
     if (++px_t5_sub >= 5u) {
         px_t5_sub = 0;
+#if FELUCCA_USB_HOST
+        fm1_ms += pxu_ms_add(&px_uh_clk, fm1_ticks(), FM1_TICKS_PER_US * 1000u);   /* test build 41: the host's clock (above) */
+#endif
 #if OP_UADEV
         uad_poll();
 #endif
         usb_poll();
     }
+#if OP_BLE_TEST
+    {
+        const uint32_t d = fm1_ticks() - t0;
+        if (d > px_t5_in_s) px_t5_in_s = d;
+        if (d > px_t5_in) px_t5_in = d;
+    }
+#endif
 }
 extern void isr_timer5(void);
 
@@ -102,6 +164,11 @@ static int ota_fread(uint32_t off, void *p, uint32_t n)
     uint8_t *d = p;
     while (n) {                                 /* 256-byte windows, interrupts off (the SFC is switched off) */
         uint32_t k = n > 256u ? 256u : n, f = irq_save();
+#if DSP_CPU1 && OP_BT_AUDIO
+        a_cpu1_quiet();                         /* (the Bluetooth audio image reads here with the audio running: nothing of the
+                                                 * second core's may run from the flash, and no new block starts; v41's worker
+                                                 * idle in its RAM loop; a core that faulted is held: px_audio.h) */
+#endif
         int rc = FL_FAR(fl_read_ram)(off, d, k);
         irq_restore(f);
         if (rc)
@@ -174,6 +241,9 @@ static void px_audio_halt(void)                 /* before any flash write: nothi
     a_collect();
     gpio_direction_output(G_AMP_EN, 0);         /* amp off: no noise while the flash is busy */
 #if DSP_CPU1
+#if FM1_CPU1_ECHO
+    fm1_cpu1_held_t = fm1_ticks() | 1u;         /* (test build 14: a hold's late flag, fm1_cpu1.h fm1_cpu1_echo) */
+#endif
     fm1_cpu1_stop();
     a_c1 = 0;
 #endif
@@ -208,3 +278,19 @@ static void px_usb_service(uint32_t now)        /* every main-loop pass */
         }
     }
 }
+
+#if FELUCCA_USB_HOST
+/* ---- test build 41: the footswitch by cable (px_usbhost.h) ---- */
+static void px_uh_apply(void) { usb_host_switch(px_usb_foot); }   /* SETTINGS' USB PORT row (ui.h): usb_host_task makes the change */
+static uint32_t px_uh_note(void) { return pxu_note(&px_uh, fm1_ms); }   /* PLAY's footer (ui.h draw_hint) */
+/* every main-loop pass, after px_usb_service. In FOOTSW the host finds the footswitch with blocking control transfers on this
+ * loop (some 150 ms when one is plugged in; the radio is served meanwhile, UH_IDLE) and puts its Program and Control Changes in
+ * the ring USB MIDI fills (source 1): px_midi_service reads them as a computer's, the controls learned on the pedal with them.
+ * Nothing is sent to the footswitch (px_midi_io.h). Back in COMPUTER the port is the USB device again within a pass (usb_retry) */
+static void px_uh_service(void)
+{
+    usb_host_task(fm1_ms);                      /* (the host's clock: ms_now's wrap would stop it looking, px_usbhost.h) */
+    pxu_msg(&px_uh, usb_host_message(), fm1_ms);
+    if (usb_host_active()) pxu_line(&px_uh, fm1_usb_line(), fm1_ms);
+}
+#endif

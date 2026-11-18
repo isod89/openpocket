@@ -343,7 +343,13 @@ export function initPresets() {
   };
   $("list").onfocus = () => { if (active < 0 && app.st) { active = app.st.slot; renderList(); } };
   $("expall").onclick = exportAll;
-  $("imp").onclick = () => $("file").click();
-  $("file").onchange = () => { const f = $("file").files[0]; $("file").value = ""; if (f && app.ed) importFile(f); };
+  // (Import is the file input's label, editor.html: a tap opens the picker itself; the keyboard opens it from here)
+  $("imp").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } };
+  $("file").onchange = () => {
+    const f = $("file").files[0]; $("file").value = "";
+    if (!f || !app.ed) return;
+    if (!/\.json$/i.test(f.name)) { say(`${f.name} is not a preset file (an OpenPocket .json file).`, "err"); return; }
+    importFile(f);
+  };
   dropTarget($("presets"), (f) => /\.json$/i.test(f.name) || f.type === "application/json", (files) => { if (app.ed) importFile(files[0]); });
 }

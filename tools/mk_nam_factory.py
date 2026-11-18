@@ -47,13 +47,22 @@ def main():
     for n, s in zip(names, srcs):
         out.append(" *   %-10s %s" % (n, s))
     out += [" */", "#pragma once",
+            "/* PXN_KEEP: the factory models built in, one bit each (bit i: PXN_FNAME[i]), all by default. A model left out keeps its",
+            " * place and its name's slot: the engine plays a kept one for it (engine/px_dsp.c pxn_fact), so presets and the MODEL",
+            " * knob stay where they were (test build 28: the Bluetooth audio image keeps 4, firmware/build.sh) */",
+            "#ifndef PXN_KEEP",
+            "#define PXN_KEEP 0xFFFu",
+            "#endif",
+            "#define PXN_KB(i) ((PXN_KEEP >> (i)) & 1u)",
+            "#define PXN_NROWS (PXN_KB(0) + PXN_KB(1) + PXN_KB(2) + PXN_KB(3) + PXN_KB(4) + PXN_KB(5) + PXN_KB(6) + PXN_KB(7) + \\",
+            "                   PXN_KB(8) + PXN_KB(9) + PXN_KB(10) + PXN_KB(11))",
             "static const char *const PXN_FNAME[PX_NAM_NFACT] = {%s};" % ", ".join('"%s"' % n for n in names),
             "static const float PXN_FLVL[PX_NAM_NFACT] = {%s};" % ", ".join("%.2ff" % v for v in lv),
-            "static const float PXN_FW[PX_NAM_NFACT][PXN_NW] = {"]
-    for w in ws:
+            "static const float PXN_FW[PXN_NROWS][PXN_NW] = {"]
+    for k, w in enumerate(ws):
         vals = [cfloat(v) for v in w]
         lines = [", ".join(vals[i:i + 10]) for i in range(0, len(vals), 10)]
-        out.append("  {" + ",\n   ".join(lines) + "},")
+        out += ["#if PXN_KB(%d)" % k, "  {" + ",\n   ".join(lines) + "},", "#endif"]
     out.append("};")
     open(os.path.join(ROOT, "engine", "px_nam_factory.h"), "w").write("\n".join(out) + "\n")
     print("engine/px_nam_factory.h: %d models" % len(ws))

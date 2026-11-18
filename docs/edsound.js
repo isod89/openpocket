@@ -2,7 +2,7 @@
 // OpenPocket web editor: the current sound. Its name and what can be done with it, the signal chain (the order, what is
 // on), and the block editor (type, settings). Every change plays at once on the pedal; a change made on the pedal shows here.
 
-import { app, $, h, icon, on, emit, blk, typeOf, choices, act, menu, slotName } from "./edcore.js";
+import { app, $, h, icon, on, emit, blk, blockIndex, typeOf, choices, act, menu, slotName } from "./edcore.js";
 import { save, saveAs, revert, exportOne, setCompare, comparing, duplicate, moveTo, restoreFactory } from "./edpresets.js";
 import { knobIndex, indexKnob, KINDS } from "./pxlib.js";
 import { t3kLink } from "./pxt3k.js";
@@ -76,9 +76,58 @@ function renderHeader() {
   document.title = `${st.dirty ? "• " : ""}${slotName(st.slot)} ${st.preset.name} · OpenPocket Editor`;
   $("view-sound").classList.toggle("comparing", cmp);
   for (const id of ["tiles", "block"]) $(id).inert = cmp;
+  const lb = gateBlock(), lc = $("plvl");
+  if (lc && lb >= 0) {
+    if (!(lc.dataset.held || (document.activeElement === lc && pendingParam))) lc.value = st.preset.p[lb][LVL_K];
+    showLevel();
+  }
+  $("plevel").inert = cmp;
+  $("plevel").classList.toggle("dim", cmp);
   $("hint").textContent = cmp ? "This is the preset as it is saved. Press “Back to my changes” to go on editing."
     : matchMedia("(pointer: coarse)").matches ? "Hold a block, then drag it to move it. The arrows in the panel below move it too."
     : "Drag a block to move it. Arrow keys choose a block, Space switches it, Alt + arrows move it.";
+}
+
+// ---- the preset's level, beside its name ----
+// On the pedal it is the GT page's third line (PRESET LVL: the gate block's setting 3, engine/px_dsp.c PX_PATCH_LEVEL):
+// -15..+15 dB in steps of 0.3 dB, 50 = 0 dB, applied whether the gate is on or off. Few players look for it in the noise
+// gate, so the header shows it too. The same setting: moving either moves the other.
+const LVL_K = 2;
+const gateBlock = () => (app.cat ? blockIndex("GT") : -1);
+function levelText(v) {
+  const b = gateBlock(), P = b >= 0 && app.st ? typeOf(app.st.preset, b).params[LVL_K] : null, t = P && P.texts && P.texts[v];
+  if (t) return t.replace(/\s*DB$/i, " dB");
+  const d = (v - 50) * 0.3;
+  return `${d > 0 ? "+" : d < 0 ? "−" : ""}${Math.abs(d).toFixed(1)} dB`;
+}
+function showLevel() {
+  const c = $("plvl"), out = $("plvlv");
+  if (!c || !out) return;
+  const v = +c.value, t = levelText(v);
+  out.textContent = t;
+  c.style.setProperty("--p", `${v}%`);
+  c.setAttribute("aria-valuetext", t);
+}
+function setLevel(v) {
+  const b = gateBlock(), c = $("plvl");
+  if (b < 0 || !c || comparing()) return;
+  v = Math.max(0, Math.min(100, Math.round(v)));
+  c.value = v; showLevel();
+  sendParam(b, LVL_K, v);
+  if (app.focus === b) renderPage();                   // the gate's own panel shows the same setting
+}
+function buildLevel() {
+  const box = $("plevel");
+  if (!box || $("plvl")) return;
+  const ctl = h("input", { type: "range", id: "plvl", min: 0, max: 100, step: 1, value: 50 });
+  ctl.oninput = () => setLevel(+ctl.value);
+  ctl.onpointerdown = () => { ctl.dataset.held = "1"; };
+  ctl.onpointerup = ctl.onpointercancel = () => { delete ctl.dataset.held; };
+  const step = (d) => h("button", { type: "button", class: "nudge", tabIndex: -1, "aria-label": `Preset level ${d < 0 ? "down" : "up"} 0.3 dB`,
+    onclick: () => setLevel(+ctl.value + d) }, icon(d < 0 ? "minus" : "plus"));
+  box.append(h("label", { for: "plvl", text: "Level", title: "This preset's own level, -15 to +15 dB (on the pedal: the GT page, PRESET LVL)" }),
+    step(-1), ctl, step(1), h("output", { class: "val", id: "plvlv", for: "plvl" }));
+  showLevel();
 }
 
 // ---- the chain ----
@@ -273,6 +322,7 @@ function renderNote() {
 }
 
 export function initSound() {
+  buildLevel();
   on("state", (o) => { if (!app.st) return; renderHeader(); if (!o.own) { renderTiles(); renderPage(o.push); } });
   on("compare", () => { renderHeader(); renderTiles(); renderPage(); });
   on("assets", () => { if (app.st && app.conn === "ready") { $("params").dataset.sig = ""; renderPage(); } });

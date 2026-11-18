@@ -7,7 +7,14 @@
 #include "ble_status.h"
 
 /* the previous boot, kept before app_main clears op_diag for this one (the fields of its report; stage: ST_*) */
+#if OP_BT_AUDIO
+/* (test build 14, the Bluetooth audio image: and the second core's fault record as it stood at CPU0's crash, openpocket.c
+ * op_c1x: c1x 1 when it is this crash's, then its count, the core that took it, its ms and PC) */
+typedef struct { uint32_t failed, crashed, stage, blocks, load, peak, nans, c1, loops, vec, pc, rets, dbg, emu, uptime;
+                 uint32_t c1x, c1n, c1cpu, c1ms, c1pc; } ble_boot_t;
+#else
 typedef struct { uint32_t failed, crashed, stage, blocks, load, peak, nans, c1, loops, vec, pc, rets, dbg, emu, uptime; } ble_boot_t;
+#endif
 static ble_boot_t ble_last;
 
 /* "UP 12345 SAFE 0 STAGE 8 RST 40 GUARD 0" (out: 64 bytes): ms_now (it wraps every 179 s), safe mode, ST_*, the reset source bits, the failed boots counted */
@@ -42,6 +49,12 @@ static void ble_last_text(char *out, const ble_boot_t *b)
         o = ble__put(o, " DBG "); o = ble__hex(o, b->dbg);
         o = ble__put(o, " EMU "); o = ble__hex(o, b->emu);
         o = ble__put(o, " UP "); o = ble__dec(o, b->uptime);
+#if OP_BT_AUDIO
+        if (b->c1x) {                                   /* " C1F 1/1 1964 1C6F6C6": count/cpu, ms, PC (tools/log.mjs) */
+            o = ble__put(o, " C1F "); o = ble__dec(o, b->c1n); *o++ = '/'; o = ble__dec(o, b->c1cpu);
+            *o++ = ' '; o = ble__dec(o, b->c1ms); *o++ = ' '; o = ble__hex(o, b->c1pc);
+        }
+#endif
     }
     *o = 0;
 }

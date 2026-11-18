@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // OpenPocket — the web editor page (docs/editor.html) in a real browser (Playwright / Chromium) against the simulated
 // pedal (tests/edsim.c: the pedal's real editor code and preset store), through a fake Web MIDI access with the pedal
-// and a second device (a foot controller). TONE3000 is simulated (its pop-up, its sign-in, its lists and files).
+// and a second device (a foot controller). TONE3000 is simulated (its pop-up, its sign-in, its lists and files), and once
+// more with no second window (MIDIWeb on an iPhone): TONE3000 in the editor's own tab, t3k.html finishing the job.
 //   node tests/test_editor_page.mjs [OUT_DIR]     (screenshots in OUT_DIR, default build/editor)
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -35,7 +36,7 @@ const ok = (c, what) => { console.log(`${what.padEnd(78)} ${c ? "ok" : "FAIL"}`)
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, acceptDownloads: true });
 const page = await ctx.newPage();
-let sim = null, buf = "";
+let sim = null, buf = "", simPort = "";
 const states = [];
 const FLASH = join(TMP, "flash.bin");
 await page.exposeFunction("simSend", (hex) => sim && sim.stdin.write(hex + "\n"));
@@ -73,7 +74,7 @@ function startSim() {
     let i;
     while ((i = buf.indexOf("\n")) >= 0) {
       const ln = buf.slice(0, i); buf = buf.slice(i + 1);
-      if (ln.startsWith("#port ")) page.evaluate((n) => window.__simPort(n), ln.slice(6)).catch(() => {});
+      if (ln.startsWith("#port ")) { simPort = ln.slice(6); page.evaluate((n) => window.__simPort(n), simPort).catch(() => {}); }
       else if (ln.startsWith("#state ")) states.push(ln.slice(7).split("|"));
       else if (ln) page.evaluate((h) => window.__simIn(h), ln).catch(() => {});
     }
@@ -398,19 +399,34 @@ const free = (kind, slot) => page.locator(`#${kind}list .free [data-slot="${slot
   await go("models");
   ok(await page.locator("#namlist .free .slot").count() === 16 && /0 of 16 slots used/.test(await text("#namcap")), "Models: the 16 user slots, all empty, and how many are used");
   ok(/12 factory models/.test(await text("#nam .factory summary")), "the 12 factory models, apart");
+  ok(await page.evaluate(() => ["namfile", "irfile", "file"].every((id) => { const i = document.getElementById(id); return i && i.type === "file" && !i.hasAttribute("accept") && getComputedStyle(i).display !== "none"; })
+    && document.getElementById("namadd").control === document.getElementById("namfile") && document.getElementById("imp").control === document.getElementById("file")
+    && [...document.querySelectorAll("#namlist .free .slot")].every((c) => c.control === document.getElementById("namfile"))),
+    "file buttons: labels of real file inputs (a tap opens the picker itself), with no type filter (iOS greys out .nam)");
   await shot("editor_6_models_empty.png");
-  const fn = join(TMP, "Page Amp.nam"), fb = join(TMP, "Second.nam"), fa1 = join(TMP, "Old A1.nam");
-  writeFileSync(fn, namFile(3)); writeFileSync(fb, namFile(11));
+  const fn = join(TMP, "Page Amp.nam"), fb = join(TMP, "Second.nam"), fa1 = join(TMP, "Old A1.nam"), ft = join(TMP, "Notes.txt");
+  writeFileSync(fn, namFile(3)); writeFileSync(fb, namFile(11)); writeFileSync(ft, "not a capture");
   writeFileSync(fa1, JSON.stringify({ version: "0.5.4", architecture: "WaveNet", weights: [0.1], config: { layers: [{ channels: 16, kernel_sizes: [3], dilations: [1] }, { channels: 8 }] } }));
   await clearToasts();
   const [ch] = await Promise.all([page.waitForEvent("filechooser"), page.click("#namadd")]);
   ok(ch.isMultiple(), "Add .nam files takes several files at once");
-  await ch.setFiles([fn, fa1, fb]);
-  ok(await toast(/2 captures on the pedal, 1 not added/, 30000), "three files: two captures sent to the first free slots, the A1 file refused");
+  await ch.setFiles([fn, fa1, ft, fb]);
+  ok(await toast(/2 captures on the pedal, 2 not added/, 30000), "four files: two captures sent to the first free slots, the A1 file and the text file refused");
+  ok(/Not a \.nam file/.test(await text("#nam .queue")), "a file picked with another extension: refused by its name (the picker has no filter)");
   ok((await srow("nam", 0).textContent()).includes("PAGE AMP") && (await srow("nam", 1).textContent()).includes("SECOND") && /2 of 16 slots used/.test(await text("#namcap")), "U01 PAGE AMP, U02 SECOND");
   ok(/not an A2 model/i.test(await text("#nam .queue")) && /Page Amp\.nam/.test(await srow("nam", 0).textContent()), "the list says why the A1 file was refused; each slot says which file it came from");
   ok((await pedalState()).writesOk, "the flash was written only inside the preset store and the model slots");
   await shot("editor_6_nam.png");
+  const [kc] = await Promise.all([page.waitForEvent("filechooser", { timeout: 4000 }).catch(() => null), (async () => { await page.focus("#namadd"); await page.keyboard.press("Enter"); })()]);
+  ok(!!kc && kc.isMultiple(), "the keyboard opens it too (Enter on Add .nam files)");
+  if (kc) await kc.setFiles([]);
+  // an occupied slot's "Replace with a file…", a menu item that is the input's label: the same file again, nothing moves
+  await clearToasts();
+  await srow("nam", 1).locator(".btn.icon").click();
+  const [rc] = await Promise.all([page.waitForEvent("filechooser"), page.locator('#menu [role="menuitem"]', { hasText: "Replace with a file" }).click()]);
+  ok(!rc.isMultiple(), "Replace with a file: the menu item opens the picker, for one file");
+  await rc.setFiles(fb);
+  ok(await toast(/1 capture on the pedal/, 20000) && (await srow("nam", 1).textContent()).includes("SECOND") && /2 of 16 slots used/.test(await text("#namcap")), "Replace with a file: the file goes into that slot (U02)");
   // a preset that plays U01
   await go("sound");
   await page.click('#tiles .tile[data-b="5"] .tsel');
@@ -496,9 +512,9 @@ const free = (kind, slot) => page.locator(`#${kind}list .free [data-slot="${slot
 }
 
 // ---- v37: TONE3000 (their site simulated: the pop-up, PKCE, the lists, a tone, its A2 models, the download) ----
+let challenge = "", authOk = false, tokenOk = false, bearerOk = true, pick = "42", tokenClient = "";
 {
   const T3K = "https://www.tone3000.com";
-  let challenge = "", authOk = false, tokenOk = false, bearerOk = true, pick = "42";
   const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, OPTIONS" };
   const json = (route, o) => route.fulfill({ status: 200, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify(o) });
   const tone = (id, title, a2) => ({ id, title, gear: "amp", format: "nam", images: null, a2_models_count: a2, url: `${T3K}/tones/${id}`, description: "A capture for the test.",
@@ -517,6 +533,7 @@ const free = (kind, slot) => page.locator(`#${kind}list .free [data-slot="${slot
     if (u.pathname === "/api/v1/oauth/token") {
       const f = new URLSearchParams(r.postData() || "");
       const v = createHash("sha256").update(f.get("code_verifier") || "").digest("base64url");
+      tokenClient = f.get("client_id") || "";
       tokenOk = f.get("grant_type") === "authorization_code" && f.get("code") === "C0DE" && v === challenge;
       return json(route, tokenOk ? { access_token: "AT", refresh_token: "RT", token_type: "bearer", expires_in: 3600 } : { error: "invalid_grant" });
     }
@@ -684,6 +701,39 @@ for (const v of ["presets", "sound", "models", "midi"]) {
 await go("sound");
 const tw = await page.locator("#tiles .tile .pw").first().boundingBox();
 ok(tw.width >= 44 && tw.height >= 24, `phone: a block's switch is ${Math.round(tw.width)} x ${Math.round(tw.height)} px`);
+
+// ---- TONE3000 with no second window (MIDIWeb on an iPhone, at phone width): TONE3000 in the editor's own tab, t3k.html
+// checking the answer and getting the capture, back to the editor with it in the library; the page loads anew, so the
+// pedal is connected again and the capture sent from the library ----
+{
+  await go("models");
+  pick = "42"; authOk = false; tokenOk = false; tokenClient = "";
+  await page.evaluate(() => { window.__t3kClientId = "page-test"; window.open = () => null; });
+  await clearToasts();
+  await page.click("#t3kbrowse");
+  await dialog();
+  ok(/opens in this page/.test(await text("#dlg")) && /no second window/.test(await text("#dlg")), "no second window: the editor says TONE3000 takes this page for a moment");
+  await page.click("#dlg-ok");
+  await page.waitForSelector("#t3kpick .mrow", { timeout: 15000 });
+  const at = new URL(page.url());
+  ok(at.pathname.endsWith("/t3k.html") && !at.search && authOk, "TONE3000's Select page in this tab, back at t3k.html, the code already off the address bar");
+  ok(tokenOk && tokenClient === "page-test", "t3k.html: the state checked, signed in with the verifier and the key this tab kept");
+  ok(await page.locator("#t3kpick .mrow").count() === 2 && /Plexi Dimed/.test(await text("#t3kpick")), "t3k.html: the tone's two A2 captures, to choose from");
+  await shot("editor_11_t3k_same_tab.png");
+  await page.locator("#t3kpick .mrow", { hasText: "Plexi Dimed" }).locator("button").click();
+  await page.waitForURL(/editor\.html#models$/, { timeout: 20000 });
+  ok(await toast(/PLEXI DIMED from TONE3000 is in the library/, 8000), "back in the editor: the capture is in the library, and the page says so");
+  ok(await page.evaluate(() => sessionStorage.length === 0), "nothing of the sign-in left in the tab: no token, no verifier");
+  await page.evaluate((n) => window.__simPort(n), simPort);
+  if (await page.isVisible("#connect")) await page.click("#connect");
+  await page.waitForSelector('body[data-conn="ready"]', { timeout: 20000 });
+  await go("models");
+  const libRow = page.locator("#namlib .srow", { hasText: "PLEXI DIMED" });
+  ok(await libRow.count() === 1 && /T3K\s+Plexi Lead by capturer/.test(await libRow.textContent()), "the library lists it, with its tone and creator");
+  await clearToasts();
+  await libRow.locator("button", { hasText: "Send to the pedal" }).click();
+  ok(await toast(/PLEXI DIMED is in U\d\d/, 20000) && bearerOk, "sent from the library to a free slot");
+}
 
 await browser.close();
 sim.stdin.end();

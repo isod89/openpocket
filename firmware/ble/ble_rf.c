@@ -68,7 +68,9 @@ int wf_rf_common_init(void)
     fm1_wdt_feed();                                              /* the replay takes a while: keep the watchdog fed around it */
     fm1_rf_cal_on = (ble_vm_have & 8u) ? 0u : 1u;                /* the pedal's own stored calibration (VM 187) when it has one, else measure */
     ble_busy(0);                                                 /* the replay is long, and its waits are bounded */
+    BT_CRUMB_OS("rf replay");                                    /* (the Bluetooth audio image's stall record; nothing in the BLE image) */
     fm1_ble_rf_run(vm_rec[0], vm_rec[1], vm_rec[2], vm_rec[3]);
+    BT_CRUMB_OS("rf replay done");
     ble_busy(1);
     fm1_wdt_feed();
     keep_BT_CMPUK1 = 0x80; keep_BT_CMPUK2 = 0x80; keep_BT_CMPUK3 = 0; keep_BT_OFSI = 0; keep_BT_OFSQ = 0;
@@ -78,7 +80,7 @@ int wf_rf_common_init(void)
 
 /* The library asks for saved items (trims, bonding): none, as in audio_probe.h. It stores nothing: the VM and BTIF
  * areas are never written by this image. */
-int syscfg_read(uint16_t id, void *buf, uint16_t len) { (void)id; (void)buf; (void)len; return -1; }
+int syscfg_read(uint16_t id, void *buf, uint16_t len) { (void)id; (void)buf; (void)len; BT_CRUMB_OS("syscfg_read"); return -1; }
 int syscfg_write(uint16_t id, void *buf, uint16_t len) { (void)id; (void)buf; return len; }
 void hw_udelay(uint32_t us) { fm1_delay_us(us); fm1_wdt_feed(); }
 uint32_t sys_clk_get(void) { return 360000000u; }                /* SYS_CLK in the stock isd_config.ini */

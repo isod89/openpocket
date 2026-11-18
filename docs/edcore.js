@@ -222,13 +222,20 @@ export function pickDialog({ title, intro, items, initial, consequence, searchab
   });
 }
 
-// ---- a small menu on a button: items [{ label, run, danger, disabled, why }] or "-" ----
+// ---- a small menu on a button: items [{ label, run, danger, disabled, why }] or "-"; an item with `file` (a file input's id)
+// is that input's label (fileLabel), its `aim` run first ----
+const ITEMS = '[role="menuitem"]:not(:disabled):not([aria-disabled="true"])';
 export function menu(anchor, items) {
   const m = $("menu");
   m.textContent = "";
   for (const it of items) {
     if (!it) continue;
     if (it === "-") { m.append(h("hr")); continue; }
+    if (it.file) {
+      m.append(fileLabel(it.disabled ? null : it.file, () => { if (it.aim) it.aim(); setTimeout(() => m.hidePopover(), 0); },
+        { role: "menuitem", tabIndex: -1, class: it.danger ? "danger" : "", "aria-disabled": it.disabled ? "true" : null, title: it.disabled ? it.why : null }, it.label));
+      continue;
+    }
     m.append(h("button", { type: "button", role: "menuitem", class: it.danger ? "danger" : "", disabled: !!it.disabled, title: it.disabled ? it.why : null,
       text: it.label, onclick: () => { m.hidePopover(); it.run(); } }));
   }
@@ -237,10 +244,10 @@ export function menu(anchor, items) {
   const w = m.offsetWidth, hh = m.offsetHeight;
   m.style.left = `${Math.max(8, Math.min(innerWidth - w - 8, r.right - w))}px`;
   m.style.top = `${r.bottom + 6 + hh > innerHeight - 8 ? Math.max(8, r.top - hh - 6) : r.bottom + 6}px`;
-  const first = m.querySelector("button:not(:disabled)");
+  const first = m.querySelector(ITEMS);
   if (first) first.focus();
   m.onkeydown = (e) => {
-    const b = [...m.querySelectorAll("button:not(:disabled)")], i = b.indexOf(document.activeElement);
+    const b = [...m.querySelectorAll(ITEMS)], i = b.indexOf(document.activeElement);
     if (e.key === "ArrowDown") { e.preventDefault(); b[(i + 1) % b.length].focus(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); b[(i - 1 + b.length) % b.length].focus(); }
   };
@@ -248,6 +255,15 @@ export function menu(anchor, items) {
 }
 
 // ---- files ----
+// A control that opens a file input the page keeps (editor.html: outside what is drawn again, visually hidden, with no
+// `accept`: iOS greys out the extensions it does not know, .nam among them). It is the input's label, so a tap is a tap on
+// the input itself: in-app browsers such as MIDIWeb on iOS open no picker for a script's .click() on a hidden input.
+// `aim` runs first (which slot the file is for). Enter or Space open it from the keyboard, where browsers allow a click.
+export function fileLabel(input, aim, attrs, ...kids) {
+  const go = () => { if (aim) aim(); };
+  return h("label", { role: "button", tabIndex: 0, ...attrs, for: input, onclick: go,
+    onkeydown: (e) => { if (input && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); go(); $(input).click(); } } }, ...kids);
+}
 export function download(name, data, type = "application/json") {
   const url = URL.createObjectURL(new Blob([data], { type }));
   const a = h("a", { href: url, download: name });

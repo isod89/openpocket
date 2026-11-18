@@ -21,7 +21,10 @@ static const uint16_t pxn_d[PXN_NL] = {1, 3, 7, 17, 41, 101, 239, 1, 3, 7, 17, 4
 #define PXN_ONE (1 << PXN_QA)
 
 /* the block's work buffers: X rows (+ a row of slack: the dot routines read one word past a row) */
-static int32_t pxn_xs[(PXN_N + 1) * PXN_S];
+#ifndef PX_BT_POOL
+#define PX_BT_POOL(name)                                /* (px_dsp.c: the pool's free end in the Bluetooth audio image) */
+#endif
+static int32_t pxn_xs[(PXN_N + 1) * PXN_S] PX_BT_POOL(pxn_xs);
 static int32_t *pxn_x = pxn_xs;                         /* the X rows in use: pxn_xs, or for the vector unit's modes
                                                            the copy in the fast memory (pxn_set_fast) */
 static int32_t *pxn_xf, *pxn_wf;                        /* fast memory: X rows, then the weights (wa, head) for the unit */
@@ -57,7 +60,11 @@ static int32_t pxn_u[PXN_N + 4];                        /* the block's input (Q2
  * when not 0, the layer's output goes there (3 words a frame) instead of the next layer's ring (the layer split's
  * hand-over between the cores, pxn_lp_*). The one-core and frame-split ways use pxn_sc0. */
 typedef struct { int32_t *z; const int32_t *u; int32_t *hs; int32_t *q; } pxn_sc;
-static const pxn_sc pxn_sc0 = {pxn_z, pxn_u, pxn_hs, 0};
+#ifndef PX_RCONST
+#define PX_RCONST const                                 /* (px_dsp.c: not const in the Bluetooth audio image, PX_TABLES_RAM) */
+#define PX_RTAB(name)
+#endif
+static PX_RCONST pxn_sc pxn_sc0 PX_RTAB(pxn_sc0) = {pxn_z, pxn_u, pxn_hs, 0};
 static const int32_t *pxn_tpt[2][PXN_HK];               /* rdot's tap tables, one per core */
 
 /* dot: z[3f] = (w . x_f) >> 24 for ng frames (dot4: ng groups of 4 frames), x_f the X rows sb bytes apart.
@@ -4891,7 +4898,7 @@ static __attribute__((unused)) const int32_t *pxn_uw(const pxn_model *m, const i
 /* how each mode runs (pxn_tune picks one): h > 0: two cores, the helper core takes frames 0 .. h-1 (it never waits:
  * earlier frames never need later ones), the calling core the rest; pipe: the vector unit beside the calling core
  * (block or range in two halves), the CPU taking c frames of each half's dot products itself */
-static const struct { uint8_t h, pipe, c; } PXN_MC[PXN_MODES] = {
+static PX_RCONST struct { uint8_t h, pipe, c; } PXN_MC[PXN_MODES] PX_RTAB(pxn_mc) = {
     {0, 0, 0}, {0, 0, 0}, {0, 1, 0}, {0, 1, 4}, {0, 1, 8}, {16, 0, 0}, {12, 1, 0}, {16, 1, 0}, {12, 1, 4},
     {20, 0, 0}, {24, 0, 0}};
 /* the K taps (dilation d) of frames f0 .. f0+n-1 of the block (the block starts at ring position w) into X columns 2..;

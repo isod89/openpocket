@@ -39,7 +39,7 @@ void ble_test_start(void)
     __crc16_mutex_init();                                       /* else thread_create (ll_init) waits for ever in crc_get_32bit */
     ble_state = BLE_STARTING;
     ble_stage_set(BLE_STAGE_TASK);
-    t_start = fm1_uptime_ms();
+    t_start = ble_ms();
     if (task_create(test_task, 0, "bletest"))
         ble_fail(BLE_FAIL_TASK_CREATE, -1);
 }
@@ -50,7 +50,7 @@ void ble_test_poll(void)
     ble_poll();
     ble_busy(0);
     ble_stub_collect();
-    if (ble_state == BLE_STARTING && fm1_uptime_ms() - t_start > 5000u)
+    if (ble_state == BLE_STARTING && ble_ms() - t_start > 5000u)
     {   /* (the task, if it is still waiting, is left alone) */
         ble_wait = ble_task_waiting("btctrler");
         ble_fail(BLE_FAIL_TIMEOUT, (int32_t)ble_stage);

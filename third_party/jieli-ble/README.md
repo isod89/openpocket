@@ -19,7 +19,7 @@ archives; `build.sh` compiles each with `clang -target pi32v2 -x ir`, as it does
 
 | Directory | From | Objects |
 | --- | --- | --- |
-| `btctrler/` | `btctrler.a` (sha256 `d98f2ad9d483cd2c103cab56c2760162edf92cc451a04e5668af02a590c95cb3`) | the LE controller: HCI front end, link layer, advertising, slave link, the LE and BT radio drivers, interrupt and DMA helpers, their utilities (38 of the archive's 106 bitcode members) |
+| `btctrler/` | `btctrler.a` (sha256 `d98f2ad9d483cd2c103cab56c2760162edf92cc451a04e5668af02a590c95cb3`) | the LE controller: HCI front end, link layer, advertising, slave link, master link (`ll_master`, since the Bluetooth audio image's test build 28: the pedal as a footswitch's central), the LE and BT radio drivers, interrupt and DMA helpers, their utilities (39 of the archive's 106 bitcode members) |
 | `cpu/` | `cpu.a` (sha256 `3d3e0876e21afe2c9cb7de713378d3802b1d0f544a1787f07e982269a0e7e67d`) | `delay`, `crc16`, `wlc` (small helpers the controller calls) |
 | `btstack/` | `btstack.a` (sha256 `24e99a6d63960e1b1b24b88980bc0ce37521c272bba9bcee71a47a9860b237e0`) | the LE part of the host: its task, HCI, L2CAP, the ATT server, the security manager, their utilities (20 of the archive's members; `gap` and `aes_tab` are extracted but the link does not take them) |
 | `ccm/` | `lib_ccm_aes.a` (sha256 `5dbd07a1e10e58db2fbaa712e9617837a170d809a7063415b55dc1639d1e0c1e`) | AES and CCM for the encrypted link |

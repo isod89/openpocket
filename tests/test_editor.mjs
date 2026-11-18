@@ -2,6 +2,8 @@
 // OpenPocket — end-to-end test of the web editor's protocol (docs/pxedit.js) against a simulated pedal (tests/edsim.c)
 // that runs the pedal's real editor code (firmware/px_editor.h), preset store (px_store.h) and engine catalogue.
 //   cc -O1 -o build/edsim tests/edsim.c engine/px_dsp.c -lm && node tests/test_editor.mjs
+// Over Bluetooth MIDI (the Bluetooth audio image's editor, test build 27):
+//   cc -O1 -DED_BT=1 -o build/edsim_bt tests/edsim.c engine/px_dsp.c firmware/px_math.c -lm && EDSIM_BLE=1 node tests/test_editor.mjs
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,17 +12,57 @@ import { fileURLToPath } from "node:url";
 import { Editor, presetToJSON, presetFromJSON, filePresets, parsePresetFile, clonePreset } from "../docs/pxedit.js";
 import { parseNam, levelTrim, packModel, readDi, a2Run, KERNELS, DILATIONS, NW } from "../docs/pxnam.js";
 import { parseWav, prepareIr, packIr, irName, resample, IR_LEN } from "../docs/pxir.js";
+import { pedalLearn, switchMode, MAP_EACH, MAP_VALUE, PEDAL_MAP_N, CC_NEXT, MAP_PRESS, ccParam, presetEntry, PRESET_MAP_N, CC_SCENE0,
+  PL_DUAL, B_GATE, B_PITCH, B_SFX, dualOk, dualDefault } from "../docs/pxmidi.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SIM = process.env.EDSIM || join(ROOT, "build", "edsim");
+// EDSIM_BLE=1: the same tests over BLE MIDI, as the Bluetooth audio image (test build 27) talks to the editor, against
+// build/edsim_bt (tests/edsim.c -DED_BT=1). The editor's SysEx is cut into writes as a central cuts them (CoreMIDI, Android:
+// the header, a timestamp before each status byte, the data without), at the write sizes centrals use and some smaller ones;
+// the pedal's notifications are read as Android's BluetoothPacketDecoder reads them, each checked: a header first, 20 bytes
+// at most.
+const BLE = !!process.env.EDSIM_BLE;
+const FX = !!process.env.EDSIM_FX;           // the Bluetooth audio image's (tests/edsim.c -DPX_OWN_FX=1): protocol 5, test build 39
+const SIM = process.env.EDSIM || join(ROOT, "build", BLE ? "edsim_bt" : "edsim");
 const TMP = mkdtempSync(join(tmpdir(), "opedit-"));
 globalThis.localStorage = { getItem: () => null, setItem: () => {} };
 let failed = 0;
 const ok = (c, what) => { console.log(`${what.padEnd(72)} ${c ? "ok" : "FAIL"}`); if (!c) failed++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// BLE MIDI: a message -> writes of at most `max` bytes, as a central makes them
+function bleWrites(msg, max) {
+  const t = Date.now() & 0x1FFF, hdr = 0x80 | t >> 7, ts = 0x80 | (t & 0x7F), out = [];
+  let p = [hdr];
+  for (const b of msg) {
+    if (p.length + (b & 0x80 ? 2 : 1) > max) { out.push(p); p = [hdr]; }
+    if (b & 0x80) p.push(ts);
+    p.push(b);
+  }
+  if (p.length > 1) out.push(p);
+  return out;
+}
+// and a notification -> its bytes, timestamps out (after the header, a byte with bit 7 set is a timestamp unless the byte
+// before was one); the SysEx kept across notifications and handed on whole
+function bleRead(st, p, deliver) {
+  if (!p.length || p.length > 20 || (p[0] & 0xC0) !== 0x80) st.bad++;
+  let ts = false;
+  for (let i = 1; i < p.length; i++) {
+    const b = p[i];
+    if ((b & 0x80) && !ts) { ts = true; continue; }
+    ts = false;
+    if (b === 0xF0) st.sx = [b];
+    else if (st.sx) { st.sx.push(b); if (b === 0xF7) { deliver(Uint8Array.from(st.sx)); st.sx = null; } }
+    else st.bad++;                                  // (the pedal sends nothing but the editor's SysEx over Bluetooth)
+  }
+}
+
 function sim(args) {
   const child = spawn(SIM, args, { stdio: ["pipe", "pipe", "inherit"] });
+  const ble = BLE ? { sizes: [20, 182, 3, 514, 7, 244], k: 0, sx: null, bad: 0, notes: 0, writes: 0, after: null, between: null,
+    c: { sx: null, bad: 0, notes: 0, got: [] } } : null;   // (c: the second LE link's notifications, read apart)
+  if (ble) ble.raw = (l) => child.stdin.write(`${l}\n`);   // (a line as it is: another link's writes)
+  const usb = [];                                    // (BLE: what came back the USB way)
   const access = { inputs: new Map(), outputs: new Map() };
   const lines = [];
   let port = null, buf = "", readyFn;
@@ -33,11 +75,25 @@ function sim(args) {
       if (ln.startsWith("#port ")) {
         const name = ln.slice(6);
         const input = { name, state: "connected", onmidimessage: null, open: async () => {} };
-        const output = { name, state: "connected", open: async () => {}, send: (b) => child.stdin.write(Buffer.from(b).toString("hex") + "\n") };
+        const output = { name, state: "connected", open: async () => {}, send: (b) => {
+          if (!ble) { child.stdin.write(Buffer.from(b).toString("hex") + "\n"); return; }
+          for (const w of bleWrites(b, ble.sizes[ble.k++ % ble.sizes.length])) {
+            ble.writes++; child.stdin.write(`b${Buffer.from(w).toString("hex")}\n`);
+            if (ble.between) child.stdin.write(`${ble.between}\n`);   // (a line after each write: another link's, in turns)
+          }
+          if (ble.after) { child.stdin.write(`${ble.after}\n`); ble.after = null; }   // (a line right after this request's writes)
+        } };
         port = { input, output };
         access.inputs.set(name, input); access.outputs.set(name, output);
         readyFn();
       } else if (ln.startsWith("#")) lines.push(ln);
+      else if (ble && ln.startsWith("b")) {
+        ble.notes++;
+        bleRead(ble, Buffer.from(ln.slice(1), "hex"), (data) => { if (port && port.input.onmidimessage) port.input.onmidimessage({ data }); });
+      } else if (ble && ln.startsWith("c")) {                     // the second LE link's notifications
+        ble.c.notes++;
+        bleRead(ble.c, Buffer.from(ln.slice(1), "hex"), (data) => ble.c.got.push(data));
+      } else if (ble && ln) usb.push(ln);
       else if (port && port.input.onmidimessage && ln) port.input.onmidimessage({ data: Uint8Array.from(Buffer.from(ln, "hex")) });
     }
   });
@@ -45,9 +101,26 @@ function sim(args) {
   return {
     access, ready, lines,
     pedal: (l) => child.stdin.write(`#pedal ${l}\n`),
+    cc: (n, v) => child.stdin.write(`#cc ${n} ${v}\n`),       // (FX) a Control Change from a controller on the pedal
     dump: async () => { lines.length = 0; child.stdin.write("#dump\n"); for (let i = 0; i < 50 && !lines.length; i++) await sleep(10); return lines[0] || ""; },
+    ble, usb,
+    usbSend: (b) => child.stdin.write(Buffer.from(b).toString("hex") + "\n"),
+    bt: async (l = "") => {                     // "#bt": [frames answered, notifications, replies lost, SysEx dropped]
+      lines.length = 0; child.stdin.write(`#bt${l ? ` ${l}` : ""}\n`);
+      if (l) return null;
+      for (let i = 0; i < 50 && !lines.length; i++) await sleep(10);
+      return (lines[0] || "").split(" ").slice(1).map(Number);
+    },
     end: () => { child.stdin.end(); return done; },
   };
+}
+
+// over BLE MIDI: every frame was answered, nothing dropped either way, every notification well formed
+async function bleCheck(s) {
+  if (!BLE) return;
+  const [frames, notes, lost, drop] = await s.bt();
+  ok(frames > 0 && notes === s.ble.notes + s.ble.c.notes && !lost && !drop && !s.ble.bad && !s.ble.c.bad,
+     `BLE: ${frames} frames in ${s.ble.writes} writes, ${notes} notifications back, none lost or malformed`);
 }
 
 // ---- 1. connect, catalogue, current sound ----
@@ -56,7 +129,7 @@ let s = sim(["--dump", flash1]);
 await s.ready;
 let ed = new Editor(s.access);
 const info = await ed.connect();
-ok(info && info.proto === 4 && info.version === "v39" && info.identity === "PocketX_939", `INFO: ${info && `${info.version} ${info.identity}`}`);
+ok(info && info.proto === (FX ? 7 : 4) && info.version === (FX ? "v39 FX7" : "v39") && info.identity === "PocketX_939", `INFO: ${info && `${info.version} ${info.identity}`}`);
 ok(info && info.nblk === 12 && info.npar === 5 && info.nslot === 52 && info.nameMax === 13, "INFO: 12 blocks, 5 parameters, 52 slots, names of 13");
 const t0 = Date.now();
 const cat = await ed.catalog();
@@ -100,6 +173,65 @@ ok(pushes.length === 0, "WATCH: the editor's own change is not echoed back");
 s.pedal("preset 7");
 for (let i = 0; i < 40 && !pushes.length; i++) await sleep(10);
 ok(pushes.length >= 1 && pushes.at(-1).slot === 7, "WATCH: a footswitch (slot 8) is pushed");
+if (BLE) {                                     // the LE link goes: the pushes stop; a new one, and the editor goes on
+  await s.bt("drop");
+  pushes.length = 0;
+  s.pedal(`set ${amp} 2 44`);
+  await sleep(150);
+  const quiet = pushes.length === 0;
+  await s.bt("link");
+  await ed.watch(true);
+  s.pedal(`set ${amp} 2 45`);
+  for (let i = 0; i < 40 && !pushes.length; i++) await sleep(10);
+  ok(quiet && pushes.length >= 1 && pushes.at(-1).preset.p[amp][2] === 45, "BLE: the link gone, nothing is pushed; a new link, and WATCH again");
+  s.usb.length = 0;                            // USB and Bluetooth at once: each frame is answered the way it came
+  s.usbSend([0xF0, 0x7D, 0x4F, 0x50, 1, 0xF7]);
+  const st2 = await ed.state();
+  for (let i = 0; i < 40 && !s.usb.length; i++) await sleep(10);
+  const u = s.usb.length ? Buffer.from(s.usb[0], "hex") : null;
+  ok(u && u[4] === 1 && s.usb.length === 1 && st2.slot === 7, "BLE: a USB INFO meanwhile is answered over USB, the editor's STATE over Bluetooth");
+  // a push and a reply cross: a knob turned on the pedal right after a request (its line comes after the request's writes)
+  // while the long reply goes out; then a request right after a knob, while the push goes out. Each waits for the other's
+  // notifications (two a pass), nothing is lost. (60 ms first: the pedal pushes at most every 40 ms)
+  pushes.length = 0;
+  await sleep(60);
+  s.ble.k = 0; s.ble.after = `#pedal set ${amp} 2 46`;          // (k 0: each request in one write of 20 bytes)
+  const l1 = await ed.list();
+  for (let i = 0; i < 40 && !pushes.length; i++) await sleep(10);
+  await sleep(60);
+  s.ble.k = 0;
+  s.pedal(`set ${amp} 2 47`);
+  const pg = await ed.ping();
+  for (let i = 0; i < 40 && !pushes.some((x) => x.preset.p[amp][2] === 47); i++) await sleep(10);
+  const [, , lost] = await s.bt();
+  ok(l1.length === 52 && pg && pushes.some((x) => x.preset.p[amp][2] === 46) && pushes.some((x) => x.preset.p[amp][2] === 47) && lost === 0,
+     "BLE: a push and a reply cross: each waits for the other, nothing lost");
+  // two LE links (test build 27): the Chocolate on link 1 presses between every write of the editor's requests on link 0
+  // (a Control Change, then a Program Change); the editor's frames still come whole, and nothing goes to link 1
+  s.ble.between = "c808eb0187f";
+  const n0 = s.ble.c.notes, two = await ed.state(), l2 = await ed.list();
+  s.ble.between = "c808ec003";
+  const nm2 = await ed.namList();
+  s.ble.between = null;
+  ok(two.slot === 7 && l2.length === 52 && nm2.models.length === 28 && s.ble.c.notes === n0,
+     "BLE, two links: the Chocolate's writes between the editor's on the other link spoil nothing, nothing goes to it");
+  // a second editor on link 1: INFO from there is answered there only, while the editor on link 0 goes on
+  s.ble.c.got.length = 0;
+  for (const w of bleWrites([0xF0, 0x7D, 0x4F, 0x50, 1, 0xF7], 7)) s.ble.raw(`c${Buffer.from(w).toString("hex")}`);
+  const st3 = await ed.state();
+  for (let i = 0; i < 40 && !s.ble.c.got.length; i++) await sleep(10);
+  const ci = s.ble.c.got[0];
+  ok(ci && ci[4] === 1 && s.ble.c.got.length === 1 && st3.slot === 7, "BLE, two links: INFO asked on link 1 is answered on link 1; link 0's STATE on link 0");
+  // link 1 goes: the editor on link 0, the last to ask, is still pushed, without asking again
+  await ed.state();
+  await s.bt("drop 1");
+  pushes.length = 0;
+  await sleep(60);
+  s.pedal(`set ${amp} 2 48`);
+  for (let i = 0; i < 40 && !pushes.length; i++) await sleep(10);
+  ok(pushes.length >= 1 && pushes.at(-1).preset.p[amp][2] === 48, "BLE, two links: link 1 gone, the editor on link 0 is still pushed");
+  await s.bt("link 1");
+}
 
 // ---- 4. saving, slots ----
 await ed.select(2);
@@ -143,6 +275,59 @@ ok(oldDly.preset.p[dl][0] === 40 && oldDly.warn.length === 1 && newDly.preset.p[
   const u1 = await ed.usbAudio(true);
   ok(ed.hasUsbAudio && !u0.on && u0.rc === 0 && u1.on && u1.rc === 0, "USB audio: off by default; switched on");
 }
+// ---- test build 39 (protocol 5, the Bluetooth audio image): controls learned on the pedal, MIDI_IN, SWITCH ----
+if (FX) {
+  const eq = cat.blocks.findIndex((b) => b.label === "EQ"), dly = cat.blocks.findIndex((b) => b.label === "DLY");
+  let m = await ed.pedalMap();
+  ok(ed.hasPedalLearn && m.rc === 0 && !m.each && m.inputDb === 0 && !m.tails && m.btPower === 0 && m.entries.length === PEDAL_MAP_N && m.entries.every((e) => !e),
+     "MAP: nothing learned, SWITCH MOMENT, INPUT 0 dB, TAILS off, BT POWER HIGH, 8 places");
+  const got = [];
+  ed.onMidiIn = (x) => got.push(x);
+  ok(await ed.watch(true) === 3, "WATCH 3: the pedal also pushes what a controller sends it");
+  s.cc(80, 127); await sleep(150); s.cc(80, 0); await sleep(150);
+  ok(got.length === 2 && got[0].type === "cc" && got[0].n1 === 80 && got[0].n2 === 127 && got[1].n2 === 0,
+     `MIDI_IN: a controller's CC 80 = 127, then 0, pushed (${got.map((x) => `${x.n1}=${x.n2}`).join(" ")})`);
+  m = await ed.setPedalMap(false, pedalLearn(m.entries, 80, { kind: "on", b: eq }, switchMode([127, 0])));
+  ok(m.rc === 0 && m.entries[0] && m.entries[0].src === 80 && m.entries[0].dst === 8 + eq && m.entries[0].mode === 0, "MAP: CC 80 learned as the EQ's flip, on its press");
+  let was = (await ed.state()).preset.on[eq];
+  s.cc(80, 127); await sleep(100);
+  const pressed = (await ed.state()).preset.on[eq];
+  s.cc(80, 0); await sleep(100);
+  const released = (await ed.state()).preset.on[eq];
+  ok(pressed === 1 - was && released === pressed, "a learned switch acts: CC 80's press flips the EQ, its release does nothing");
+  m = await ed.setPedalMap(false, pedalLearn(m.entries, 81, { kind: "on", b: dly }, switchMode([127])));
+  m = await ed.setPedalMap(false, pedalLearn(m.entries, 82, { kind: "preset", step: 1 }, switchMode([127, 0])));
+  m = await ed.setPedalMap(false, pedalLearn(m.entries, 4, { kind: "param", b: eq, k: 0 }, switchMode([30])));
+  ok(m.rc === 0 && m.entries.filter(Boolean).length === 4 && m.entries[1].mode === MAP_EACH && m.entries[2].dst === CC_NEXT && m.entries[3].mode === MAP_VALUE,
+     "MAP: four learned (a switch that alternates, the next preset, a knob as a setting)");
+  was = (await ed.state()).preset.on[dly];
+  s.cc(81, 127); await sleep(80); s.cc(81, 0); await sleep(80); s.cc(81, 127); await sleep(100);
+  ok((await ed.state()).preset.on[dly] === 1 - was, "EACH: three messages of CC 81 flip the delay three times");
+  const slot0 = (await ed.state()).slot;
+  s.cc(82, 127); await sleep(100); s.cc(82, 0); await sleep(100);
+  ok((await ed.state()).slot === (slot0 + 1) % 52, "CC 82 (learned as the next preset) steps one preset on");
+  s.cc(4, 127); await sleep(100);
+  ok((await ed.state()).preset.p[eq][0] === 100, "CC 4 (learned as the EQ's first setting) sets it by its value");
+  const bad = await ed.setPedalMap(false, [{ src: 90, dst: 3, mode: 0 }, null, null, null, null, null, null, null]);
+  const dup = await ed.setPedalMap(false, [{ src: 90, dst: 15, mode: 0 }, { src: 90, dst: 16, mode: 0 }, null, null, null, null, null, null]);
+  ok(bad.rc === 1 && dup.rc === 1 && bad.entries.filter(Boolean).length === 4, "MAP: a number the pedal does not read, or one controller number twice, is refused (the table kept)");
+  m = await ed.setPedalMap(true, m.entries, 4, true, 2, 1);
+  ok(m.rc === 0 && m.each && m.inputDb === 4 && m.tails && m.btPower === 2 && m.outMode === 1, "MAP: SWITCH LATCH, INPUT +4 dB, TAILS on, BT POWER LOW, OUTPUT STEREO");
+  // test build 43: USB audio's routing, the byte after the entries
+  ok(m.usb && m.usb.send === 0 && m.usb.ret === 0 && !m.usb.cut, "MAP: USB audio's routing read, the default (USB SEND OUTPUT, USB RETURN OUTPUT, GUITAR MIX)");
+  m = await ed.setPedalMap(true, m.entries, 4, true, 2, 1, { send: 2, ret: 2 + dly, cut: true });
+  ok(m.rc === 0 && m.usb.send === 2 && m.usb.ret === 2 + dly && m.usb.cut && m.outMode === 1 && m.entries.filter(Boolean).length === 4,
+     "MAP: USB SEND DI + OUT, USB RETURN before DELAY, GUITAR CUT (the rest kept)");
+  m = await ed.setPedalMap(true, m.entries, 4, true, 2, 1);
+  ok(m.rc === 0 && m.usb.send === 2 && m.usb.ret === 2 + dly && m.usb.cut, "MAP: an editor that sends no routing leaves it as it is");
+  {
+    const raw = [1, 1, 14, 1 | 2 << 1 | 1 << 3, ...m.entries.flatMap((e) => (e ? [1, e.src, e.dst, e.mode] : [0, 0, 0, 0]))];
+    const r1 = ed._map(await ed.request(30, [...raw, 3], 4000)), r2 = ed._map(await ed.request(30, [...raw, 15 << 3], 4000));
+    ok(r1.rc === 1 && r2.rc === 1 && r2.usb.ret === 2 + dly && r2.usb.send === 2, "MAP: a routing no build writes (SEND 3, RETURN 15) is refused, the one set kept");
+  }
+  ed.onMidiIn = null;
+}
+await bleCheck(s);
 await s.end();
 
 // ---- 6. after a power cycle: the store is read back from the flash ----
@@ -157,6 +342,13 @@ list = await ed.list();
   ok(!u.recording && !u.playing && Object.keys(u.counts).length === 20, "USB audio: the streams' state and 20 counts");
   u = await ed.usbAudio(false);
   ok(!u.on && u.rc === 0 && !(await ed.usbAudio()).on, "USB audio: switched off again");
+}
+if (FX) {
+  const m = await ed.pedalMap();
+  ok(m.rc === 0 && m.each && m.inputDb === 4 && m.tails && m.btPower === 2 && m.outMode === 1 && m.entries.filter(Boolean).length === 4 && m.entries[0].src === 80,
+     "power cycle: the controls learned on the pedal, LATCH, INPUT, TAILS, BT POWER and OUTPUT are still there");
+  ok(m.usb && m.usb.send === 2 && m.usb.cut && m.usb.ret === 2 + cat.blocks.findIndex((b) => b.label === "DLY"),
+     "power cycle: USB SEND, USB RETURN and GUITAR are still there (test build 43)");
 }
 
 // ---- 7. v37: NAM models (an A2 file -> a user slot -> the AMP block's NAM type) ----
@@ -195,6 +387,14 @@ list = await ed.list();
   ok(await ed.setParam(amp, 0, kv) === kv && (await ed.state()).preset.type[amp] === nt, "NAM: a sound uses it");
   const bad = packModel(m.name, m.weights, lv); bad[64 + 100] ^= 0x55;           // a weight changed: the CRC no longer matches
   ok(await ed.namUpload(5, bad) === 1 && !(await ed.namList()).models[12 + 5].used, "NAM: a damaged model is refused, the slot stays empty");
+  if (FX) {                                       // test build 40 (protocol 5): NAM_RENAME, on the pedal itself
+    ok(ed.hasNamRename && await ed.namRename(4, "VOX AC30 VX") === 0 && (await ed.namList()).models[12 + 4].name === "VOX AC30 VX",
+       "NAM_RENAME: user slot 5 renamed on the pedal (no re-upload)");
+    const st4 = await ed.state();
+    ok(st4.preset.type[amp] === nt && st4.preset.p[amp][0] === kv, "NAM_RENAME: the sound using it is unchanged");
+    ok(await ed.namRename(6, "NOTHING") === 1, "NAM_RENAME: an empty slot is refused");
+    ok(await ed.namRename(4, "") === 1 && (await ed.namList()).models[12 + 4].name === "VOX AC30 VX", "NAM_RENAME: an empty name is refused, the name kept");
+  }
   ok(await ed.namErase(4) === 0 && !(await ed.namList()).models[12 + 4].used, "NAM: the slot is cleared again");
 }
 // ---- 8. v38: cabinet IRs (a WAV file -> an IR slot -> the CAB block's USER IR type) ----
@@ -250,7 +450,184 @@ list = await ed.list();
 ok(list[20].name === "STAGED A" && list[21].name === "STAGED B" && list[20].saved && !list[4].saved, "power cycle: the saved slots are still there");
 st = await ed.state();
 ok(st.slot === 4, "power cycle: the pedal starts on the last slot SAVEd (imports do not move it)");
+await bleCheck(s);
 await s.end();
+
+// ---- 8. protocol 6 (the Bluetooth audio image's editor for test builds 46 to 49): MAP's settings bytes, a preset's own
+// controls learned on the pedal (PL), scenes (SCENE); then a power cycle. A store of its own (section 6's stays as it is) ----
+if (FX) {
+  const flash2 = join(TMP, "flash2.bin");
+  s = sim(["--dump", flash2]);
+  await s.ready;
+  ed = new Editor(s.access);
+  const inf = await ed.connect();
+  const eq = cat.blocks.findIndex((b) => b.label === "EQ"), dly = cat.blocks.findIndex((b) => b.label === "DLY");
+  ok(inf.proto === 7 && ed.hasPresetLearn && ed.hasScenes, "protocol 6 (7 since test build 51): a preset's own controls, scenes, MAP's settings bytes");
+  // MAP: GUITAR TONE and PICKUP, PLAY VIEW, SCENE+SWITCH, SCENE FOOTSW
+  let m = await ed.pedalMap();
+  ok(m.rc === 0 && m.more && m.more.tone === 0 && m.more.pickup === 0 && m.more.view === 0 && !m.more.sceneWins && !m.more.feetPresets,
+     "MAP: GUITAR TONE NATURAL, PICKUP SINGLE, PLAY VIEW CHAIN, SWITCH WINS, the footswitches on the scenes (the defaults)");
+  m = await ed.setPedalMap(m.each, m.entries, m.inputDb, m.tails, m.btPower, m.outMode, { send: 1, ret: 0, cut: false },
+    { tone: 8, pickup: 1, view: 2, sceneWins: true, feetPresets: true });
+  ok(m.rc === 0 && m.more.tone === 8 && m.more.pickup === 1 && m.more.view === 2 && m.more.sceneWins && m.more.feetPresets && m.usb.send === 1,
+     "MAP: GUITAR TONE BRIGHT, PICKUP HUMBUCK, PLAY VIEW SCENES, SCENE WINS, the footswitches on the presets (and the routing)");
+  m = await ed.setPedalMap(m.each, m.entries, m.inputDb, m.tails, m.btPower, m.outMode, m.usb);
+  ok(m.rc === 0 && m.more.tone === 8 && m.more.pickup === 1 && m.more.view === 2 && m.more.feetPresets, "MAP: an editor that sends no settings bytes leaves them as they are");
+  {
+    const raw = [1, m.each ? 1 : 0, m.inputDb + 10, (m.tails ? 1 : 0) | m.btPower << 1 | m.outMode << 3,
+      ...m.entries.flatMap((e) => (e ? [1, e.src, e.dst, e.mode] : [0, 0, 0, 0])), m.usb.send | (m.usb.cut ? 4 : 0) | m.usb.ret << 3];
+    const r1 = ed._map(await ed.request(30, [...raw, 9, 2], 4000)), r2 = ed._map(await ed.request(30, [...raw, 3 << 4, 2], 4000));
+    const r3 = ed._map(await ed.request(30, [...raw, 8, 3], 4000)), r4 = ed._map(await ed.request(30, [...raw, 8, 32], 4000));   // (51: bit 4 is VOL PEDAL; bit 5 none)
+    ok(r1.rc === 1 && r2.rc === 1 && r3.rc === 1 && r4.rc === 1 && r4.more.tone === 8 && r4.more.view === 2,
+       "MAP: a GUITAR TONE, PICKUP or PLAY VIEW no build writes is refused, the ones set kept");
+  }
+  // test build 51 (protocol 7): VOL PEDAL, bit 4 of the last settings byte (the editor's "Volume pedal" row)
+  ok(ed.hasTwoJobs && m.more.volAt === 0, "MAP: VOL PEDAL AT INPUT, the default (protocol 7)");
+  m = await ed.setPedalMap(m.each, m.entries, m.inputDb, m.tails, m.btPower, m.outMode, m.usb, { ...m.more, volAt: 1 });
+  ok(m.rc === 0 && m.more.volAt === 1 && m.more.tone === 8 && m.more.view === 2 && m.more.sceneWins && m.more.feetPresets,
+     "MAP: VOL PEDAL BEFORE DLY, the other settings kept");
+  m = await ed.setPedalMap(m.each, m.entries, m.inputDb, m.tails, m.btPower, m.outMode, m.usb, { ...m.more, view: 1 });
+  ok(m.rc === 0 && m.more.volAt === 1 && m.more.view === 1, "MAP: another setting changed, VOL PEDAL kept");
+  m = await ed.setPedalMap(m.each, m.entries, m.inputDb, m.tails, m.btPower, m.outMode, m.usb, { ...m.more, view: 2 });
+  // PL: a preset's own controls
+  const slot = (await ed.state()).slot, other = (slot + 7) % 52;
+  let pl = await ed.presetMap(slot);
+  ok(pl.rc === 0 && pl.slot === slot && pl.used === 0 && pl.places === PRESET_MAP_N && !pl.entries.length, "PL: none in this preset, 64 places for all the presets");
+  pl = await ed.presetPut(slot, { ...presetEntry(30, { kind: "param", b: eq, k: 0 }, MAP_PRESS), lo: 20, hi: 80 });
+  ok(pl.rc === 0 && pl.used === 1 && pl.entries.length === 1 && pl.entries[0].src === 30 && pl.entries[0].dst === ccParam(eq, 0) &&
+     pl.entries[0].mode === MAP_VALUE && pl.entries[0].lo === 20 && pl.entries[0].hi === 80 && pl.entries[0].clo === 0 && pl.entries[0].chi === 127,
+     "PL: CC 30 learned as a pedal on the EQ's first setting, in this preset, 20 at the heel and 80 at the toe");
+  const at = async (v) => { s.cc(30, v); await sleep(100); return (await ed.state()).preset.p[eq][0]; };
+  const heel = await at(0), toe = await at(127), mid = await at(64);
+  ok(heel === 20 && toe === 80 && mid >= 49 && mid <= 51, `CC 30 drives it between the heel's and the toe's values (${heel}, ${mid}, ${toe})`);
+  pl = await ed.presetPut(slot, presetEntry(31, { kind: "on", b: dly }, MAP_PRESS));
+  pl = await ed.presetPut(slot, presetEntry(32, { kind: "scene", n: 2 }, MAP_PRESS));
+  ok(pl.rc === 0 && pl.entries.length === 3 && pl.used === 3 && pl.entries.some((e) => e.src === 32 && e.dst === CC_SCENE0 + 2),
+     "PL: CC 31 on the delay's ON, CC 32 on scene 3");
+  const was = (await ed.state()).preset.on[dly];
+  s.cc(31, 127); await sleep(80); s.cc(31, 0); await sleep(80);
+  ok((await ed.state()).preset.on[dly] === 1 - was, "CC 31's press flips the delay, its release does nothing");
+  pl = await ed.presetPut(slot, presetEntry(33, { kind: "on", b: dly }, MAP_EACH));
+  ok(pl.rc === 0 && pl.entries.length === 3 && !pl.entries.some((e) => e.src === 31) && pl.entries.some((e) => e.src === 33 && e.mode === MAP_EACH),
+     "PL: another control on the same row takes its place (one control a row)");
+  pl = await ed.presetPut(slot, { ...presetEntry(33, { kind: "param", b: eq, k: 0 }, MAP_PRESS), lo: 100, hi: 0 });
+  ok(pl.rc === 0 && pl.entries.length === 2 && pl.entries.find((e) => e.src === 33).dst === ccParam(eq, 0) && !pl.entries.some((e) => e.src === 30),
+     "PL: a control moved to another row leaves its old one, and that row's control goes (one row a control)");
+  const bad1 = await ed.presetPut(slot, { src: 40, dst: 3, mode: 0, lo: 0, hi: 100, clo: 0, chi: 127 });
+  const bad2 = await ed.presetPut(slot, { src: 40, dst: ccParam(eq, 1), mode: MAP_VALUE, lo: 0, hi: 101, clo: 0, chi: 127 });
+  ok(bad1.rc === 1 && bad2.rc === 1 && bad2.entries.length === 2, "PL: a number the pedal does not read, or a value out of range, is refused (the preset's kept)");
+  {   // test build 51 (protocol 7): a two-job pedal, mode bit 6 (0x40, 7 bits a byte on the wire): only a pedal on a block's
+      // setting (not the GT page's PRESET LVL), kept as sent
+    const gt = cat.blocks.findIndex((b) => b.label === "GT");
+    const two = await ed.presetPut(slot, { src: 41, dst: ccParam(dly, 2), mode: MAP_VALUE | 0x40, lo: 0, hi: 100, clo: 0, chi: 127 });
+    const e41 = two.entries.find((e) => e.src === 41);
+    const onGt = await ed.presetPut(slot, { src: 42, dst: ccParam(gt, 2), mode: MAP_VALUE | 0x40, lo: 0, hi: 100, clo: 0, chi: 127 });
+    const onSw = await ed.presetPut(slot, { ...presetEntry(42, { kind: "on", b: dly }, MAP_PRESS), mode: MAP_PRESS | 0x40 });
+    ok(two.rc === 0 && e41 && e41.mode === (MAP_VALUE | 0x40) && onGt.rc === 1 && onSw.rc === 1 && onSw.entries.length === 3,
+       "PL (protocol 7): a two-job pedal (mode bit 6) on the delay's setting kept as sent; on PRESET LVL or on a switch refused");
+    pl = await ed.presetForget(slot, 41);
+  }
+  {   // the editor's "or VOLUME when ... is off" on a preset's own pedal (test build 51): set, one a preset, taken off
+    let r = await ed.presetPut(slot, { ...presetEntry(43, { kind: "param", b: eq, k: 1 }, MAP_PRESS), mode: MAP_VALUE | PL_DUAL });
+    const a43 = r.entries.find((e) => e.src === 43);
+    r = await ed.presetPut(slot, { ...presetEntry(44, { kind: "param", b: dly, k: 2 }, MAP_PRESS), mode: MAP_VALUE | PL_DUAL });
+    ok(a43 && a43.mode === (MAP_VALUE | PL_DUAL) && dualOk(a43) && r.entries.find((e) => e.src === 44).mode === (MAP_VALUE | PL_DUAL) &&
+       r.entries.find((e) => e.src === 43).mode === MAP_VALUE, "PL: +VOL on the EQ's pedal, then on the delay's: one two-job pedal a preset");
+    r = await ed.presetPut(slot, { ...r.entries.find((e) => e.src === 44), mode: MAP_VALUE });
+    ok(r.rc === 0 && r.entries.find((e) => e.src === 44).mode === MAP_VALUE && r.entries.find((e) => e.src === 44).dst === ccParam(dly, 2),
+       "PL: +VOL taken off again, the pedal kept on its setting");
+    await ed.presetForget(slot, 43); pl = await ed.presetForget(slot, 44);
+    // where the editor begins a learned pedal with two jobs: the catalogue's own names, as dualDefault reads them
+    const sfx = cat.blocks[B_SFX], pit = cat.blocks[B_PITCH];
+    const wah = sfx.types.find((t) => t.name === "WAH"), aw = sfx.types.find((t) => t.name === "AUTO WAH"), wh = pit.types.find((t) => t.name === "WHAMMY");
+    ok(cat.blocks[B_GATE].label === "GT" && sfx.label === "SFX" && pit.label === "PIT" && wah && aw && wh &&
+       wah.params[0].name === "PEDAL" && aw.params[3].name === "CENTER" && wh.params[3].name === "PEDAL" &&
+       dualDefault(B_SFX, wah.name, 0) && dualDefault(B_SFX, aw.name, 3) && dualDefault(B_PITCH, wh.name, 3) && !dualDefault(B_SFX, wah.name, 1),
+       "a pedal learned on WAH's PEDAL, AUTO WAH's CENTER or WHAMMY's PEDAL begins with two jobs, as on the pedal (the catalogue's names)");
+  }
+  pl = await ed.presetForget(slot, 33);
+  ok(pl.rc === 0 && pl.entries.length === 1 && pl.used === 1 && pl.entries[0].src === 32, "PL: CC 33 forgotten");
+  {   // the 64 places, all the presets together
+    const room = (slot + 20) % 52, rows = [];
+    for (let b = 0; b < 12; b++) for (let k = 0; k < 5; k++) rows.push(ccParam(b, k));
+    for (let b = 0; b < 12; b++) rows.push(8 + b);
+    let r = null;
+    for (let i = 0; i < PRESET_MAP_N - 1; i++) r = await ed.presetPut(room, { src: 60 + i, dst: rows[i], mode: rows[i] < 20 ? MAP_PRESS : MAP_VALUE, lo: 0, hi: 100, clo: 0, chi: 127 });
+    const full = await ed.presetPut(room, { src: 124, dst: rows[PRESET_MAP_N], mode: MAP_PRESS, lo: 0, hi: 100, clo: 0, chi: 127 });
+    ok(r.rc === 0 && r.used === PRESET_MAP_N && full.rc === 3 && full.used === PRESET_MAP_N, "PL: 64 places for all the presets, the 65th refused (rc 3)");
+    for (let i = 0; i < PRESET_MAP_N - 1; i++) r = await ed.presetForget(room, 60 + i);
+    ok(r.rc === 0 && r.used === 1 && !r.entries.length, "PL: forgotten again, one by one");
+  }
+  // SCENE
+  const onNow = async () => (await ed.state()).preset.on;
+  const maskNow = async () => (await onNow()).reduce((a, v, b) => a | (v ? 1 << b : 0), 0);
+  let sc = await ed.scenes();
+  ok(sc.rc === 0 && sc.cur === 0 && sc.set === 0 && sc.saved.set === 0, "SCENE: none stored, scene 1 playing");
+  const m0 = await maskNow();
+  sc = await ed.sceneSet(2, 1 << dly);
+  ok(sc.rc === 0 && sc.set === 4 && sc.masks[2] === 1 << dly && sc.cur === 0 && await maskNow() === m0, "SCENE: scene 3 set to the delay alone and stored; scene 1 plays on");
+  sc = await ed.sceneRecall(2);
+  ok(sc.rc === 0 && sc.cur === 2 && (sc.set & 5) === 5 && sc.masks[0] === m0 && await maskNow() === 1 << dly,
+     "SCENE: scene 3 recalled, the delay alone on (SCENE WINS); scene 1 kept as it played");
+  ok((await ed.state()).dirty, "SCENE: scenes not saved yet: the preset differs from its saved one");
+  let pushes = 0;
+  ok(await ed.watch(true) > 0, "WATCH: on");
+  ed.onState = () => pushes++;
+  s.cc(CC_SCENE0, 127); await sleep(150);
+  sc = await ed.scenes();
+  ok(sc.cur === 0 && await maskNow() === m0 && pushes > 0, "CC 65 from a controller recalls scene 1, the blocks as they played; the change pushed");
+  s.cc(32, 127); await sleep(80); s.cc(32, 0); await sleep(80);
+  sc = await ed.scenes();
+  ok(sc.cur === 2 && await maskNow() === 1 << dly, "the preset's own CC 32 recalls scene 3");
+  ed.onState = null;
+  ok(await ed.save(slot) === 0, "SAVE: the preset with its scenes");
+  sc = await ed.sceneRecall(0);
+  ok(sc.saved.set === sc.set && sc.saved.masks[2] === 1 << dly && sc.cur === 0 && !(await ed.state()).dirty, "SCENE: saved with the sound; recalling one is no change");
+  sc = await ed.sceneSet(1, 0);
+  ok(sc.rc === 0 && (sc.set & 2) && sc.masks[1] === 0 && (await ed.state()).dirty, "SCENE: scene 2 set to no block: a change until SAVE");
+  sc = await ed.sceneForget(1);
+  ok(sc.rc === 0 && !(sc.set & 2) && !(await ed.state()).dirty, "SCENE: scene 2 forgotten: as saved again");
+  const badSc = await ed.request(33, [2, 4, 0, 0]);
+  ok(badSc[0] === 1, "SCENE: a fifth scene is refused");
+  // test build 50: the scenes' names, typed in the editor, 3 characters, every preset its own
+  ok(sc.names && sc.names.every((t) => t === "") && sc.saved.names && sc.saved.names.every((t) => t === ""), "SCENE: no scene named yet (test build 50)");
+  sc = await ed.sceneName(2, "cho");
+  ok(sc.rc === 0 && sc.names[2] === "CHO" && sc.names[0] === "" && sc.saved.names[2] === "" && (await ed.state()).dirty,
+     "SCENE: scene 3 named CHO (typed cho): a change until SAVE");
+  sc = await ed.sceneName(0, "A");
+  ok(sc.rc === 0 && sc.names[0] === "A" && sc.names[2] === "CHO", "SCENE: a name of one character");
+  const bn1 = await ed.request(33, [4, 1, 65, 0, 66]), bn2 = await ed.request(33, [4, 1, 127, 0, 0]), bn3 = await ed.request(33, [4, 4, 65, 0, 0]);
+  ok(bn1[0] === 1 && bn2[0] === 1 && bn3[0] === 1, "SCENE: a character after a name's end, one past ASCII 126, a fifth scene: refused");
+  ok(await ed.save(other) === 0 && (await ed.state()).slot === other, "SAVE into another slot");
+  const pl2 = await ed.presetMap(other), sc2 = await ed.scenes();
+  ok(pl2.entries.length === 1 && pl2.entries[0].src === 32 && pl2.used === 2 && sc2.saved.set === sc.set && sc2.saved.masks[2] === 1 << dly,
+     "SAVE into another slot takes the preset's own controls and its scenes along");
+  ok(sc2.saved.names[2] === "CHO" && sc2.saved.names[0] === "A" && !(await ed.state()).dirty, "SAVE keeps the scenes' names (test build 50)");
+  await bleCheck(s);
+  await s.end();
+  // a power cycle: all of it read back from the flash
+  s = sim([flash2]);
+  await s.ready;
+  ed = new Editor(s.access);
+  await ed.connect();
+  m = await ed.pedalMap();
+  ok(m.more && m.more.tone === 8 && m.more.pickup === 1 && m.more.view === 2 && m.more.sceneWins && m.more.feetPresets,
+     "power cycle: GUITAR TONE, PICKUP, PLAY VIEW and the two scene rows are still there");
+  ok(m.more.volAt === 1, "power cycle: VOL PEDAL still BEFORE DLY (test build 51)");
+  ok((await ed.state()).slot === other, "power cycle: the pedal starts on the slot saved last");
+  pl = await ed.presetMap(other);
+  sc = await ed.scenes();
+  ok(pl.entries.length === 1 && pl.entries[0].dst === CC_SCENE0 + 2 && pl.used === 2, "power cycle: the preset's own controls are still there");
+  ok(sc.set === sc2.saved.set && sc.masks[2] === 1 << dly && sc.cur === sc2.saved.cur, "power cycle: the preset opens with its scenes, in the scene it was saved in");
+  ok(sc.names && sc.names[2] === "CHO" && sc.names[0] === "A" && sc.names[1] === "", "power cycle: the scenes' names are still there (test build 50)");
+  await ed.select(slot);
+  const scOther = await ed.scenes();
+  await ed.select(other);
+  const scBack = await ed.scenes();
+  ok(scOther.names.every((t) => t === "") && scBack.names[2] === "CHO" && !(await ed.state()).dirty, "every preset has its own names: none in the first slot, CHO again in the other");
+  await bleCheck(s);
+  await s.end();
+}
 
 console.log(failed ? `\n${failed} FAILED` : "\nall editor tests passed");
 process.exit(failed ? 1 : 0);

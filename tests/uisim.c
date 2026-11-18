@@ -3,6 +3,7 @@
  * frame buffer, exactly as the pedal streams it (window + pixels). Writes PPM screenshots of a script of actions.
  *   cc -O1 -Iengine -Ifirmware -o build/uisim tests/uisim.c engine/px_dsp.c firmware/px_math.c -lm
  *   build/uisim OUTDIR        -> OUTDIR/NN_name.ppm ; also checks that every pixel is drawn on each full page
+ * With -DPX_OWN_FX=1 (the Bluetooth audio image's): then SYN PAD's left footswitch and the two effects' pages too.
  * The frame buffer starts (and is re-poisoned before each full page) in magenta: any pixel left magenta after a
  * full redraw is a gap in the page's layout. */
 #include <math.h>
@@ -11,7 +12,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include "px_dsp.h"
+#if PX_OWN_FX   /* test build 51: what the engine is told (openpocket.c: px_exp_dual, px_exp_place), seen here */
+static int uis_dual = -2, uis_dual_n, uis_place = -1;
+#define PX_EXP_DUAL(b) (uis_dual = (int)(b), uis_dual_n++)
+#define PX_EXP_PLACE(at) (uis_place = (int)(at))
+#endif
 #include "../firmware/px_midi.h"
+#if PX_OWN_FX
+static int a_in_gain_n;                                  /* test build 39: INPUT applied (px_audio.h's, counted here) */
+static void a_in_gain_apply(void) { a_in_gain_n++; }
+static int a_tails_n;                                    /* test build 40: TAILS to the engine (px_audio.h's, counted here) */
+static void a_tails_apply(void) { a_tails_n++; }
+static int a_inz_n;
+static void a_inz_apply(void) { a_inz_n++; }      /* (test build 46: IN-Z to the input, counted) */
+#endif
 
 #include "simlcd.h"
 #define POISON 0xF81F
@@ -25,10 +39,20 @@ static uint32_t master_vol = 80;
 static px_preset_t saved[52];
 static int saved_ok[52];
 static void st_get(uint32_t k, px_preset_t *p) { if (saved_ok[k]) *p = saved[k]; else px_preset_factory(p, (int)k); }
+#if PX_OWN_FX
+static char uis_scn[52][PX_SC_N][PX_SCN_LEN];             /* (test build 50: the slots' scene names, as px_store.h keeps them) */
+static void px_scn_load(uint32_t slot) { memcpy(px_scn, uis_scn[slot < 52u ? slot : 0u], sizeof px_scn); memcpy(px_scn_saved, px_scn, sizeof px_scn); }
+static int st_save(uint32_t k, const px_preset_t *p) { saved[k] = *p; saved_ok[k] = 1; memcpy(uis_scn[k], px_scn, sizeof px_scn); return 0; }
+#else
 static int st_save(uint32_t k, const px_preset_t *p) { saved[k] = *p; saved_ok[k] = 1; return 0; }
+#endif
 static int st_reset(uint32_t k) { saved_ok[k] = 0; return 0; }
 static int st_saved(uint32_t k) { return saved_ok[k]; }
+#if PX_OWN_FX
+static void load_preset(uint32_t i) { st_get(i, &PRESET); PX_SC_LOAD(i); }
+#else
 static void load_preset(uint32_t i) { st_get(i, &PRESET); }
+#endif
 static int a_level_db(int ch) { return ch ? -84 : -62; }
 static uint8_t a_pf[PX_NBLK + 1] = {0, 0, 0, 0, 0, 0, 3, 0, 0, 5, 7, 0, 64};   /* v38: CPU per block (the tuner's footer) */
 static uint32_t a_wcut = 2;                            /* v39: wet blocks cut short */
@@ -41,9 +65,25 @@ static void b_num(char *d, uint32_t v) { char t[12]; int n = 0; while (*d) d++; 
 static void b_str(char *d, const char *s) { while (*d) d++; while (*s) *d++ = *s++; *d = 0; }
 static int midi_saved;
 static void midi_persist(void) { midi_saved++; }
+static int learn_saved;
+static void learn_persist(void) { learn_saved++; }   /* (test build 46: a control learned or cleared, written) */
 /* user slots for the list settings (F7): NAM slot 3 and IR slots 2 and 5 hold something, the others are empty */
 int px_nam_user(int slot, char *name12, float *level_db, float *w) { (void)w; if (slot != 2) return 0; strcpy(name12, "MY AMP"); if (level_db) *level_db = 0; return 1; }
 int px_ir_user(int slot, char *name12, float *h) { (void)h; if (slot != 1 && slot != 4) return 0; strcpy(name12, slot == 1 ? "V30 4X12" : "GREENBACK"); return 1; }
+#if PX_OWN_FX                                           /* the Bluetooth audio image's SYN PAD: its catches and fades counted */
+static int n_catch, n_fade;
+#define PX_PAD_PRESS() (n_catch++)
+#define PX_PAD_STOP() (n_fade++)
+static int usb_apply_n;                                 /* test build 41: SETTINGS' USB PORT to the port (px_usb.h's, counted) */
+static uint32_t usb_note;                               /* and the footswitch's note the host gives PLAY (px_usbhost.h pxu_note) */
+#define PX_USB_MODE_APPLY() (usb_apply_n++)
+#if PX_OWN_FX && OP_UAUDIO
+static volatile uint8_t a_ua;                           /* test build 43: USB audio on (px_audio.h's), and the streams the USB */
+static uint32_t ua_stat0;                               /* line shows (px_uaudio.h ed_ua_stat 0: 1 records, 4 plays) */
+static uint32_t ed_ua_stat(uint32_t k) { return k ? 0u : ua_stat0; }
+#endif
+#define PX_UI_NOTE() usb_note
+#endif
 #include "ui_text.h"
 #include "ui.h"
 
@@ -339,6 +379,463 @@ static int overhaul(const char *d)
     return 0;
 }
 
+#if PX_OWN_FX
+/* ---- the Bluetooth audio image's own effects (PX_OWN_FX): SYN PAD's left footswitch against v42's controls (ui_buttons
+ * as the main loop runs it, every 5 ms), and the two effects' pages ---- */
+static void pad_start(int on)
+{
+    cur_preset = 9; load_preset(9); ui_kept_slot = ~0u; ui_mode = M_CHAIN; ui_item = 0; ui_blk = PX_B_AMP; a_tmute = 0;
+    PRESET.type[PX_B_SYN] = PX_SYN_PAD; PRESET.on[PX_B_SYN] = (uint8_t)on;
+    n_catch = n_fade = 0; hold(0, 400);
+}
+static int pad_gestures(const char *d)
+{
+    const uint32_t FSL = UB_FSDN, FSR = UB_FSUP;
+    px_preset_t was;
+    pad_start(0); tap(FSL); CHECK(cur_preset == 8 && n_catch == 0, "PAD off: the left footswitch steps back, as on v42");
+    pad_start(0); hold(1u << FSL, 40); hold(1u << FSL | 1u << FSR, 40); hold(0, 300);
+    CHECK(ui_mode == M_TUNER && cur_preset == 9 && a_tmute, "PAD off: left then right within 150 ms: the tuner, the preset as it was");
+    tuner_close();
+    pad_start(0); hold(1u << FSR, 40); hold(1u << FSR | 1u << FSL, 40); hold(0, 300);
+    CHECK(ui_mode == M_TUNER && cur_preset == 9, "PAD off: right then left: the tuner, the preset as it was");
+    tuner_close();
+    pad_start(1); was = PRESET; tap(FSL);
+    CHECK(n_catch == 1 && n_fade == 0 && cur_preset == 9 && !memcmp(&was, &PRESET, sizeof was) && ui_mode == M_CHAIN,
+          "PAD on: the left footswitch catches the chord; preset, sound and page unchanged");
+    pad_start(1); ui_mode = M_BLOCK; ui_blk = PX_B_SYN; ui_item = 2; tap(FSL);
+    CHECK(n_catch == 1 && ui_mode == M_BLOCK && ui_blk == PX_B_SYN && ui_item == 2, "PAD on, on the SYN page: a catch leaves the page as it is");
+    pad_start(1); tap(FSR); CHECK(cur_preset == 10 && n_catch == 0, "PAD on: the right footswitch still steps on");
+    pad_start(1); hold(1u << FSL, 40); hold(1u << FSL | 1u << FSR, 40); hold(0, 300);
+    CHECK(ui_mode == M_TUNER && a_tmute && cur_preset == 9 && n_catch == 1 && n_fade == 1,
+          "PAD on: left then right within 150 ms: the tuner, the pad let go, the preset as it was");
+    hold(1u << FSL, 40); hold(0, 300);
+    CHECK(ui_mode == M_CHAIN && n_catch == 1 && !a_tmute, "PAD on: in the tuner the left footswitch only leaves it (no catch)");
+    pad_start(1); hold(1u << FSR, 40); hold(1u << FSR | 1u << FSL, 40); hold(0, 300);
+    CHECK(ui_mode == M_TUNER && cur_preset == 9 && n_catch == 0 && n_fade == 0, "PAD on: right then left: the step back and the tuner, no catch");
+    tap(FSR); hold(0, 300);
+    pad_start(1); hold(1u << FSL, 750); hold(0, 50);
+    CHECK(n_catch == 1 && n_fade == 1 && cur_preset == 9 && ui_mode == M_CHAIN, "PAD on: the left held 0.7 s: caught, then faded; once");
+    pad_start(1); hold(1u << FSL, 400); hold(0, 600);
+    CHECK(n_catch == 1 && n_fade == 0, "PAD on: held 0.4 s: no fade");
+    pad_start(1); hold(1u << FSL, 300); hold(1u << FSL | 1u << FSR, 600); hold(0, 300);
+    CHECK(n_catch == 1 && n_fade == 0 && cur_preset == 10 && ui_mode == M_CHAIN,
+          "PAD on: right pressed 0.3 s into a left hold: a step on, and the hold no longer fades");
+    pad_start(1); hold(1u << UB_PUSH, 850); hold(0, 5); tap(FSL);
+    CHECK(ui_mode == M_SAVE && n_catch == 0, "PAD on: on SAVE the left footswitch does nothing, as on v42");
+    tap(UB_HOME);
+    pad_start(1); tap(UB_HOME); tap(FSL);
+    CHECK(ui_mode == M_LIST && n_catch == 1 && cur_preset == 9, "PAD on: on the preset list a catch, and the list stays");
+    tap(UB_HOME);
+    pad_start(1); PRESET.type[PX_B_SYN] = PX_SYN_STRINGS; tap(FSL);
+    CHECK(cur_preset == 8 && n_catch == 0, "another SYN model on: the left footswitch steps back");
+    pad_start(1); tap(FSL); hold(0, 200); tap(FSL); hold(0, 200);
+    CHECK(n_catch == 2 && cur_preset == 9, "PAD on: two presses 0.2 s apart: two catches (the next chord)");
+    {   /* every value text of PAD's, LOW OCTAVE's and TREBLE BOOST's settings fits the EDIT page's value box (FT_MD, 90 px) */
+        char b[16]; uint32_t wmax = 0; int bad = 0;
+        static const int BT[3][2] = {{PX_B_SYN, PX_SYN_PAD}, {PX_B_PITCH, PX_PIT_LOWOCT}, {PX_B_DRIVE, PX_DRV_TREBLE}};
+        for (int i = 0; i < 3; i++) for (int k = 0; k < 5; k++) for (int v = 0; v <= 100; v++) {
+            if (!px_param_text(BT[i][0], BT[i][1], k, v, b)) continue;
+            uint32_t w = ft_width(&FT_MD, b); if (w > wmax) wmax = w; if (w > 90u) { bad++; if (bad < 4) printf("too wide: %s (%u px)\n", b, w); }
+        }
+        CHECK(!bad && wmax > 0, "PAD's, LOW OCTAVE's and TREBLE BOOST's value texts fit the EDIT page's box");
+    }
+    /* their pages, drawn whole: the model, the settings in plain values */
+    pad_start(1); ui_blk = PX_B_SYN; ui_mode = M_BLOCK; ui_item = 0; full(); shot(d, "edit_syn_pad");
+    load_preset(9); PRESET.on[PX_B_PITCH] = 1; PRESET.type[PX_B_PITCH] = PX_PIT_LOWOCT;
+    { static const uint8_t K[5] = {40, 70, 100, 33, 50}; memcpy(PRESET.p[PX_B_PITCH], K, 5); }
+    ui_blk = PX_B_PITCH; ui_mode = M_BLOCK; ui_item = 0; full(); shot(d, "edit_pitch_low_octave");
+    load_preset(9); PRESET.on[PX_B_DRIVE] = 1; PRESET.type[PX_B_DRIVE] = PX_DRV_TREBLE;   /* test build 40 */
+    { static const uint8_t K[5] = {75, 100, 50, 0, 0}; memcpy(PRESET.p[PX_B_DRIVE], K, 5); }
+    ui_blk = PX_B_DRIVE; ui_mode = M_BLOCK; ui_item = 0; full(); shot(d, "edit_drive_treble_boost");
+    ui_home(); load_preset(9); full();
+    return 0;
+}
+/* test build 46: controls learned live, a preset's own (ui.h ui_learn_*, px_midi.h mid_learn / mid_pl): hold FX on a block
+ * page's ON row or a setting arms the learn, a controller's control (px_learn_feed, as px_midi_io.h gives it) is taken, 1.2 s
+ * later it is in and written (learn_persist); the footer says each step in the hint's box, the load figure kept; held again
+ * on that row it clears it; the MODEL row has none; any other control stops a learn; nothing heard in 10 s: given up; on
+ * PLAY, hold FX still opens SETTINGS */
+static int footer_has(uint16_t col) { return count_col(0, F_Y + 3u, ST_X - 2u, 15, col) > 0; }
+static int learn_live(const char *d)
+{
+    static const char *const T[] = {"LEARNED: CC 127", "CC 127 CLEARED", "LEARN: 64 IN USE, FULL", "LEARN: CANCELLED",
+                                    "64 LEARNED  HOLD FX", "CC 127  HOLD FX: CLEAR"};
+    for (uint32_t i = 0; i < sizeof T / sizeof T[0]; i++) CHECK(ft_width(&FT_SM, T[i]) <= ST_X - 2u, "a learn's line fits a block page's hint box");
+    {   /* test build 48: the guided page's texts fit their boxes */
+        static const char *const F[] = {"KNOB: CHOOSE    PUSH: NEXT", "KNOB: VALUE    PUSH: NEXT", "KNOB: VALUE    PUSH: DONE"};
+        static const char *const R[] = {"1  PEDAL OR SWITCH", "2  PRESS THE SWITCH", "3  VALUE AT THE HEEL", "4  VALUE AT THE TOE"};
+        static const char *const B[] = {"WHAT WILL YOU USE?", "PRESS THE SWITCH", "PEDAL AT THE HEEL", "PEDAL AT THE TOE"};
+        int fit = ft_width(&FT_SM, "HOME: CANCEL") <= 128u && ft_width(&FT_NM, "SWITCH") <= 240u && ft_width(&FT_NM, "-14.7 DB") <= 240u;
+        for (int i = 0; i < 3; i++) fit &= ft_width(&FT_SM, F[i]) <= 240u;
+        for (int i = 0; i < 4; i++) fit &= ft_width(&FT_SM, R[i]) <= 150u && ft_width(&FT_MD, B[i]) <= 240u;
+        CHECK(fit, "learn: the guided page's texts fit");
+    }
+    px_midi_map_clear(); px_midi_pl_clear(); px_learn_cancel(); learn_saved = 0; usb_note = 0;
+    ui_home(); load_preset(9); cur_preset = 9; hold(0, 3000);
+    tap(UB_AMP); CHECK(ui_mode == M_BLOCK && ui_blk == PX_B_AMP && ui_item == 0u, "learn: the AMP page, MODEL selected");
+    ui_turn(-1, 0); CHECK(ui_item == 1u, "learn: the knob up to ON");
+    full();
+    /* a switch on ON: the guided page, SWITCH to begin with */
+    hold(1u << UB_FX, 850); hold(0, 10); ui_render(); shot(d, "learn_guide_type");
+    CHECK(ui_mode == M_GUIDE && lg.step == LG_TYPE && lg.sw && !mid_learn.on, "learn: hold FX on ON opens the guided learn, SWITCH to begin with");
+    tap(UB_FX); tap(UB_DLY); tap(UB_FSUP);
+    CHECK(ui_mode == M_GUIDE && lg.step == LG_TYPE && cur_preset == 9 && ui_blk == PX_B_AMP, "learn: FX, a block's button, a footswitch do nothing on the page");
+    tap(UB_PUSH); hold(0, 10); ui_render(); shot(d, "learn_guide_press_switch");
+    CHECK(lg.step == LG_LISTEN && mid_learn.on && !mid_learn.pedal && mid_learn.keep, "learn: PUSH: PRESS THE SWITCH, listening");
+    const int amp = PRESET.on[PX_B_AMP];
+    CHECK(px_learn_feed(3, 127) && px_learn_feed(3, 0), "learn: the controller's press and release taken");
+    hold(0, 1300); ui_render(); shot(d, "edit_learn_learned");
+    int e = px_midi_pl_row(9, PXM_CC_TOGGLE0 + PX_B_AMP, PXM_CC_ON0 + PX_B_AMP);
+    CHECK(ui_mode == M_BLOCK && ui_item == 1u && learn_saved == 1 && e >= 0 && mid_pl[e].src == 3 && mid_pl[e].mode == PXM_MAP_PRESS &&
+          footer_has(GRN) && PRESET.on[PX_B_AMP] == amp, "learn: in after 1.2 s (a momentary switch: PRESS), written, back on the page, LEARNED in green, nothing played");
+    hold(0, 2600); ui_render(); shot(d, "edit_learn_row_has_one");
+    CHECK(footer_has(UI_ACC) && !footer_has(GRN), "learn: the note gone, the selected row says its number");
+    hold(1u << UB_FX, 850); hold(0, 10); ui_render(); shot(d, "edit_learn_cleared");
+    CHECK(ui_mode == M_BLOCK && learn_saved == 2 && px_midi_pl_count(9) == 0 && footer_has(UI_ACC), "learn: held again on that row: cleared and written");
+    hold(0, 2600);
+    ui_turn(1, 0); ui_turn(1, 0); ui_turn(1, 0); CHECK(ui_item == 3u, "learn: the knob down to GAIN (after the NAM amp's MODEL list)");
+    /* a pedal on a setting: PEDAL to begin with; its heel and toe with the knob, heard, the pedal there */
+    hold(1u << UB_FX, 850); hold(0, 10);
+    CHECK(ui_mode == M_GUIDE && !lg.sw && lg.knob, "learn: on a setting, PEDAL to begin with");
+    tap(UB_PUSH);
+    CHECK(mid_learn.on && mid_learn.pedal && mid_learn.dval == px_cc_param(PX_B_AMP, 1), "learn: PUSH: MOVE THE PEDAL, listening");
+    {
+        const int g0 = PRESET.p[PX_B_AMP][1], heel = g0 >= 10 ? g0 - 10 : 0, toe = g0 <= 98 ? g0 + 2 : 100;
+        px_learn_feed(4, 70); hold(0, 10);
+        CHECK(lg.step == LG_LO && lg.src == 4 && mid_learn.hold == 4 && px_midi_pl_count(9) == 0 && learn_saved == 2,
+              "learn: the pedal heard at its first message, nothing in the table yet");
+        CHECK(px_learn_feed(4, 3), "learn: the pedal held off meanwhile (here at its heel, 3: it never sends 0)");
+        for (int i = 0; i < 10; i++) ui_turn(-1, 0);
+        hold(0, 10); ui_render(); shot(d, "learn_guide_heel");
+        CHECK(PRESET.p[PX_B_AMP][1] == heel && count_col(8, F_Y - 6u, 224, 4, UI_ACC) <= 6 * 4 && count_col(8, F_Y - 6u, 224, 4, C_BAR) > 200,
+              "learn: the knob sets the heel's value, heard; the pedal's place shown (at its heel)");
+        tap(UB_PUSH);
+        CHECK(lg.step == LG_HI && lg.lo == heel && lg.clo == 3 && PRESET.p[PX_B_AMP][1] == g0,
+              "learn: PUSH: the heel taken, the value and where the pedal is; the toe from the preset's own value");
+        px_learn_feed(4, 120);                         /* (the pedal at its toe: 120) */
+        ui_turn(1, 0); ui_turn(1, 0); hold(0, 10); ui_render(); shot(d, "learn_guide_toe");
+        CHECK(count_col(8, F_Y - 6u, 200, 4, UI_ACC) > 0, "learn: the pedal's place shown (at its toe)");
+        tap(UB_PUSH); hold(0, 10); ui_render(); shot(d, "learn_guide_two_jobs");
+        CHECK(ui_mode == M_GUIDE && lg.step == LG_DUAL && !lg.dual && px_midi_pl_count(9) == 0 && learn_saved == 2,
+              "learn: PUSH at the toe: step 5 (test build 51), WHEN AMP IS OFF, NOTHING to begin with (a gain), nothing in yet");
+        tap(UB_PUSH); hold(0, 10); ui_render(); shot(d, "edit_learn_pedal_learned");
+        e = px_midi_pl_row(9, px_cc_param(PX_B_AMP, 1), 0xFFu);
+        CHECK(ui_mode == M_BLOCK && ui_item == 3u && e >= 0 && mid_pl[e].src == 4 && mid_pl[e].mode == PXM_MAP_VALUE && mid_pl[e].lo == heel &&
+              mid_pl[e].hi == toe && mid_pl[e].clo == 3 && mid_pl[e].chi == 120 && learn_saved == 3 && PRESET.p[PX_B_AMP][1] == g0 &&
+              mid_learn.hold == 0xFFu && !px_learn_feed(4, 64) && footer_has(GRN),
+              "learn: PUSH: done, the range and the pedal's travel in, written, the preset's own value back, the pedal free");
+    }
+    hold(0, 2600); ui_render(); shot(d, "edit_learn_gain_tagged");
+    {   /* the tag: GAIN's label then its number, in the accent colour, at the left of the row (the value keeps its place) */
+        const uint32_t y = E_P0 + 1u * E_ROW;
+        CHECK(count_col(BAR_X, y + 5u, 130, 15, UI_ACC) > 0 && count_col(BAR_X + 120u, y + 5u, 10, 15, UI_ACC) == 0,
+              "learn: a row with a control says so: its label, then CC 4 in the accent colour");
+    }
+    ui_turn(-1, 0); ui_turn(-1, 0); CHECK(ui_item == 0u, "learn: the knob up to MODEL (ON, MODEL, the settings)");
+    hold(0, 10); ui_render(); shot(d, "edit_learn_model_row");
+    CHECK(footer_has(UI_ACC), "learn: MODEL says the preset's table is there (1 LEARNED  HOLD FX)");
+    hold(1u << UB_FX, 850); hold(0, 10); ui_render(); shot(d, "learn_table");
+    CHECK(ui_mode == M_LEARN && !mid_learn.on && learn_saved == 3, "learn: hold FX on MODEL opens the preset's MIDI table");
+    mid_map[0] = (px_map_t){ 80, PXM_CC_NEXT, PXM_MAP_PRESS };   /* (an editor's, for every preset: grey, not cleared here) */
+    hold(0, 10); ui_render(); shot(d, "learn_table_with_editor");
+    ui_turn(1, 0); hold(1u << UB_FX, 850); hold(0, 10); ui_render(); shot(d, "learn_table_editor_row");
+    CHECK(mid_map[0].src == 80 && learn_saved == 3, "learn: the table leaves the editor's controls to the editor");
+    ui_turn(-1, 0); hold(1u << UB_FX, 850); hold(0, 10); ui_render(); shot(d, "learn_table_cleared");
+    CHECK(px_midi_pl_count(9) == 0 && learn_saved == 4, "learn: hold FX in the table clears the selected one, written");
+    px_midi_map_clear();
+    hold(0, 2600); ui_render(); shot(d, "learn_table_empty");
+    tap(UB_HOME); CHECK(ui_mode == M_BLOCK && ui_blk == PX_B_AMP && ui_item == 0u, "learn: HOME, back to the page it came from");
+    /* a save into another slot takes the preset's own controls along */
+    CHECK(px_midi_pl_put(9, 6, PXM_CC_TOGGLE0 + PX_B_DELAY, PXM_MAP_EACH, PXM_CC_ON0 + PX_B_DELAY, 0u, 100u) == 0 &&
+          px_midi_pl_put(14, 7, PXM_CC_TOGGLE0 + PX_B_MOD, PXM_MAP_EACH, PXM_CC_ON0 + PX_B_MOD, 0u, 100u) == 0, "learn: one in slot 10, one in slot 15");
+    ui_action(UA_SAVE); for (int i = 0; i < 5; i++) save_knob(1);
+    CHECK(ui_mode == M_SAVE && sv_dest == 14u, "learn: SAVE into slot 15");
+    save_confirm();
+    CHECK(cur_preset == 14u && px_midi_pl_count(14) == 1 && px_midi_pl_row(14, PXM_CC_TOGGLE0 + PX_B_DELAY, 0xFFu) >= 0 &&
+          px_midi_pl_count(9) == 1, "learn: the sound saved into slot 15 took slot 10's control, in place of slot 15's own");
+    px_midi_pl_clear(); load_preset(9); cur_preset = 9; tap(UB_AMP); hold(0, 10);
+    /* HOME: nothing learned; the page waits for the controller as long as it takes */
+    ui_turn(-1, 0); hold(1u << UB_FX, 850); hold(0, 10); ui_turn(1, 0);
+    CHECK(ui_mode == M_GUIDE && !lg.sw, "learn: the knob chooses PEDAL or SWITCH");
+    tap(UB_HOME); hold(0, 10); ui_render(); shot(d, "edit_learn_cancelled");
+    CHECK(ui_mode == M_BLOCK && ui_item == 1u && px_midi_pl_count(9) == 0 && !mid_learn.on && footer_has(UI_DIM) && learn_saved == 4,
+          "learn: HOME: LEARN: CANCELLED, nothing learned or written");
+    tap(UB_PUSH); CHECK(PRESET.on[PX_B_AMP] == !amp, "  (PUSH works again on the page: it flips ON)");
+    tap(UB_PUSH);
+    hold(1u << UB_FX, 850); hold(0, 10); tap(UB_PUSH); hold(0, 12000);
+    CHECK(ui_mode == M_GUIDE && lg.step == LG_LISTEN && mid_learn.on, "learn: 12 s and nothing heard: still listening (no time limit on the page)");
+    {   /* a Program Change from a controller meanwhile: the learn stops, the new preset left as it is */
+        load_preset(3); cur_preset = 3; hold(0, 10);
+        CHECK(ui_mode == M_BLOCK && !mid_learn.on && px_midi_pl_count(52) == 0, "learn: another preset meanwhile: cancelled");
+        load_preset(9); cur_preset = 9; hold(0, 2600);
+    }
+    {   /* a switch on a setting: its value at OFF and at ON, the switch's own travel the whole 0..127 */
+        const int s0 = learn_saved, g0 = PRESET.p[PX_B_AMP][1];
+        ui_item = 3u; hold(0, 10);
+        hold(1u << UB_FX, 850); hold(0, 10); ui_turn(1, 0);
+        CHECK(ui_mode == M_GUIDE && lg.sw, "learn: on a setting, the knob turns PEDAL to SWITCH");
+        tap(UB_PUSH); px_learn_feed(5, 127); px_learn_feed(5, 0); hold(0, 1300); ui_render(); shot(d, "learn_guide_switch_off");
+        CHECK(lg.step == LG_LO && lg.src == 5 && mid_learn.hold == 5, "learn: a switch on a setting: SWITCH OFF asked");
+        ui_turn(-1, 0); ui_turn(-1, 0); tap(UB_PUSH); ui_turn(1, 0); ui_turn(1, 0); ui_turn(1, 0);
+        ui_action(UA_SAVE);                            /* (PUSH held a little long: PUSH all the same) */
+        e = px_midi_pl_row(9, px_cc_param(PX_B_AMP, 1), 0xFFu);
+        CHECK(ui_mode == M_BLOCK && e >= 0 && mid_pl[e].src == 5 && mid_pl[e].mode == PXM_MAP_VALUE && mid_pl[e].lo == g0 - 2 &&
+              mid_pl[e].hi == g0 + 3 && mid_pl[e].clo == 0 && mid_pl[e].chi == 127 && learn_saved == s0 + 1 && PRESET.p[PX_B_AMP][1] == g0,
+              "learn: OFF and ON taken, written, the whole 0..127 of the switch, the preset's own value back");
+        px_midi_pl_clear();
+    }
+    ui_home(); hold(0, 50); hold(1u << UB_FX, 850); hold(0, 10);
+    CHECK(ui_mode == M_MIDI && !mid_learn.on, "learn: on PLAY, hold FX still opens SETTINGS");
+    midi_close(); px_midi_pl_clear(); ui_home(); full();
+    return 0;
+}
+/* test build 47: PLAY VIEW SWITCHES: in place of the chain, the blocks the controllers' switches turn on and off */
+static int live_view(const char *d)
+{
+    uint8_t b[LV_MAX], c[LV_MAX];
+    px_midi_map_clear(); px_midi_pl_clear();
+    ui_home(); load_preset(9); cur_preset = 9; px_live = 1; hold(0, 10); full(); shot(d, "play_view_nothing_learned");
+    CHECK(!ui_live(), "play view: no switch learned: the chain as before");
+    px_midi_pl_put(9, 21, PXM_CC_TOGGLE0 + PX_B_DELAY, PXM_MAP_EACH, PXM_CC_ON0 + PX_B_DELAY, 0u, 100u);
+    px_midi_pl_put(9, 20, PXM_CC_ON0 + PX_B_DRIVE, PXM_MAP_VALUE, PXM_CC_TOGGLE0 + PX_B_DRIVE, 0u, 100u);
+    mid_map[0] = (px_map_t){ 22, PXM_CC_ON0 + PX_B_REVERB, PXM_MAP_PRESS };          /* the editor's, for every preset */
+    mid_map[1] = (px_map_t){ 21, PXM_CC_TOGGLE0 + PX_B_MOD, PXM_MAP_PRESS };         /* (the preset's own CC 21 first) */
+    mid_map[2] = (px_map_t){ 23, (uint8_t)px_cc_param(PX_B_DELAY, 0), PXM_MAP_VALUE };   /* (a setting, not a switch) */
+    mid_map[3] = (px_map_t){ 24, PXM_CC_TOGGLE0 + PX_B_DELAY, PXM_MAP_PRESS };       /* (DELAY again: shown once) */
+    PRESET.on[PX_B_DELAY] = 1; PRESET.on[PX_B_DRIVE] = 0; PRESET.on[PX_B_REVERB] = 1;
+    hold(0, 10); full(); shot(d, "play_view_switches");
+    const uint32_t n = live_list(b, c);
+    CHECK(ui_live() && n == 3u && c[0] == 20 && b[0] == PX_B_DRIVE && c[1] == 21 && b[1] == PX_B_DELAY && c[2] == 22 && b[2] == PX_B_REVERB,
+          "play view: the preset's own switches and the editor's it does not hide, by number, a block once");
+    CHECK(count_col(5, T_Y0 + 2u, 113, 46, BLK_COL[PX_B_DELAY]) == 0 && count_col(122, T_Y0 + 2u, 113, 46, BLK_COL[PX_B_DELAY]) > 0,
+          "play view: DRIVE off (grey), DELAY on in its colour");
+    PRESET.on[PX_B_DRIVE] = 1; hold(0, 10); px_sent = 0; ui_render();
+    const unsigned long one = px_sent;
+    shot(d, "play_view_drive_on");
+    CHECK(one > 0 && one < 113u * 46u * 2u && count_col(5, T_Y0 + 2u, 113, 46, BLK_COL[PX_B_DRIVE]) > 0,
+          "play view: a block turned on: its tile alone drawn anew, in its colour");
+    px_sent = 0; draw_live(0); CHECK(px_sent == 0, "play view: nothing changed, no tile drawn");
+    const uint32_t b0 = ui_blk;
+    ui_turn(1, 0); hold(0, 10); ui_render(); shot(d, "play_view_knob_chain");
+    CHECK(!ui_live() && ui_blk != b0, "play view: the knob shows the chain (and selects along it)");
+    hold(0, 5100); ui_render(); shot(d, "play_view_back");
+    CHECK(ui_live(), "play view: 5 s after the knob, the switches again");
+    mid_map[4] = (px_map_t){ 25, PXM_CC_TOGGLE0 + PX_B_COMP, PXM_MAP_PRESS };
+    mid_map[5] = (px_map_t){ 26, PXM_CC_TOGGLE0 + PX_B_PITCH, PXM_MAP_PRESS };
+    mid_map[6] = (px_map_t){ 27, PXM_CC_TOGGLE0 + PX_B_EQ, PXM_MAP_PRESS };
+    mid_map[7] = (px_map_t){ 28, PXM_CC_TOGGLE0 + PX_B_GATE, PXM_MAP_PRESS };
+    hold(0, 10); full(); shot(d, "play_view_six");
+    CHECK(live_list(b, c) == LV_MAX && c[5] == 27, "play view: six at most, three by two");
+    px_live = 0; hold(0, 10); full(); shot(d, "play_view_chain_again");
+    CHECK(!ui_live(), "play view: CHAIN: the chain");
+    px_midi_map_clear(); px_midi_pl_clear();
+    return 0;
+}
+/* test build 49: scenes (px_midi.h px_sc): CAB held turns PLAY's view round; in SCENES' view the knob picks one, PUSH recalls
+ * it, the footswitches step them, hold FX learns its switch; the one playing keeps what is switched; SAVE writes them */
+static int scenes(const char *d)
+{
+    px_midi_map_clear(); px_midi_pl_clear(); learn_saved = 0;
+    px_live = 0; px_sc_rule = 0; px_sc_feet = 0;
+    ui_home(); load_preset(9); cur_preset = 9; hold(0, 10); full();
+    CHECK(px_sc.set == 0u && px_sc.cur == 0u, "scenes: a preset without any: none, the first playing");
+    hold(1u << UB_CAB, 850); hold(0, 10);
+    CHECK(px_live == 1u && ui_mode == M_CHAIN, "scenes: CAB held: PLAY's view SWITCHES");
+    tap(UB_AMP); hold(1u << UB_CAB, 850); hold(0, 10);
+    CHECK(px_live == 2u && ui_mode == M_CHAIN, "scenes: CAB held on a block page: back to PLAY, SCENES");
+    tap(UB_CAB); CHECK(ui_mode == M_BLOCK && ui_blk == PX_B_CAB, "scenes: CAB pressed: its page, as before (at the release)");
+    ui_home(); hold(0, 10); full(); shot(d, "scenes_view");
+    CHECK(ui_live() && count_col(5, T_Y0 + 2u, 113, 46, UI_ACC) > 0 && count_col(122, T_Y0 + 2u, 113, 46, UI_ACC) == 0,
+          "scenes: SCENES' view, SCENE 1 lit (playing)");
+    const uint8_t dly = PRESET.on[PX_B_DELAY];
+    ui_turn(1, 0); tap(UB_PUSH); hold(0, 10); ui_render(); shot(d, "scenes_recall_2");
+    CHECK(sc_sel == 1u && px_sc.cur == 1u && px_sc.set == 3u && PRESET.on[PX_B_DELAY] == dly && ui_dirty(),
+          "scenes: the knob on SCENE 2, PUSH: a new one, as things are; the first kept; EDITED (not saved)");
+    PRESET.on[PX_B_DELAY] = (uint8_t)!dly;            /* (in SCENE 2, DELAY switched) */
+    tap(UB_FSDN); hold(0, 10);
+    CHECK(px_sc.cur == 0u && PRESET.on[PX_B_DELAY] == dly && cur_preset == 9u, "scenes: the left footswitch: SCENE 1, its DELAY back");
+    tap(UB_FSUP); hold(0, 10);
+    CHECK(px_sc.cur == 1u && PRESET.on[PX_B_DELAY] == !dly, "scenes: the right footswitch: SCENE 2 as it was left");
+    tap(UB_FSDN); tap(UB_FSDN); hold(0, 10);
+    CHECK(px_sc.cur == 3u && px_sc.set == 0x0Bu, "scenes: round, SCENE 4 (new)");
+    ui_turn(-1, 0); ui_turn(-1, 0); ui_turn(-1, 0); tap(UB_PUSH);
+    ui_action(UA_SAVE); save_confirm(); hold(0, 10); ui_render(); shot(d, "scenes_saved");
+    CHECK(cur_preset == 9u && px_sc_tab[9].set == 0x0Bu && px_sc_tab[9].cur == 0u && !ui_dirty() && px_sc.cur == 0u,
+          "scenes: SAVE: written with the sound, nothing EDITED, the preset in SCENE 1");
+    ui_scene_recall(1); hold(0, 10);
+    CHECK(px_sc.cur == 1u && PRESET.on[PX_B_DELAY] == !dly && !ui_dirty(), "scenes: a recall is no change (not EDITED)");
+    load_preset(9); hold(0, 10);
+    CHECK(px_sc.cur == 0u && px_sc.set == 0x0Bu, "scenes: the preset loaded again: its scenes, in the one it was saved in");
+    {   /* a block with its own switch: SWITCH WINS leaves it to the switch; SCENE WINS sets it too */
+        CHECK(px_midi_pl_put(9, 30, PXM_CC_TOGGLE0 + PX_B_DELAY, PXM_MAP_EACH, PXM_CC_ON0 + PX_B_DELAY, 0u, 100u) == 0, "scenes: DELAY on a switch");
+        px_sc.set = 0x0Fu;
+        px_sc.mask[2] = px_sc.mask[3] = (uint16_t)(sc_now() & ~(1u << PX_B_DELAY));   /* (SCENES 3 and 4: DELAY off) */
+        PRESET.on[PX_B_DELAY] = 1; ui_scene_recall(2);   /* (the switch turned it on; SCENE 3) */
+        const int keep = PRESET.on[PX_B_DELAY];
+        px_sc_rule = 1; ui_scene_recall(3);
+        CHECK(keep == 1 && PRESET.on[PX_B_DELAY] == 0, "scenes: SWITCH WINS: the switch's DELAY kept; SCENE WINS: the scene's");
+        px_sc_rule = 0; px_midi_pl_clear();
+    }
+    {   /* both footswitches: the tuner, the first one's scene step taken back */
+        const uint32_t c0 = px_sc.cur;
+        hold(1u << UB_FSUP, 40); hold(1u << UB_FSUP | 1u << UB_FSDN, 40); hold(0, 10);
+        CHECK(ui_mode == M_TUNER && px_sc.cur == c0, "scenes: both footswitches: the tuner, the scene as it was");
+        tap(UB_HOME); hold(0, 10);
+    }
+    px_sc_feet = 1; ui_home(); hold(0, 10);
+    tap(UB_FSUP); CHECK(cur_preset == 10u, "scenes: SCENE FOOTSW PRESETS: the footswitches change the preset");
+    tap(UB_FSDN); px_sc_feet = 0; hold(0, 10);
+    {   /* a scene's switch, learned in SCENES' view (hold FX on its tile): PRESS THE SWITCH */
+        ui_turn(1, 0); ui_turn(1, 0);
+        hold(1u << UB_FX, 850); hold(0, 10); ui_render(); shot(d, "scenes_learn");
+        CHECK(ui_mode == M_GUIDE && lg.scene == sc_sel + 1u && lg.step == LG_LISTEN && mid_learn.on, "scenes: hold FX on a scene: PRESS THE SWITCH");
+        px_learn_feed(40, 127); px_learn_feed(40, 0); hold(0, 1300); ui_render(); shot(d, "scenes_learned");
+        const int e = px_midi_pl_row(9, PXM_CC_SCENE0 + sc_sel, 0xFFu);
+        CHECK(ui_mode == M_CHAIN && e >= 0 && mid_pl[e].src == 40 && mid_pl[e].mode == PXM_MAP_PRESS && footer_has(GRN) && learn_saved == 1,
+              "scenes: learned (a momentary switch), written, back on PLAY, LEARNED in green");
+        hold(0, 2600); hold(1u << UB_FX, 850); hold(0, 10);
+        CHECK(px_midi_pl_count(9) == 0 && learn_saved == 2 && ui_mode == M_CHAIN, "scenes: held again on it: its switch cleared");
+    }
+    {   /* SWITCHES' view: a scene's switch among the blocks' */
+        CHECK(px_midi_pl_put(9, 41, PXM_CC_SCENE0 + 1u, PXM_MAP_EACH, PXM_CC_SCENE0 + 1u, 0u, 100u) == 0 &&
+              px_midi_pl_put(9, 42, PXM_CC_TOGGLE0 + PX_B_REVERB, PXM_MAP_EACH, PXM_CC_ON0 + PX_B_REVERB, 0u, 100u) == 0, "scenes: a scene and REVERB on switches");
+        px_live = 1; ui_scene_recall(1); hold(0, 10); full(); shot(d, "play_view_switches_scene");
+        uint8_t b[LV_MAX], c[LV_MAX];
+        CHECK(live_list(b, c) == 2u && b[0] == PX_NBLK + 1u && c[0] == 41 && b[1] == PX_B_REVERB && count_col(5, T_Y0 + 2u, 113, 46, UI_ACC) > 0,
+              "scenes: SWITCHES' view: SCENE 2 (lit, playing) and REVERB, in the switches' order");
+        px_live = 0; hold(0, 10); full(); shot(d, "scenes_play_top");
+        CHECK(count_col(182, P_NUM_Y + 29u, 54, 15, UI_ACC) > 0 && !ui_dirty(), "scenes: on PLAY, SCENE 2 where EDITED goes");
+    }
+    {   /* test build 50: the scenes' names (typed in the web editor): on the tiles and PLAY's top, EDITED until SAVE */
+        memcpy(px_scn[1], "CHS", 3); memcpy(px_scn[0], "V", 1);
+        CHECK(ui_dirty(), "names: a name typed: EDITED");
+        char t[10];
+        px_scene_label(t, 1, 0);
+        const int l1 = !strcmp(t, "CHS");
+        px_scene_label(t, 0, 1);
+        const int l0 = !strcmp(t, "V");
+        px_scene_label(t, 2, 0);
+        const int l2 = !strcmp(t, "SCENE 3");
+        px_scene_label(t, 3, 1);
+        CHECK(l1 && l0 && l2 && !strcmp(t, "SC 4"), "names: a name, else SCENE n (SC n narrow)");
+        px_live = 2; hold(0, 10); full(); shot(d, "scenes_named");
+        ui_action(UA_SAVE); save_confirm(); hold(0, 10);
+        CHECK(!ui_dirty() && !memcmp(uis_scn[9][1], "CHS", 3), "names: SAVE writes them, EDITED gone");
+        px_live = 0; ui_scene_recall(1); hold(0, 10); full(); shot(d, "scenes_named_play_top");
+        CHECK(count_col(182, P_NUM_Y + 29u, 54, 15, UI_ACC) > 0 && !ui_dirty(), "names: CHS on PLAY's top where EDITED goes");
+        load_preset(10); load_preset(9);
+        CHECK(!memcmp(px_scn[1], "CHS", 3) && px_scn[2][0] == 0, "names: the preset loaded again has them");
+        memset(uis_scn, 0, sizeof uis_scn); memset(px_scn, 0, sizeof px_scn); memset(px_scn_saved, 0, sizeof px_scn_saved);
+    }
+    px_midi_pl_clear(); px_live = 0; memset(&px_sc, 0, sizeof px_sc); memset(px_sc_tab, 0, sizeof px_sc_tab); ui_home(); full();
+    return 0;
+}
+/* test build 41: the USB footswitch's notes on the footer (px_usbhost.h pxu_note): PLAY across the footer, a block page in the
+ * hint's box beside the load figure; an overload's instruction first; the hint back when the note ends */
+/* test build 51: a two-job pedal: the volume while its block is off, the block's setting while it is on (here a WAH's sweep);
+ * the guided learn's step 5, the line at the screen's right edge, the engine told the block, scenes, one a preset */
+static int two_jobs(const char *d)
+{
+    px_midi_map_clear(); px_midi_pl_clear(); learn_saved = 0;
+    px_live = 0; px_sc_rule = 0; px_sc_feet = 0;
+    ui_home(); load_preset(9); cur_preset = 9; hold(0, 10); full();
+    CHECK(px_midi_pl_dual(9) < 0 && uis_dual == -1 && count_col(EXL_X, S_H + 4u, EXL_W, F_Y - S_H - 8u, GRN) == 0 &&
+          count_col(EXL_X, S_H + 4u, EXL_W, F_Y - S_H - 8u, RED) == 0, "two jobs: a preset without one: no line, the engine told none");
+    PRESET.type[PX_B_SFX] = PX_SFX_WAH; PRESET.on[PX_B_SFX] = 0; PRESET.p[PX_B_SFX][0] = 0;
+    ui_enter_block(PX_B_SFX); ui_item = 2; hold(0, 10); ui_render();
+    hold(1u << UB_FX, 850); hold(0, 10);
+    CHECK(ui_mode == M_GUIDE && lg.knob && !lg.sw && lg.dual && lg_two(), "two jobs: a pedal on the WAH's PEDAL: five steps, VOLUME to begin with");
+    tap(UB_PUSH); px_learn_feed(7, 40); hold(0, 10);
+    CHECK(lg.step == LG_LO && lg.src == 7, "two jobs: the pedal heard");
+    px_learn_feed(7, 0); tap(UB_PUSH);                 /* (the heel: PEDAL 0, the pedal at 0) */
+    px_learn_feed(7, 127); for (int i = 0; i < 25; i++) ui_turn(1, 1);
+    tap(UB_PUSH); hold(0, 10); ui_render(); shot(d, "learn_guide_two_jobs_volume");
+    CHECK(lg.step == LG_DUAL && lg.hi == 100u && lg.chi == 127u && px_midi_pl_count(9) == 0, "two jobs: step 5, WHEN SFX IS OFF: VOLUME; nothing in yet");
+    ui_turn(1, 0); CHECK(!lg.dual, "two jobs: the knob: NOTHING");
+    ui_turn(1, 0); CHECK(lg.dual, "two jobs: and back: VOLUME");
+    tap(UB_PUSH); hold(0, 10); ui_render();
+    const int e = px_midi_pl_row(9, px_cc_param(PX_B_SFX, 0), 0xFFu);
+    CHECK(ui_mode == M_BLOCK && e >= 0 && mid_pl[e].mode == (PXM_MAP_VALUE | PXM_PL_DUAL) && mid_pl[e].lo == 0u && mid_pl[e].hi == 100u &&
+          mid_pl[e].clo == 0u && mid_pl[e].chi == 127u && px_midi_pl_dual(9) == PX_B_SFX && uis_dual == PX_B_SFX && learn_saved == 1,
+          "two jobs: in: a two-job pedal on the WAH, written, the engine told its block");
+    hold(0, 2600); ui_render(); shot(d, "two_jobs_block_green");
+    CHECK(ui_exp_job() == 0 && count_col(EXL_X, E_BAND + 4u, EXL_W, F_Y - E_BAND - 8u, GRN) == (int)(EXL_W * (F_Y - E_BAND - 8u)),
+          "two jobs: SFX off: the line green, the whole edge (the pedal is the volume)");
+    {   /* what the pedal's messages become: SFX off the volume, on the wah's sweep: both the expression pedal, CC 117 */
+        uint32_t c = 7, v = 64;
+        CHECK(px_midi_map_in(&c, &v, 9, &PRESET) && c == PXM_CC_EXP && v == 64u, "two jobs: SFX off: the volume (CC 117, along the pedal's travel)");
+        PRESET.on[PX_B_SFX] = 1; c = 7; v = 64;
+        CHECK(px_midi_map_in(&c, &v, 9, &PRESET) && c == PXM_CC_EXP && v == 64u, "two jobs: SFX on: the wah's sweep (CC 117, the setting's heel and toe)");
+        c = 7; v = 64;
+        CHECK(px_midi_map_in(&c, &v, 10, &PRESET) && c == 7u, "two jobs: another preset: not this one's");
+    }
+    hold(0, 10); ui_render(); shot(d, "two_jobs_block_red");
+    CHECK(ui_exp_job() == 1 && count_col(EXL_X, E_BAND + 4u, EXL_W, F_Y - E_BAND - 8u, RED) == (int)(EXL_W * (F_Y - E_BAND - 8u)),
+          "two jobs: SFX on: red (the pedal is the wah)");
+    ui_home(); hold(0, 10); full(); shot(d, "two_jobs_play_red");
+    CHECK(count_col(EXL_X, S_H + 4u, EXL_W, F_Y - S_H - 8u, RED) == (int)(EXL_W * (F_Y - S_H - 8u)), "two jobs: PLAY: the line too, drawn over a full page");
+    {   /* scenes: the wah off in SCENE 1 (playing: kept in it, as Helix's), on in SCENE 2: the line follows */
+        PRESET.on[PX_B_SFX] = 0;
+        px_sc.set = 3u; px_sc.mask[1] = (uint16_t)(sc_now() | 1u << PX_B_SFX);
+        ui_scene_recall(1); hold(0, 10); ui_render(); shot(d, "two_jobs_scene_2_red");
+        CHECK(PRESET.on[PX_B_SFX] && count_col(EXL_X, S_H + 4u, EXL_W, F_Y - S_H - 8u, RED) == (int)(EXL_W * (F_Y - S_H - 8u)),
+              "two jobs: SCENE 2, the wah on: red");
+        ui_scene_recall(0); hold(0, 10); ui_render(); shot(d, "two_jobs_scene_1_green");
+        CHECK(!PRESET.on[PX_B_SFX] && count_col(EXL_X, S_H + 4u, EXL_W, F_Y - S_H - 8u, GRN) == (int)(EXL_W * (F_Y - S_H - 8u)),
+              "two jobs: SCENE 1, the wah off: green");
+    }
+    {   /* the preset's MIDI table (hold FX on MODEL) says it: +VOL */
+        ui_enter_block(PX_B_SFX); ui_item = 0; hold(0, 10); ui_render();   /* (item 0: MODEL) */
+        hold(1u << UB_FX, 850); hold(0, 10); ui_render(); shot(d, "two_jobs_table");
+        CHECK(ui_mode == M_LEARN, "two jobs: the preset's MIDI table (+VOL after the setting)");
+        tap(UB_HOME); ui_home(); hold(0, 10);
+    }
+    {   /* one a preset; never on the GATE's PRESET LVL */
+        CHECK(px_midi_pl_put(9, 8, px_cc_param(PX_B_MOD, 0), PXM_MAP_VALUE | PXM_PL_DUAL, 0xFFu, 0u, 100u) == 0 && px_midi_pl_dual(9) == PX_B_MOD &&
+              !(mid_pl[px_midi_pl_row(9, px_cc_param(PX_B_SFX, 0), 0xFFu)].mode & PXM_PL_DUAL), "two jobs: one a preset: another takes its place");
+        const px_pl_t g = {9, 9, (uint8_t)px_cc_param(PX_B_GATE, 2), PXM_MAP_VALUE | PXM_PL_DUAL, 0, 100, 0, 127};
+        const px_pl_t ok_ = {9, 9, (uint8_t)px_cc_param(PX_B_DELAY, 1), PXM_MAP_VALUE | PXM_PL_DUAL, 0, 100, 0, 127};
+        const px_pl_t sw = {9, 9, (uint8_t)(PXM_CC_TOGGLE0 + PX_B_DELAY), PXM_MAP_EACH | PXM_PL_DUAL, 0, 100, 0, 127};
+        CHECK(!px_midi_pl_valid(&g) && px_midi_pl_valid(&ok_) && !px_midi_pl_valid(&sw), "two jobs: never PRESET LVL's (the GATE's), nor a switch's");
+        ui_home(); hold(0, 10); ui_render();
+        CHECK(uis_dual == PX_B_MOD, "two jobs: the engine told the new block (from the screen's pass)");
+    }
+    load_preset(10); cur_preset = 10; hold(0, 10); ui_render(); shot(d, "two_jobs_other_preset");
+    CHECK(uis_dual == -1 && count_col(EXL_X, S_H + 4u, EXL_W, F_Y - S_H - 8u, GRN) == 0 && count_col(EXL_X, S_H + 4u, EXL_W, F_Y - S_H - 8u, RED) == 0,
+          "two jobs: a preset without one: the line gone, the engine told");
+    px_midi_pl_clear(); load_preset(9); cur_preset = 9; ui_home(); hold(0, 10);
+    return 0;
+}
+static int usb_notes(const char *d)
+{
+    static const uint32_t N[] = {PXU_OK, PXU_NOMIDI, PXU_LOW, PXU_LOST};
+    static const char *const SHOT[] = {"play_usb_footsw_connected", "play_usb_no_midi", "play_usb_low_speed", "play_usb_footsw_lost"};
+    for (uint32_t i = 0; i < 4u; i++)
+        CHECK(ft_width(&FT_SM, UI_NOTE[N[i]]) <= ST_X - 2u, "a footswitch note fits a block page's hint box");
+    ui_home(); load_preset(9); cur_preset = 9; usb_note = 0; full();
+    const int hint = count_col(0, F_Y + 3u, 240, 15, UI_DIM);
+    for (uint32_t i = 0; i < 4u; i++) {
+        usb_note = N[i]; ui_render(); shot(d, SHOT[i]);
+        CHECK(count_col(0, F_Y + 3u, 240, 15, N[i] == PXU_OK ? GRN : RED) > 0 && count_col(0, F_Y + 3u, 240, 15, UI_DIM) < hint,
+              "PLAY: the note in its colour in place of the hint");
+    }
+    usb_note = 0; ui_render();
+    CHECK(count_col(0, F_Y + 3u, 240, 15, RED) == 0 && count_col(0, F_Y + 3u, 240, 15, UI_DIM) == hint, "PLAY: the note ends, the hint is back");
+    ui_blk = PX_B_DELAY; ui_mode = M_BLOCK; ui_item = 0; full();
+    const int corner = count_col(ST_X, F_Y + 3u, ST_W, 15, UI_DIM);
+    usb_note = PXU_LOST; ui_render(); shot(d, "edit_usb_footsw_lost");
+    CHECK(count_col(0, F_Y + 3u, ST_X - 2u, 15, RED) > 0 && count_col(ST_X, F_Y + 3u, ST_W, 15, UI_DIM) == corner && corner > 0,
+          "a block page: the note in the hint's box, the load figure kept");
+    ui_home(); full(); ui_status("PEAK 150%", UI_ST_BYPASS); ui_render(); shot(d, "play_usb_lost_overload");
+    CHECK(count_col(0, F_Y + 3u, 240, 15, WHT) > 0 && count_col(0, F_Y + 3u, 240, 15, RED) == 0,
+          "an overload's instruction goes before the footswitch's note");
+    ui_status("DSP 42%", UI_ST_NORM); ui_render();
+    CHECK(count_col(0, F_Y + 3u, 240, 15, RED) > 0, "  and the note comes back after it");
+    usb_note = 0; full();
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *d = argc > 1 ? argv[1] : ".";
@@ -376,18 +873,238 @@ int main(int argc, char **argv)
     midi_push(); midi_knob(1); mid_usb_up = 1; mid_last[0] = PXM_CC; mid_last[1] = 25; mid_last[2] = 127; midi_draw(); shot(d, "midi_send_off_host_cc");
     midi_push(); midi_knob(1); mid_last[0] = PXM_PC; mid_last[1] = 11; midi_draw(); shot(d, "midi_clock_on_pc");
     mid_c1_off = 2; midi_draw(); shot(d, "midi_core2_off_late"); mid_c1_off = 0; midi_draw();   /* v41: the 2nd core retired */
+#if !PX_OWN_FX
     /* v42: the fourth row, USB AUDIO: the setting follows the row only when the page is left */
     midi_push(); midi_knob(1); midi_draw(); shot(d, "midi_usb_audio_on");
     if (px_ua_on) { printf("midi: USB AUDIO must not change while the page is open\n"); return 1; }
+#endif
+#if PX_OWN_FX   /* test build 39: a fifth row, SWITCH (MOMENT / LATCH), and the controls learned on the pedal counted */
+    midi_push(); midi_knob(1);
+    px_midi_map_clear();
+    mid_map[0] = (px_map_t){ 80, 8 + PX_B_EQ, PXM_MAP_PRESS }; mid_map[1] = (px_map_t){ 81, PXM_CC_NEXT, PXM_MAP_EACH };
+    mid_last[0] = PXM_CC; mid_last[1] = 80; mid_last[2] = 127; midi_draw(); shot(d, "midi_switch_latch_learned");
+    if (!mid_cfg.each) { printf("midi: SWITCH must turn to LATCH\n"); return 1; }
+    px_midi_map_clear();
+    {   /* test build 47: PLAY VIEW (CHAIN / SWITCHES, 49: / SCENES), after SWITCH, at once; 49: SCENE+SWITCH and SCENE FOOTSW */
+        midi_push();
+        if (mi_row != MI_LIVE || px_live) { printf("midi: PLAY VIEW must follow SWITCH, CHAIN at first\n"); return 1; }
+        midi_knob(1); midi_draw(); shot(d, "midi_play_view_switches");
+        if (px_live != 1u) { printf("midi: PLAY VIEW must turn to SWITCHES\n"); return 1; }
+        midi_knob(1);
+        if (px_live != 2u) { printf("midi: PLAY VIEW must turn to SCENES\n"); return 1; }
+        midi_knob(1); midi_knob(-1);
+        if (px_live != 2u) { printf("midi: PLAY VIEW must go round SCENES -> CHAIN and back\n"); return 1; }
+        midi_knob(-1); midi_knob(-1);
+        if (px_live) { printf("midi: PLAY VIEW must turn back to CHAIN\n"); return 1; }
+        midi_push();
+        if (mi_row != MI_SCRULE || px_sc_rule) { printf("midi: SCENE+SWITCH must follow PLAY VIEW, SWITCH WINS at first\n"); return 1; }
+        midi_knob(1); midi_draw(); shot(d, "midi_scene_rule");
+        if (!px_sc_rule) { printf("midi: SCENE+SWITCH must turn to SCENE WINS\n"); return 1; }
+        midi_knob(1);
+        midi_push();
+        if (mi_row != MI_SCFEET || px_sc_feet) { printf("midi: SCENE FOOTSW must follow, SCENES at first\n"); return 1; }
+        midi_knob(1);
+        if (!px_sc_feet) { printf("midi: SCENE FOOTSW must turn to PRESETS\n"); return 1; }
+        midi_knob(1);
+        if (px_sc_rule || px_sc_feet) { printf("midi: the scene rows must turn back\n"); return 1; }
+        if (ft_width(&FT_SM, "SWITCH WINS") > 92u || ft_width(&FT_SM, "SCENE FOOTSW") > 140u) { printf("midi: the scene rows' texts must fit\n"); return 1; }
+        /* test build 51: VOL PEDAL, the expression pedal's volume: AT INPUT at first, BEFORE DLY; heard at once */
+        midi_push();
+        if (mi_row != MI_VOLAT || px_vol_at) { printf("midi: VOL PEDAL must follow SCENE FOOTSW, AT INPUT at first\n"); return 1; }
+        midi_knob(1); midi_draw(); shot(d, "midi_vol_pedal");
+        if (px_vol_at != 1u || uis_place != 1) { printf("midi: VOL PEDAL must turn to BEFORE DLY, heard at once\n"); return 1; }
+        midi_knob(1);
+        if (px_vol_at || uis_place != 0) { printf("midi: VOL PEDAL must turn back to AT INPUT\n"); return 1; }
+        if (ft_width(&FT_SM, "BEFORE DLY") > 92u || ft_width(&FT_SM, "VOL PEDAL") > 140u) { printf("midi: VOL PEDAL's texts must fit\n"); return 1; }
+    }
+    {   /* INPUT: -10..+10 dB, applied at once (each knob step), saved on leaving with the rest */
+        const int n0 = a_in_gain_n;
+        midi_push(); midi_knob(1); midi_knob(1); midi_knob(1); midi_draw(); shot(d, "midi_input_plus3");
+        if (px_in_db != 3 || a_in_gain_n - n0 != 3) { printf("midi: INPUT must step by 1 dB and apply each step\n"); return 1; }
+        for (int i = 0; i < 30; i++) midi_knob(1);
+        if (px_in_db != PX_IN_DB_MAX) { printf("midi: INPUT must stop at +10 dB\n"); return 1; }
+        for (int i = 0; i < 40; i++) midi_knob(-1);
+        if (px_in_db != PX_IN_DB_MIN) { printf("midi: INPUT must stop at -10 dB\n"); return 1; }
+        midi_draw(); shot(d, "midi_input_minus10");
+        px_in_db = 3;
+    }
+    {   /* test build 46: GUITAR TONE (47: named by its sound, BRIGHT, NATURAL .. MUDDY, round both ways; its value redrawn as
+         * the knob turns, which 46 did not) and PICKUP (SINGLE, HUMBUCK, P90, round), each to the input at once */
+        const int z0 = a_inz_n;
+        midi_push(); if (mi_row != MI_INZ) { printf("midi: GUITAR TONE must follow INPUT\n"); return 1; }
+        midi_draw(); px_sent = 0;
+        midi_knob(1); midi_draw();
+        if (px_sent == 0) { printf("midi: GUITAR TONE's value must be drawn anew as the knob turns\n"); return 1; }
+        midi_knob(1); midi_draw(); shot(d, "midi_tone_warm");
+        if (px_inz != 2u || a_inz_n != z0 + 2) { printf("midi: GUITAR TONE must step NATURAL -> SMOOTH -> WARM, each applied at once\n"); return 1; }
+        midi_knob(-1); midi_knob(-1); midi_knob(-1); midi_draw(); shot(d, "midi_tone_bright");
+        if (px_inz != 8u) { printf("midi: GUITAR TONE must step back past NATURAL to BRIGHT\n"); return 1; }
+        midi_knob(-1);
+        if (px_inz != 7u) { printf("midi: GUITAR TONE must go round BRIGHT -> MUDDY\n"); return 1; }
+        midi_knob(1); midi_knob(1);
+        if (px_inz != 0u) { printf("midi: GUITAR TONE must go round MUDDY -> BRIGHT -> NATURAL\n"); return 1; }
+        for (uint32_t i = 0; i < PX_INZ_N; i++)
+            if (ft_width(&FT_SM, PX_INZ_NAME[i]) > 92u) { printf("midi: GUITAR TONE's names must fit\n"); return 1; }
+        px_sent = 0;
+        midi_push(); midi_knob(1); midi_draw(); shot(d, "midi_pickup_humbuck");
+        if (px_pickup != 1u || a_inz_n != z0 + 9) { printf("midi: PICKUP must step SINGLE -> HUMBUCK, applied at once\n"); return 1; }
+        midi_knob(1); midi_knob(1);
+        if (px_pickup != 0u) { printf("midi: PICKUP must go round to SINGLE\n"); return 1; }
+        midi_knob(-1);
+        if (px_pickup != 2u) { printf("midi: PICKUP must step back SINGLE -> P90\n"); return 1; }
+        px_pickup = 0;
+    }
+    {   /* test build 40: TAILS (ON / OFF, to the engine at once) and BT POWER (HIGH, MID, LOW, round) */
+        const int t0 = a_tails_n;
+        midi_push(); midi_knob(1);
+        if (!px_tails || a_tails_n != t0 + 1) { printf("midi: TAILS must turn on and go to the engine\n"); return 1; }
+        midi_push(); midi_knob(1);
+        if (px_bt_pwr != 1u) { printf("midi: BT POWER must step HIGH -> MID\n"); return 1; }
+        midi_knob(1); midi_knob(1);
+        if (px_bt_pwr != 0u) { printf("midi: BT POWER must go round LOW -> HIGH\n"); return 1; }
+        midi_knob(-1);
+        if (px_bt_pwr != 2u) { printf("midi: BT POWER must step back HIGH -> LOW\n"); return 1; }
+        midi_draw(); shot(d, "midi_tails_on_bt_low");
+    }
+    {   /* test build 42: OUTPUT (MONO, STEREO, GTR+BASS, round both ways), at once (the audio reads it each block), before USB PORT */
+        midi_push();
+        if (mi_row != MI_OUT || px_out_mode) { printf("midi: OUTPUT must follow BT POWER, MONO at first\n"); return 1; }
+        midi_knob(1);
+        if (px_out_mode != 1u) { printf("midi: OUTPUT must step MONO -> STEREO\n"); return 1; }
+        midi_draw(); shot(d, "midi_output_stereo");
+        midi_knob(1);
+        if (px_out_mode != 2u) { printf("midi: OUTPUT must step STEREO -> GTR+BASS\n"); return 1; }
+        midi_knob(1); midi_knob(-1);
+        if (px_out_mode != 2u) { printf("midi: OUTPUT must go round GTR+BASS -> MONO and back\n"); return 1; }
+        if (ft_width(&FT_SM, "GTR+BASS") > 92u || ft_width(&FT_SM, "STEREO") > 92u || ft_width(&FT_SM, "OUTPUT") > 140u) { printf("midi: OUTPUT's texts must fit\n"); return 1; }
+        midi_draw(); shot(d, "midi_output_gtr_bass");
+    }
+    {   /* test build 41: USB PORT, the last row: COMPUTER / FOOTSW, to the port at once; in FOOTSW the USB line says what the
+         * host sees, each text whole on the line; the controls learned are counted beside it when they fit */
+        static const uint8_t ST[] = {PXU_OFF, PXU_WAIT, PXU_NOMIDI, PXU_LOW, PXU_OK, PXU_LOST};
+        static const char *const SHOT[] = {"midi_usb_footsw_starting", "midi_usb_footsw_nothing_attached", "midi_usb_footsw_no_midi",
+                                           "midi_usb_footsw_low_speed", "midi_usb_footsw_connected", "midi_usb_footsw_lost"};
+        const int a0 = usb_apply_n;
+        midi_push();
+        if (mi_row != MI_USB || MI_USB != MI_OUT + 1u) { printf("midi: USB PORT must follow OUTPUT\n"); return 1; }
+        midi_draw(); shot(d, "midi_usb_port_computer");
+        if (ft_width(&FT_SM, "COMPUTER") > 92u) { printf("midi: COMPUTER must fit the value's box\n"); return 1; }
+        midi_knob(1);
+        if (!px_usb_foot || usb_apply_n != a0 + 1) { printf("midi: USB PORT must turn to FOOTSW and go to the port at once\n"); return 1; }
+        for (uint32_t i = 0; i < sizeof ST; i++) {
+            char t[48] = "FOOTSW: ";
+            static const char *const UST[] = {"STARTING", "NOTHING ATTACHED", "NO MIDI INTERFACE", "LOW SPEED DEVICE", "CONNECTED", "LOST"};
+            strcat(t, UST[ST[i]]);
+            if (ft_width(&FT_SM, t) > 236u) { printf("midi: \"%s\" does not fit the USB line\n", t); return 1; }
+            px_uh.st = ST[i]; midi_draw(); shot(d, SHOT[i]);
+            const uint16_t want = ST[i] == PXU_OK ? GRN : ST[i] <= PXU_WAIT ? UI_ACC : RED;
+            if (!count_col(0, 162, 240, 15, want)) { printf("midi: the USB line must read \"%s\" in its colour\n", t); return 1; }
+        }
+        px_midi_map_clear();
+        mid_map[0] = (px_map_t){ 80, 8 + PX_B_EQ, PXM_MAP_PRESS }; mid_map[1] = (px_map_t){ 81, PXM_CC_NEXT, PXM_MAP_EACH };
+        px_uh.st = PXU_OK; mid_last[0] = PXM_CC; mid_last[1] = 118; mid_last[2] = 127; midi_draw(); shot(d, "midi_usb_footsw_connected_learned");
+        px_midi_map_clear();
+        midi_knob(-1);
+        if (px_usb_foot || usb_apply_n != a0 + 2) { printf("midi: USB PORT must come back to COMPUTER at once\n"); return 1; }
+        px_uh.st = PXU_OFF;
+    }
+#if OP_UAUDIO
+    {   /* test build 43: USB AUDIO, USB SEND, USB RETURN, GUITAR, the last four rows; the page scrolls to them */
+        midi_push();
+        if (mi_row != MI_UAUDIO || MI_UAUDIO != MI_USB + 1u || MI_UGTR != MI_ROWS - 1u) { printf("midi: USB AUDIO's rows must follow USB PORT, GUITAR last\n"); return 1; }
+        midi_knob(1); midi_draw(); shot(d, "midi_usb_audio_on");
+        if (px_ua_on) { printf("midi: USB AUDIO must not change while the page is open\n"); return 1; }
+        /* the selected row the last of the 8 shown, the bar at the right edge */
+        if (count_col(100, 36 + 7 * 15, 30, 3, C_CARD) < 60 || !count_col(237, 36, 2, 120, UI_DIM)) { printf("midi: the page must scroll to the selected row and show its bar\n"); return 1; }
+        midi_push();                                    /* USB SEND: OUTPUT, DI, DI + OUT, round both ways, at once */
+        if (PX_UA_SEND(px_ua_route) != 0u) { printf("midi: USB SEND must be OUTPUT at first\n"); return 1; }
+        midi_knob(1); if (PX_UA_SEND(px_ua_route) != 1u) { printf("midi: USB SEND must step OUTPUT -> DI\n"); return 1; }
+        midi_knob(1); midi_draw(); shot(d, "midi_usb_send_di_out");
+        if (PX_UA_SEND(px_ua_route) != 2u) { printf("midi: USB SEND must step DI -> DI + OUT\n"); return 1; }
+        midi_knob(1); if (PX_UA_SEND(px_ua_route) != 0u) { printf("midi: USB SEND must go round DI + OUT -> OUTPUT\n"); return 1; }
+        midi_knob(-1); if (PX_UA_SEND(px_ua_route) != 2u) { printf("midi: USB SEND must step back OUTPUT -> DI + OUT\n"); return 1; }
+        midi_push();                                    /* USB RETURN: along this preset's chain, INPUT .. OUTPUT, round */
+        {
+            uint8_t ord[PX_NBLK];
+            if (px_order_valid(PRESET.order)) memcpy(ord, PRESET.order, PX_NBLK); else px_order_default(ord);
+            if (PX_UA_RET(px_ua_route) != 0u) { printf("midi: USB RETURN must be OUTPUT at first\n"); return 1; }
+            midi_knob(1); if (PX_UA_RET(px_ua_route) != 1u) { printf("midi: USB RETURN must step OUTPUT -> INPUT\n"); return 1; }
+            for (int i = 1; i < PX_NBLK; i++) {
+                midi_knob(1);
+                if (PX_UA_RET(px_ua_route) != 2u + ord[i]) { printf("midi: USB RETURN must step to before the preset's block %d\n", i); return 1; }
+                char t[24] = "BEFORE "; strcat(t, px_block_label(ord[i]));
+                if (ft_width(&FT_SM, t) > 92u) { printf("midi: \"%s\" must fit the value's box\n", t); return 1; }
+            }
+            midi_knob(1); if (PX_UA_RET(px_ua_route) != 0u) { printf("midi: USB RETURN must go round to OUTPUT after the last block\n"); return 1; }
+            midi_knob(-1); if (PX_UA_RET(px_ua_route) != 2u + ord[PX_NBLK - 1]) { printf("midi: USB RETURN must step back OUTPUT -> before the last block\n"); return 1; }
+            while (PX_UA_RET(px_ua_route) != 2u + PX_B_DELAY) midi_knob(-1);
+            if (PX_UA_SEND(px_ua_route) != 2u) { printf("midi: USB RETURN must leave USB SEND as it is\n"); return 1; }
+            mid_usb_up = 1; a_ua = 1; ua_stat0 = 5u;
+            midi_draw(); shot(d, "midi_usb_return_before_dly_rec_play");
+        }
+        midi_push();                                    /* GUITAR: MIX / CUT */
+        if (PX_UA_CUT(px_ua_route)) { printf("midi: GUITAR must be MIX at first\n"); return 1; }
+        midi_knob(1); midi_draw(); shot(d, "midi_usb_guitar_cut");
+        if (!PX_UA_CUT(px_ua_route) || PX_UA_RET(px_ua_route) != 2u + PX_B_DELAY || PX_UA_SEND(px_ua_route) != 2u) { printf("midi: GUITAR must turn to CUT, the others as they were\n"); return 1; }
+        if (!px_ua_route_valid(px_ua_route)) { printf("midi: the routing must stay a valid byte\n"); return 1; }
+        a_ua = 0; ua_stat0 = 0;
+    }
+#endif
+#endif
     midi_push(); poison(); uc.screen = -1; ui_invalidate(); ui_render(); status();
     if (midi_saved != 1 || ui_mode != M_CHAIN) { printf("midi: leaving the page after a change must save once and return to the chain\n"); return 1; }
     if (!px_ua_on) { printf("midi: leaving the page must set USB AUDIO as the row showed\n"); return 1; }
     midi_open(); midi_close();
     if (midi_saved != 1) { printf("midi: leaving without a change must not save\n"); return 1; }
-    midi_open(); midi_push(); midi_push(); midi_push(); midi_knob(-1); midi_close();
+#if PX_OWN_FX && OP_UAUDIO
+    if (px_ua_route != (2u | 4u | (2u + PX_B_DELAY) << 3)) { printf("midi: USB SEND, USB RETURN and GUITAR must stay as set after leaving\n"); return 1; }
+#endif
+    midi_open(); while (mi_row != MI_UAUDIO) midi_push(); midi_knob(-1); midi_close();   /* (USB AUDIO) */
     if (midi_saved != 2 || px_ua_on) { printf("midi: USB AUDIO off again must save once more\n"); return 1; }
+#if PX_OWN_FX
+    {   /* test build 41: USB PORT alone changed: nothing is saved (every power-on is COMPUTER), and FOOTSW stays after the page */
+        midi_open(); while (mi_row != MI_USB) midi_push();
+        midi_knob(1); midi_close();
+        if (midi_saved != 2 || !px_usb_foot) { printf("midi: USB PORT must not be saved, and must stay FOOTSW after leaving\n"); return 1; }
+        px_usb_foot = 0;
+    }
+    {   /* test build 42: OUTPUT alone changed: saved on leaving */
+        const int s0 = midi_saved;
+        const uint8_t b0 = px_out_mode;
+        midi_open(); while (mi_row != MI_OUT) midi_push();
+        midi_knob(1); midi_close();
+        if (midi_saved != s0 + 1 || px_out_mode == b0) { printf("midi: OUTPUT changed alone must be saved on leaving\n"); return 1; }
+        px_out_mode = 0;
+    }
+    {   /* test build 47: the footswitches walk the rows (the right one down, the left one up, round); PLAY VIEW alone
+         * changed: saved on leaving */
+        const int s0 = midi_saved;
+        midi_open();
+        ui_action(UB_FSUP); ui_action(UB_FSUP);
+        if (ui_mode != M_MIDI || mi_row != 2u) { printf("midi: the right footswitch must go down a row\n"); return 1; }
+        ui_action(UB_FSDN); ui_action(UB_FSDN); ui_action(UB_FSDN);
+        if (mi_row != MI_ROWS - 1u) { printf("midi: the left footswitch must go up a row, round to the last\n"); return 1; }
+        while (mi_row != MI_LIVE) ui_action(UB_FSUP);
+        midi_knob(1); midi_close();
+        if (midi_saved != s0 + 1 || !px_live) { printf("midi: PLAY VIEW changed alone must be saved on leaving\n"); return 1; }
+        px_live = 0;
+    }
+#if OP_UAUDIO
+    {   /* test build 43: GUITAR alone changed: saved on leaving */
+        const int s0 = midi_saved;
+        midi_open(); while (mi_row != MI_UGTR) midi_push();
+        midi_knob(1); midi_close();
+        if (midi_saved != s0 + 1 || PX_UA_CUT(px_ua_route)) { printf("midi: GUITAR changed alone must be saved on leaving\n"); return 1; }
+        px_ua_route = 0;
+    }
+#endif
+#endif
     mid_cfg.chan = 16; midi_open(); midi_knob(1); midi_draw(); shot(d, "midi_channel_wraps_to_omni");
     if (mid_cfg.chan != 0) { printf("midi: channel 16 + 1 must wrap to omni\n"); return 1; }
     midi_knob(-1); if (mid_cfg.chan != 16) { printf("midi: omni - 1 must wrap to 16\n"); return 1; }
+#if PX_OWN_FX
+    return quick_wins(d) || overhaul(d) || pad_gestures(d) || usb_notes(d) || learn_live(d) || live_view(d) || scenes(d) || two_jobs(d);
+#else
     return quick_wins(d) || overhaul(d);
+#endif
 }
