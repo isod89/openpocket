@@ -1598,8 +1598,16 @@ without one keeps what its pedal learned (the PRESET LVL volume, for example). S
 delay's repeats and the reverb's tail ring on in both.
 
 Room: the image is 638,248 bytes (6.5 KB of the slot left: this round took 2.5 KB), the RAM code window has 536 bytes free
-(224 for the volume's new places in the chain: the tightest margin now), the RAM 1,248, the pool 852. Nothing new in the store: the two jobs are bit 6 of the control's entry, VOL PEDAL bit 1 of the settings
-byte. The release image is v42's, byte for byte. Editor protocol 7 (INFO "v42 FX7").
+(224 for the volume's new places in the chain: the tightest margin now), the RAM 1,248, the pool 852. Nothing new in the
+store: the two jobs are bit 6 of the control's entry (the editor's protocol carries 7 bits a byte), VOL PEDAL bit 1 of the
+settings byte. The release image is v42's, byte for byte.
+
+The web editor (editor protocol 7, INFO "v42 FX7"): on a preset's own pedal, a box **or VOLUME when SFX is off** and the
+`+VOL` mark; the **Volume pedal** row (AT INPUT, BEFORE DLY).
+
+On the simulated pedal, with its buttons only: a pedal learned on DLY's TONE, step 5 on VOLUME; the line green with DLY off and
+red after DLY's button; with DLY on the pedal moved TONE, with DLY off it left it alone (the volume); after SAVE and a restart
+the pedal and its line were still there (the editor reads its mode as 0x42).
 
 ### What to check
 
