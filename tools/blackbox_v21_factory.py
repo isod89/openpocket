@@ -90,7 +90,7 @@ def main(argv=None):
     try:
         firmware, bank = load_inputs(args.package.expanduser(), args.assets.expanduser())
         loader = usb.get_loader(args.loader)
-        msc = usb.wait_for_pedal(usb.Libusb(), log)
+        msc = usb.wait_for_pedal(usb.transport(), log)
         try:
             count = restore(msc, loader, firmware, bank, args.write, save, log)
         finally:

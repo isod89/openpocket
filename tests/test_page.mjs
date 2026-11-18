@@ -3,7 +3,7 @@
 // bridged to the simulated pedal (tests/devsim.c): Connect, then Install, as a user would; screenshots in OUTDIR.
 //   node tests/test_page.mjs OUTDIR
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, cpSync, readFileSync } from "node:fs";
+import { mkdtempSync, cpSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
@@ -131,6 +131,61 @@ ok(/sound bank/.test(await page.textContent("#msg")), "BlackBox V21: no bank rep
 await page.click("#factory-uboot");
 await page.waitForFunction(() => /USB recovery requested/.test(document.getElementById("msg").textContent));
 ok(simLog.includes("uboot") && !simLog.some((l) => /step[12]/.test(l)), "BlackBox V21: recovery asks for UBOOT without running an OTA");
+
+// an official firmware newer than any the page knows: a warning and a checkbox. Install stays disabled until it is
+// ticked; once ticked the install completes on the simulated pedal
+sim.stdin.end(); sim = null; simLog.length = 0; buf = "";
+await page.reload();
+startSim("--stock", "PocketX_017");
+await page.click("#connect");
+await page.waitForSelector("#newerconfirm:not([hidden])", { timeout: 15000 });
+ok(/official firmware 017.*precaution/s.test(await page.textContent("#newerwarn")), "official PocketX_017 (unknown): the warning names the firmware and calls the check a precaution");
+ok(await page.isDisabled("#install") && !simLog.some((l) => /step[12]/.test(l)), "official PocketX_017: Install stays disabled until confirmed, nothing sent to the pedal");
+await page.screenshot({ path: join(OUT, "page_4b_untested.png"), fullPage: true });
+await page.check("#newerok");
+await page.waitForSelector("#install:enabled", { timeout: 15000 });
+await page.click("#install");
+await page.waitForFunction(() => /PocketX_924/.test(document.getElementById("msg").textContent), null, { timeout: 240000 });
+ok(simLog.some((l) => /step2 rc=0/.test(l)), "official PocketX_017, confirmed: the install completes on the simulated pedal");
+
+// a package that is not the manifest's (one byte changed on the site): refused by its SHA-256, before the pedal is asked
+sim.stdin.end(); sim = null; simLog.length = 0; buf = "";
+{
+  const f = join(SITE, "firmware", "PocketX_924.fwsc"), good = readFileSync(f), bad = Buffer.from(good);
+  bad[bad.length >> 1] ^= 1;
+  writeFileSync(f, bad);
+  await page.reload();
+  startSim();
+  await page.click("#connect");
+  await page.waitForSelector("#install:enabled", { timeout: 15000 });
+  await page.click("#install");
+  await page.waitForSelector("#msg.err", { timeout: 15000 });
+  ok(/SHA-256 mismatch/.test(await page.textContent("#msg")), "a package that differs from the manifest: refused (SHA-256)");
+  ok(!simLog.some((l) => /step[12]/.test(l)), "the changed package: no update step ran on the pedal");
+  writeFileSync(f, good);
+}
+
+// the USB rescue for a pedal the page cannot reach: a folded guide in the rescue section, Mac and Windows steps,
+// read-only first, the write as one more step, a link to the full guide; it fits a phone's width
+{
+  ok(/read-only/.test(await page.textContent("[data-t=rescueusb]")) && /How to run the rescue on your computer/.test(await page.textContent("[data-t=rescueon]")),
+    "rescue section: the USB rescue is read-only first, and rescue mode points to the guide");
+  await page.click("details summary[data-t=rescue]");
+  ok(!(await page.isVisible("#rescue-mac")), "rescue guide: folded until opened");
+  await page.click("#rescueguide summary");
+  const steps = (id) => page.$$eval(`#${id} + ol li, #${id} + p + ol li`, (li) => li.map((e) => e.textContent));
+  const mac = await steps("rescue-mac"), win = await steps("rescue-windows");
+  ok(mac.some((s) => /brew install libusb/.test(s)) && mac.some((s) => /sudo python3 tools\/uboot_rescue\.py --package BlackBox\.fwsc/.test(s)) &&
+     mac.some((s) => /--write --package BlackBox\.fwsc/.test(s)), "rescue guide, Mac: libusb once, the read-only check, then the write");
+  ok(win.some((s) => /python\.org/.test(s)) && win.some((s) => /Run as administrator/.test(s)) && win.some((s) => /^Unplug.*RESCUE\.bat --package BlackBox\.fwsc/.test(s)) &&
+     win.some((s) => /RESCUE\.bat --write --package BlackBox\.fwsc/.test(s)) && /not been tested on a real pedal/.test(await page.textContent("#rescueguide .warnbox")),
+    "rescue guide, Windows: Python once, an administrator Command Prompt, the check, then the write; said to be untested");
+  ok(await page.getAttribute("#rescueguide a[href^='RESCUE.md#quick-start']", "href") !== null, "rescue guide: links the full guide in RESCUE.md");
+  await page.setViewportSize({ width: 360, height: 800 });
+  ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "rescue guide: no sideways scrolling at a phone's width");
+  await page.screenshot({ path: join(OUT, "page_4c_rescue_guide.png"), fullPage: true });
+  await page.setViewportSize({ width: 820, height: 1100 });
+}
 
 // a test channel: only through ?channel=NAME, from its own folder, with its banner; the normal page has none
 cpSync(join(FIX, "firmware"), join(SITE, "firmware", "midi-test"), { recursive: true });

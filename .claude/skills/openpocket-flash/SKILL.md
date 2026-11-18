@@ -52,7 +52,8 @@ Success ends with `dry run ok: would update PocketX_923 -> PocketX_924`.
 
 Refusals (exit 2, nothing sent to the pedal): no `--confirm-flash` and no `--dry-run`; package not listed in the manifest;
 SHA-256, size or identity differs from the manifest; wrong model; no pedal; several pedals; pedal already in update mode
-(power-cycle it).
+(power-cycle it); official firmware newer than the installer knows, unless `--accept-newer-official` is given (a precaution only:
+no evidence shows a newer release bricks pedals; ask the captain before passing it).
 
 ## 4. Flash (only on the captain's explicit instruction)
 

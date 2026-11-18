@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""uboot_rescue.py - restore the official firmware of a crash-looping M-VAVE BlackBox from a Mac, with no extra hardware.
+"""uboot_rescue.py - restore the official firmware of a crash-looping M-VAVE BlackBox from a Mac or a Windows PC, with no
+extra hardware.
 
 Between crashes the pedal sits about 44 s in the JieLi mask-ROM USB boot state (USB 4C4A:8057, "WL80UBOOT1.00"): a USB
 Mass Storage device with vendor SCSI commands. This tool waits for it, loads JieLi's RAM loader (wl82loader.bin) and
@@ -14,6 +15,8 @@ rewrites the app area of the flash from the official package. See docs/RESCUE.md
 One-time install (macOS): `brew install libusb`. Nothing else: Python 3 and its standard library only (libusb is called
 through ctypes; no pip packages). macOS keeps its own mass-storage driver on the pedal, so libusb needs root to take the
 interface: start the tool with `sudo` (it waits for the pedal by itself, start it BEFORE the pedal reaches UBOOT).
+Windows: Python 3 only, no driver to install. The commands go through Windows' own mass-storage driver (SCSI
+pass-through), which only an administrator may use: run RESCUE.bat from a Command Prompt opened as administrator.
 
 Steps, in this order (a rerun starts again at step 1 and resumes: only the sectors that still differ are written):
   1 wait for 4C4A:8057 and start the moment it appears; SCSI INQUIRY must answer WL82 / UBOOT1.00
@@ -25,7 +28,7 @@ Steps, in this order (a rerun starts again at step 1 and resumes: only the secto
 Guards that cannot be switched off: no write outside [0x4000, end of the image) with the end never above 0xFF000; a
 whitelist of loader commands (no chip erase FB02, no key burn FC12); the chip key and the flash size must match.
 """
-import argparse, ctypes, ctypes.util, hashlib, os, pwd, struct, sys, time, urllib.request
+import argparse, ctypes, ctypes.util, hashlib, os, struct, sys, time, urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -48,16 +51,27 @@ IO = 512
 WRITE_FROM = 0x4000
 WRITE_LIMIT = 0xFF000
 
+WINDOWS = os.name == "nt"
+
+
+def as_root():
+    """macOS / Linux: running as root (under sudo). Windows has no root: an administrator is is_admin()."""
+    return not WINDOWS and os.geteuid() == 0
+
+
 def user_home():
     """The home of the person who typed sudo, not root's."""
     name = os.environ.get("SUDO_USER")
-    return Path(pwd.getpwnam(name).pw_dir) if os.geteuid() == 0 and name else Path.home()
+    if as_root() and name:
+        import pwd                      # (POSIX only)
+        return Path(pwd.getpwnam(name).pw_dir)
+    return Path.home()
 
 
 def hand_back(path):
     """Under sudo, give a file or folder we create back to the person who typed it."""
     uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
-    if os.geteuid() == 0 and uid and gid:
+    if as_root() and uid and gid:
         os.chown(path, int(uid), int(gid))
 
 
@@ -431,6 +445,8 @@ ROOT_HINT = ("macOS did not let go of the pedal even for root. Nothing was sent 
 
 
 class Libusb:
+    POLL = 0.05                       # s between looks for the pedal
+
     def __init__(self):
         self.lib = self._load()
         v, p, i, u8, u16 = ctypes.c_void_p, ctypes.POINTER, ctypes.c_int, ctypes.c_uint8, ctypes.c_uint16
@@ -481,7 +497,7 @@ class Libusb:
         handle = ctypes.c_void_p()
         code = self.lib.libusb_open(dev, ctypes.byref(handle))
         if code in (E_ACCESS, E_BUSY, E_NOT_SUPPORTED):
-            raise RescueError(f"cannot open the pedal ({self.name(code)}). {ROOT_HINT if os.geteuid() == 0 else SUDO_HINT}")
+            raise RescueError(f"cannot open the pedal ({self.name(code)}). {ROOT_HINT if as_root() else SUDO_HINT}")
         if code < 0:
             return None
         buf = ctypes.create_string_buffer(512)
@@ -494,7 +510,7 @@ class Libusb:
         code = self.lib.libusb_claim_interface(handle, iface)
         if code in (E_ACCESS, E_BUSY, E_NOT_SUPPORTED):
             self.lib.libusb_close(handle)
-            raise RescueError(f"cannot take the interface from macOS ({self.name(code)}). {ROOT_HINT if os.geteuid() == 0 else SUDO_HINT}")
+            raise RescueError(f"cannot take the interface from macOS ({self.name(code)}). {ROOT_HINT if as_root() else SUDO_HINT}")
         if code < 0:
             self.lib.libusb_close(handle)
             return None
@@ -546,6 +562,136 @@ class LibusbMsc:
         return data
 
 
+# ---------------------------------------------------------------- Windows: its own mass-storage driver, SCSI pass-through
+# Windows keeps its mass-storage driver on the pedal as macOS does, but lets an administrator send any SCSI command
+# through it (IOCTL_SCSI_PASS_THROUGH_DIRECT): no libusb, no Zadig, no driver change. kagaimiq/jl-uboot-tool
+# (scsiio/win32port.py) reaches these chips the same way. Browsers cannot: WebUSB refuses every mass-storage interface.
+IOCTL_SCSI_PASS_THROUGH_DIRECT = 0x4D014
+SCSI_DATA_OUT, SCSI_DATA_IN, SCSI_DATA_NONE = 0, 1, 2
+# CreateFile / DeviceIoControl errors that mean the pedal left the bus: file or path not found, not ready, no such
+# device, device not connected
+WIN_GONE = frozenset({2, 3, 21, 433, 1167})
+ADMIN_HINT = ("Windows lets only an administrator send these commands to the pedal: open a Command Prompt as "
+              "administrator (right-click Start, Terminal (Admin)) and run RESCUE.bat there (docs/RESCUE.md)")
+
+
+class SPTD(ctypes.Structure):
+    """SCSI_PASS_THROUGH_DIRECT (ntddscsi.h); ctypes lays it out as MSVC does: 56 bytes on 64-bit Windows, 44 on 32-bit."""
+    _fields_ = [("Length", ctypes.c_uint16), ("ScsiStatus", ctypes.c_uint8), ("PathId", ctypes.c_uint8),
+                ("TargetId", ctypes.c_uint8), ("Lun", ctypes.c_uint8), ("CdbLength", ctypes.c_uint8),
+                ("SenseInfoLength", ctypes.c_uint8), ("DataIn", ctypes.c_uint8), ("DataTransferLength", ctypes.c_uint32),
+                ("TimeOutValue", ctypes.c_uint32), ("DataBuffer", ctypes.c_void_p), ("SenseInfoOffset", ctypes.c_uint32),
+                ("Cdb", ctypes.c_uint8 * 16)]
+
+
+def is_admin():
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+class Kernel32:
+    """The three kernel32 calls the transport needs. Each failure carries its Windows error code."""
+
+    def __init__(self):
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        v, u32 = ctypes.c_void_p, ctypes.c_uint32
+        self.create = k.CreateFileW
+        self.create.argtypes, self.create.restype = [ctypes.c_wchar_p, u32, u32, v, u32, u32, v], v
+        self.ioctl_ = k.DeviceIoControl
+        self.ioctl_.argtypes = [v, u32, v, u32, v, u32, ctypes.POINTER(u32), v]
+        self.ioctl_.restype = ctypes.c_int
+        self.close_ = k.CloseHandle
+        self.close_.argtypes, self.close_.restype = [v], ctypes.c_int
+
+    def open(self, path):
+        """A read-write handle to the disk or volume at path, or OSError(winerror)."""
+        h = self.create(path, 0xC0000000, 3, None, 3, 0, None)   # GENERIC_READ | WRITE, share read | write, OPEN_EXISTING
+        if h is None or h == ctypes.c_void_p(-1).value:
+            raise OSError(f"CreateFile {path}: Windows error {ctypes.get_last_error()}")
+        return h
+
+    def ioctl(self, handle, sptd):
+        """IOCTL_SCSI_PASS_THROUGH_DIRECT in place on sptd: 0, or the Windows error code."""
+        n = ctypes.c_uint32()
+        size = ctypes.sizeof(sptd)
+        ok = self.ioctl_(handle, IOCTL_SCSI_PASS_THROUGH_DIRECT, ctypes.byref(sptd), size, ctypes.byref(sptd), size,
+                         ctypes.byref(n), None)
+        return 0 if ok else ctypes.get_last_error() or -1
+
+    def close(self, handle):
+        self.close_(handle)
+
+
+class WinScsi:
+    """One opened disk or volume: msc.execute(cdb, out, in_len, timeout_ms) -> bytes, as LibusbMsc."""
+
+    def __init__(self, kernel, path):
+        self.kernel, self.path = kernel, path
+        self.handle = kernel.open(path)
+
+    def close(self):
+        if self.handle is not None:
+            self.kernel.close(self.handle)
+            self.handle = None
+
+    def execute(self, cdb, out, in_len, timeout=2000):
+        s = SPTD()
+        s.Length, s.TargetId, s.CdbLength = ctypes.sizeof(SPTD), 1, len(cdb)
+        s.Cdb[:len(cdb)] = cdb
+        s.TimeOutValue = max(1, -(-timeout // 1000))                # seconds
+        if out is not None:
+            buf = ctypes.create_string_buffer(bytes(out), len(out))
+            s.DataIn, s.DataTransferLength = SCSI_DATA_OUT, len(out)
+        elif in_len:
+            buf = ctypes.create_string_buffer(in_len)
+            s.DataIn, s.DataTransferLength = SCSI_DATA_IN, in_len
+        else:
+            buf = None
+            s.DataIn = SCSI_DATA_NONE
+        s.DataBuffer = ctypes.cast(buf, ctypes.c_void_p).value if buf is not None else None
+        err = self.kernel.ioctl(self.handle, s)
+        if err in WIN_GONE:
+            raise DeviceGone("the pedal left the bus")
+        if err:
+            raise ScsiError(f"SCSI pass-through: Windows error {err}")
+        if s.ScsiStatus:
+            raise ScsiError("command failed")
+        return buf.raw[:s.DataTransferLength] if out is None and in_len else b""
+
+
+class WinDisks:
+    """Finds the pedal among the disks and drive letters: the one that answers INQUIRY as WL82 UBOOT1.00. INQUIRY only
+    reads, so asking the other disks changes nothing."""
+    POLL = 0.25
+    PATHS = ([rf"\\.\PhysicalDrive{i}" for i in range(32)] + [rf"\\.\{c}:" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
+             + [rf"\\.\HarddiskVolume{i}" for i in range(1, 64)])
+
+    def __init__(self, kernel=None):
+        if kernel is None:
+            if not is_admin():
+                raise RescueError(ADMIN_HINT)
+            kernel = Kernel32()
+        self.kernel = kernel
+
+    def open_pedal(self):
+        """The pedal's disk, opened, or None when it is not there (yet)."""
+        for path in self.PATHS:
+            try:
+                msc = WinScsi(self.kernel, path)
+            except OSError:
+                continue                                           # no such disk, or one Windows keeps to itself
+            try:
+                vendor, product, _ = Uboot(msc).inquiry()
+                if vendor == "WL82" and product.startswith("UBOOT"):
+                    return msc
+            except ScsiError:
+                pass
+            msc.close()
+        return None
+
+
 def wait_for_pedal(usb, log):
     """Poll until 4C4A:8057 is on the bus; claim it at once (the UBOOT window is only about 44 s)."""
     announced = False
@@ -554,25 +700,36 @@ def wait_for_pedal(usb, log):
         if msc:
             return msc
         if not announced:
-            log("waiting for the pedal in its UBOOT state (USB 4C4A:8057; plug it straight into this Mac)")
+            log("waiting for the pedal in its UBOOT state (USB 4C4A:8057; plug it straight into this computer)"
+                + (". If Windows offers to format a drive, click Cancel" if WINDOWS else ""))
             announced = True
-        time.sleep(0.05)
+        time.sleep(usb.POLL)
+
+
+def transport():
+    """This computer's way to the pedal: Windows' own driver through SCSI pass-through, else libusb."""
+    return WinDisks() if WINDOWS else Libusb()
 
 
 def check(a):
     """Prerequisites, one line each, for `op.mjs doctor`; exit 1 only when the tool cannot run at all."""
     bad = 0
-    try:
-        Libusb()
-        print("ok   libusb found")
-    except RescueError as e:
-        print(f"FAIL {e}")
-        bad = 1
+    if WINDOWS:
+        print("ok   Windows: no driver to install (Windows' own mass-storage driver, SCSI pass-through)")
+    else:
+        try:
+            Libusb()
+            print("ok   libusb found")
+        except RescueError as e:
+            print(f"FAIL {e}")
+            bad = 1
     package = Path(a.package or DEFAULT_PACKAGE).expanduser()
     print(f"ok   official package {package}" if a.image or package.exists() else
           f"note official package not found at {package}: pass --package FILE.fwsc (the BlackBox package from M-VAVE)")
     print("ok   wl82loader.bin cached" if LOADER_CACHE.exists() else "note wl82loader.bin is downloaded on the first run (SHA-256 checked)")
-    if os.geteuid() != 0:
+    if WINDOWS and not is_admin():
+        print("note the rescue needs an administrator: run RESCUE.bat from a Command Prompt opened as administrator")
+    elif not WINDOWS and not as_root():
         print("note the rescue needs root to take the pedal from macOS's mass-storage driver: `make rescue` asks for your password (sudo)")
     return bad
 
@@ -598,7 +755,7 @@ def main(argv=None):
         loader = get_loader(a.loader)
         log(f"image {len(image):#x} bytes, loader {LOADER_SHA256[:8]}... verified; "
             + ("WRITE mode" if a.write else "read-only mode: nothing will be written"))
-        usb = Libusb()
+        usb = transport()
 
         def open_device():
             msc = wait_for_pedal(usb, log)

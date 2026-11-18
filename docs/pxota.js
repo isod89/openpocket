@@ -5,6 +5,7 @@
 // Step 1: the running firmware (the official one, or OpenPocket's ota.c) reads parts of the package and stages its
 // update loader, then resets into it. Step 2: the loader reads the whole image and writes it. In both steps the
 // device sends cmd 0x30 read requests on the package's logical image and the page answers them.
+import { OFFICIAL } from "./pxpkg.js";
 
 const HS_QUERY = [0xF0, 0x00, 0x32, 0x45, 0x00, 0x00, 0x00, 0x40, 0x7F, 0xF7];
 const UPGRADE = [0xF0, 0x22, 0x24, 0x35, 0x7F, 0xF7];
@@ -22,7 +23,7 @@ export const IS_OFFICIAL = (id) => MODELS.includes(id.model) && id.version < 900
 export const PORT_RE = /openpocket|pocket|blackbox|black.?box|ota|usb.?midi|composite|jieli|sinco|m-?vave|donner/i;
 
 // errors carry a code the page translates: notfound, model, stopped, noloader, lost, noreturn, mismatch, badreq,
-// foreign (detail: the loader's identity)
+// foreign (detail: the loader's identity), untested (detail: the pedal's identity)
 function fail(code, msg, detail = "") { const e = new Error(msg); e.code = code; e.detail = detail; return e; }
 
 export function pack7(data) {
@@ -74,6 +75,24 @@ export function parseIdentity(pkt) {
   return m ? { text: txt, model: m[1], version: parseInt(m[2], 10) } : null;
 }
 
+// The official firmware the page has been checked against, newest first per model (pxpkg.js OFFICIAL).
+const NEWEST_OFFICIAL = Object.fromEntries(MODELS.map((m) => [m, Math.max(...OFFICIAL.filter((o) => o.model === m)
+  .map((o) => parseInt(o.product.split("_")[1], 10)))]));
+
+// A warning for a pedal that runs an official firmware newer than the newest one this page knows, else null. The USB
+// rescue (tools/uboot_rescue.py) reads the pedal's flash head and refuses an image for another layout; over MIDI the
+// head cannot be read, so the running firmware stands in for it. This is a precaution, not a block: installing over
+// it needs the user's confirmation (acceptNewer), and nothing else changes.
+export function newerOfficialWarning(id) {
+  if (!IS_OFFICIAL(id)) return null;
+  const newest = NEWEST_OFFICIAL[id.model];
+  if (id.version <= newest) return null;
+  const v = (n) => String(n).padStart(3, "0");
+  return `The pedal runs the official firmware ${v(id.version)} (${id.text}), newer than the newest official ${id.model} ` +
+    `firmware this installer has been checked with (${v(newest)}). This version check is a precaution: no evidence yet ` +
+    `shows that a newer official release is what left pedals unable to start. Installing over it is untested.`;
+}
+
 // one MIDI in/out pair with a SysEx queue
 class Link {
   constructor(input, output) {
@@ -123,6 +142,7 @@ export class Updater {
     this.access = access;
     this.log = log || (() => {});
     this.t = { ...TIMING, ...timing };
+    this.busy = new Set();            // pedal-like MIDI ports that would not open: another program holds them
   }
 
   // the first in/out pair (same port name) that answers the handshake and passes filter
@@ -133,7 +153,8 @@ export class Updater {
       if (!PORT_RE.test(input.name || "")) continue;
       const output = outs.find((o) => o.name === input.name) || (outs.length === 1 ? outs[0] : null);
       if (!output) continue;
-      try { await input.open(); await output.open(); } catch (_) { continue; }
+      // Windows lets one program at a time use a MIDI port: a port held by M-EFCS, a DAW or another tab fails to open
+      try { await input.open(); await output.open(); this.busy.delete(input.name); } catch (_) { this.busy.add(input.name); continue; }
       const link = new Link(input, output);
       const id = await handshake(link, 2);
       if (id && (!filter || filter(id))) return { link, id, name: input.name };
@@ -152,7 +173,9 @@ export class Updater {
 
   seen() {
     const names = [...this.access.inputs.values()].filter((p) => p.state !== "disconnected").map((p) => p.name || "?");
-    return names.length ? ` (MIDI: ${names.join(", ")})` : " (MIDI: -)";
+    const busy = [...this.busy].filter((n) => names.includes(n));
+    return (names.length ? ` (MIDI: ${names.join(", ")})` : " (MIDI: -)") +
+      (busy.length ? ` (in use by another program: ${busy.join(", ")}; close it, then try again)` : "");
   }
 
   async waitFor(filter, ms) {
@@ -194,24 +217,25 @@ export class Updater {
 
   // full update: running firmware (official or OpenPocket) -> its staged loader -> the new firmware.
   // product: the package identity ("PocketX_924", or the official "PocketX_016" for the way back)
-  async install(image, product, onStep) {
+  // opts.acceptNewer: the user confirmed installing over an official firmware newer than the page knows (newerOfficialWarning)
+  async install(image, product, onStep, opts = {}) {
     const step = onStep || (() => {});
     const [model] = product.split("_");
     const dev = await this.find((id) => MODELS.includes(id.model));
     if (!dev) throw fail("notfound", "pedal not found", this.seen());
     if (dev.id.model !== model) { dev.link.close(); throw fail("model", `the pedal is a ${dev.id.text}, the package is ${product}`, dev.id.text); }
-    return this.installOn(dev, image, product, step);
+    return this.installOn(dev, image, product, step, opts.acceptNewer);
   }
 
   // rescue (issue #1): a pedal that restarts every few seconds. The first pedal that answers gets the package of
   // its model at once (pick(model) -> { image, product }, already fetched): the upgrade command stops its DSP.
-  async rescue(pick, onStep) {
+  async rescue(pick, onStep, opts = {}) {
     const step = onStep || (() => {});
     const dev = await this.find((id) => MODELS.includes(id.model));
     if (!dev) return null;
     const pkg = pick(dev.id.model);
     if (!pkg) { dev.link.close(); throw fail("pkg", dev.id.model, dev.id.model); }
-    return this.installOn(dev, pkg.image, pkg.product, step);
+    return this.installOn(dev, pkg.image, pkg.product, step, opts.acceptNewer);
   }
 
   // rescue for a program with no button to press again (the command line): rescue() again and again until a pedal is
@@ -221,12 +245,12 @@ export class Updater {
   // `loader` ({ image, product }): a loader does not report its model, so the caller names the package.
   // onEvent("wait", msLeft) and onEvent("retry", error) report on the way. Returns the version the pedal reports, or null
   // when no pedal answered in time.
-  async rescueWithin(pick, onStep, { timeoutMs, onEvent, loader = null } = {}) {
+  async rescueWithin(pick, onStep, { timeoutMs, onEvent, loader = null, acceptNewer = false } = {}) {
     const end = Date.now() + timeoutMs, tell = onEvent || (() => {});
     let pkg = null;
     for (;;) {
       try {
-        const done = await this.rescue((model) => (pkg = pick(model)), onStep);
+        const done = await this.rescue((model) => (pkg = pick(model)), onStep, { acceptNewer });
         if (done) return done;
         const half = pkg || loader;
         if (half && await this.resume(half.image, half.product, onStep)) return half.product;
@@ -241,7 +265,10 @@ export class Updater {
     }
   }
 
-  async installOn(dev, image, product, step) {
+  // every check comes before the first byte that changes anything: the upgrade command is the point of no return
+  async installOn(dev, image, product, step, acceptNewer = false) {
+    const why = parseInt(product.split("_")[1], 10) >= 900 && newerOfficialWarning(dev.id);
+    if (why && !acceptNewer) { dev.link.close(); throw fail("untested", `${why} Nothing was sent; confirm to install anyway.`, dev.id.text); }
     step("start", dev.id.text);
     dev.link.send(UPGRADE);
     await sleep(this.t.afterUpgrade);
@@ -271,7 +298,7 @@ export class Updater {
     step("reboot");
     await sleep(this.t.afterWrite);
     const back = await this.waitFor((id) => MODELS.includes(id.model), this.t.backWait);
-    if (!back) throw fail("noreturn", "the pedal did not come back: power-cycle it");
+    if (!back) throw fail("noreturn", "the update was written and checked, but the pedal did not come back: switching it off and on is safe now");
     back.link.close();
     if (back.id.text !== product) throw fail("mismatch", `written, but the pedal reports ${back.id.text}`, back.id.text);
     step("done", back.id.text);

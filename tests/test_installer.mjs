@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Updater, IS_OPENPOCKET } from "../docs/pxota.js";
+import { Updater, IS_OPENPOCKET, newerOfficialWarning } from "../docs/pxota.js";
 import { productOf, logicalImage, checkOfficial } from "../docs/pxpkg.js";
 import { simAccess } from "./simpedal.mjs";
 
@@ -86,6 +86,47 @@ ok(productOf(px) === "PocketX_924" && productOf(bb) === "BlackBox_924", "package
   try { res = await u.install(logicalImage(px), "PocketX_924", () => {}); } catch (e) { err = e; }
   ok(!err && res === "PocketX_924", `official PocketX_016 -> OpenPocket 924 ${err ? "(" + err.code + ")" : ""}`);
   await sim.end();
+}
+
+// 4b. an official firmware newer than any the installer knows (the USB rescue's head check, over MIDI): a precaution
+//     that needs the user's confirmation. Without it nothing is sent, by install and by rescue alike; with it the
+//     install completes. The way back to an official package is not concerned
+{
+  const pocket = (v) => ({ model: "PocketX", version: v, text: `PocketX_${String(v).padStart(3, "0")}` });
+  const box = (v) => ({ model: "BlackBox", version: v, text: `BlackBox_${String(v).padStart(3, "0")}` });
+  ok(newerOfficialWarning(pocket(16)) === null && newerOfficialWarning(box(21)) === null && newerOfficialWarning(box(20)) === null && newerOfficialWarning(pocket(923)) === null,
+    "newer-firmware check: the official firmware the page knows (PocketX_016, BlackBox_020 / 021), and OpenPocket, are not concerned");
+  ok(/BlackBox_023.*\(021\).*precaution/s.test(newerOfficialWarning(box(23)) || "") && /PocketX_017.*\(016\)/s.test(newerOfficialWarning(pocket(17)) || ""),
+    "newer-firmware check: a newer official firmware gets a warning that names the known one and calls it a precaution");
+  for (const how of ["install", "rescue"]) {
+    const run = (u, accept, steps) => (how === "install"
+      ? u.install(logicalImage(px), "PocketX_924", (s) => steps.push(s), { acceptNewer: accept })
+      : u.rescue(() => ({ image: logicalImage(px), product: "PocketX_924" }), (s) => steps.push(s), { acceptNewer: accept }));
+    const dump = join(TMP, `untested_${how}.bin`);
+    let sim = simAccess([join(TMP, "flash_old.bin"), "--stock", "PocketX_017", "--dump", dump]);
+    await sim.ready;
+    let steps = [], err = null;
+    try { await run(new Updater(sim.access, null, FAST), false, steps); } catch (e) { err = e; }
+    await sim.end();
+    ok(err && err.code === "untested" && err.detail === "PocketX_017" && !steps.length, `${how} over an unknown official PocketX_017, not confirmed: refused (untested), no step started`);
+    ok(!sim.log.some((l) => /step[12]/.test(l)) && flashOf(dump).equals(flashOf(join(TMP, "flash_old.bin"))), `${how} not confirmed: the pedal got no upgrade command, its flash is as it was`);
+
+    sim = simAccess([join(TMP, "flash_old.bin"), "--stock", "PocketX_017"]);
+    await sim.ready;
+    steps = []; err = null;
+    let res = null;
+    try { res = await run(new Updater(sim.access, null, FAST), true, steps); } catch (e) { err = e; }
+    await sim.end();
+    ok(!err && res === "PocketX_924" && steps.includes("start"), `${how} over PocketX_017, confirmed: the install completes ${err ? "(" + err.code + ")" : ""}`);
+  }
+}
+
+// 4c. Windows lets one program at a time open a MIDI port: a pedal port that will not open is named as in use
+{
+  const held = { name: "USB-Midi", state: "connected", open: async () => { throw new Error("InvalidAccessError"); } };
+  const access = { inputs: new Map([["USB-Midi", held]]), outputs: new Map([["USB-Midi", { ...held }]]) };
+  const u = new Updater(access, null, FAST);
+  ok(await u.identify() === null && /in use by another program: USB-Midi/.test(u.seen()), "a MIDI port held by another program: not found, and said why");
 }
 
 // 5. a damaged package: the loader refuses it before erasing anything

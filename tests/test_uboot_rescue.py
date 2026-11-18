@@ -3,7 +3,7 @@
 """tools/uboot_rescue.py against a simulated UBOOT pedal (tests/uboot_sim.py): protocol layer, guards, resume. No hardware.
   python3 tests/test_uboot_rescue.py [official-BlackBox.fwsc]   (the package tests are skipped without the official file)
 """
-import contextlib, io, os, random, subprocess, sys, tempfile, unittest
+import contextlib, ctypes, io, os, random, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -36,6 +36,59 @@ def crashed_flash(same_sectors=(0x10, 0x11, 0x50)):
 
 def differing(flash):
     return sum(flash[a:a + SECTOR] != IMAGE[a:a + SECTOR] for a in range(0x4000, HI, SECTOR))
+
+
+class OtherDisk:
+    """A disk that is not the pedal: it answers INQUIRY and nothing else."""
+
+    def __init__(self, vendor, product):
+        self.vendor, self.product = vendor, product
+
+    def execute(self, cdb, out, in_len, timeout=2000):
+        if cdb[0] != 0x12:
+            raise ScsiError("not asked")
+        return (bytes(8) + self.vendor.encode().ljust(8) + self.product.encode().ljust(16) + b"1.00")[:in_len]
+
+
+class FakeKernel:
+    """kernel32 as ur.WinScsi uses it: CreateFile on a path, then IOCTL_SCSI_PASS_THROUGH_DIRECT, decoded from the
+    SPTD the way Windows reads it and handed to a simulated device. A failed command is CHECK CONDITION (status 2), a
+    pedal that left the bus is ERROR_DEVICE_NOT_CONNECTED, as from Windows."""
+
+    def __init__(self, devices):
+        self.devices, self.handles, self.next = devices, {}, 100
+
+    def open(self, path):
+        dev = self.devices.get(path)
+        if dev is None or getattr(dev, "present", True) is False:
+            raise OSError(f"CreateFile {path}: Windows error 2")
+        if dev == "denied":
+            raise OSError(f"CreateFile {path}: Windows error 5")
+        self.next += 1
+        self.handles[self.next] = dev
+        return self.next
+
+    def close(self, handle):
+        del self.handles[handle]
+
+    def ioctl(self, handle, s):
+        dev = self.handles[handle]
+        assert s.Length == ctypes.sizeof(ur.SPTD) and 0 < s.CdbLength <= 16 and s.TimeOutValue >= 1
+        cdb = bytes(s.Cdb[:s.CdbLength])
+        try:
+            if s.DataIn == ur.SCSI_DATA_OUT:
+                dev.execute(cdb, ctypes.string_at(s.DataBuffer, s.DataTransferLength), 0, s.TimeOutValue * 1000)
+            elif s.DataIn == ur.SCSI_DATA_IN:
+                data = dev.execute(cdb, None, s.DataTransferLength, s.TimeOutValue * 1000)
+                ctypes.memmove(s.DataBuffer, data, len(data))
+                s.DataTransferLength = len(data)
+            else:
+                dev.execute(cdb, None, 0, s.TimeOutValue * 1000)
+        except DeviceGone:
+            return 1167
+        except ScsiError:
+            s.ScsiStatus = 2
+        return 0
 
 
 class Rescue(unittest.TestCase):
@@ -186,6 +239,23 @@ class Rescue(unittest.TestCase):
         self.assertIn("head", self.refused(sim, open_device))
         self.assertEqual(len(list(self.backups.glob("*.dump.bin"))), 1, "the backup was made before the head check")
 
+    def test_stops_when_a_sector_reads_back_differently(self):
+        sim, open_device = self.pedal()
+        bad = 0x4000                                               # its first byte is stuck at 0: no erase clears it
+        execute = sim.execute
+
+        def stuck(cdb, out, in_len, timeout=2000):
+            data = execute(cdb, out, in_len, timeout)
+            sim.flash[bad] = 0
+            return data
+        sim.execute = stuck
+        with self.assertRaises(GuardError) as cm:
+            self.run_rescue(open_device, sim, write=True)
+        self.assertIn(f"sector {bad:#x} reads back differently", str(cm.exception))
+        self.assertEqual((sim.erases(), set(sim.writes())), ([bad] * 3, set(range(bad, bad + SECTOR, ur.IO))),
+                         "three tries at that sector, then nothing more")
+        self.assertNotEqual(sim.seen[-1][0], ur.RUN_APP)
+
     def test_loader_commands_are_a_whitelist(self):
         sim, _ = self.pedal()
         dev = Uboot(sim, Window.for_image(HI), sim.clock)
@@ -269,6 +339,82 @@ class Rescue(unittest.TestCase):
         self.assertTrue(any("libusb" in l for l in lines), r.stdout)
         self.assertTrue(any(l.startswith("note official package not found") for l in lines), r.stdout)
         self.assertEqual(r.returncode, 1 if any(l.startswith("FAIL") for l in lines) else 0)
+
+    # ---- Windows: the same rescue through SCSI pass-through (WinScsi, WinDisks), on a fake kernel32
+    def windows(self, sim, others=None):
+        """open_device for ur.rescue through WinDisks: the pedal is PhysicalDrive3 among other disks; each reopen is a
+        new UBOOT window, as with libusb."""
+        kernel = FakeKernel({r"\\.\PhysicalDrive0": OtherDisk("ATA", "Samsung SSD"), r"\\.\C:": OtherDisk("ATA", "Samsung SSD"),
+                             r"\\.\PhysicalDrive1": "denied", r"\\.\PhysicalDrive3": sim, **(others or {})})
+        self.kernel, self.opened = kernel, 0
+
+        def open_device():
+            self.opened += 1
+            if self.opened > 1:
+                sim.reenumerate()
+            return ur.WinDisks(kernel).open_pedal()
+        return open_device
+
+    def test_windows_sptd_is_the_ntddscsi_layout(self):
+        if ctypes.sizeof(ctypes.c_void_p) != 8:
+            self.skipTest("64-bit layout")
+        offsets = {f[0]: getattr(ur.SPTD, f[0]).offset for f in ur.SPTD._fields_}
+        self.assertEqual(ctypes.sizeof(ur.SPTD), 56)
+        self.assertEqual((offsets["DataIn"], offsets["DataTransferLength"], offsets["TimeOutValue"], offsets["DataBuffer"],
+                          offsets["SenseInfoOffset"], offsets["Cdb"]), (8, 12, 16, 24, 32, 36))
+
+    def test_windows_finds_only_the_pedal(self):
+        sim, _ = self.pedal()
+        msc = self.windows(sim)()
+        self.assertEqual(msc.path, r"\\.\PhysicalDrive3")
+        self.assertEqual(sim.seen, [], "only INQUIRY was asked, of every disk")
+        self.assertEqual(list(self.kernel.handles.values()), [sim], "the other disks were closed again")
+        self.assertIsNone(ur.WinDisks(FakeKernel({r"\\.\C:": OtherDisk("ATA", "Samsung SSD")})).open_pedal())
+
+    def test_windows_needs_an_administrator(self):
+        if ur.is_admin():
+            self.skipTest("running as a Windows administrator")
+        with self.assertRaisesRegex(RescueError, "administrator"):
+            ur.WinDisks()
+
+    def test_windows_read_only_and_write(self):
+        flash = crashed_flash()
+        before = bytes(flash)
+        sim, _ = self.pedal(flash)
+        n, saved = self.run_rescue(self.windows(sim), sim, write=False)
+        self.assertEqual((n, bytes(sim.flash)), (differing(before), before))
+        self.assertFalse(sim.writes() or sim.erases())
+        self.assertEqual(saved[0].read_bytes(), before)
+        self.backups = Path(tempfile.mkdtemp(dir=self.tmp.name))
+        sim.reenumerate()                                          # run-app restarted it; it is back in UBOOT
+        n, _ = self.run_rescue(self.windows(sim), sim, write=True)
+        self.assertEqual(bytes(sim.flash[:HI]), IMAGE)
+        self.assertEqual(bytes(sim.flash[HI:]), before[HI:])
+        self.assertTrue(all(0x4000 <= a < HI for a in sim.erases() + sim.writes()))
+        self.assertFalse(any(op in FORBIDDEN for op, _ in sim.seen))
+        self.assertEqual(sim.seen[-1][0], ur.RUN_APP)
+
+    def test_windows_resumes_after_the_pedal_drops_off(self):
+        original = bytes(crashed_flash())
+        for drop in (60, 700, 2600):
+            with self.subTest(drop_after_commands=drop):
+                self.backups = Path(tempfile.mkdtemp(dir=self.tmp.name))
+                sim, _ = self.pedal()
+                sim.drop_at = drop
+                n, saved = self.run_rescue(self.windows(sim), sim, write=True)
+                self.assertGreater(self.opened, 1)
+                self.assertEqual(bytes(sim.flash[:HI]), IMAGE)
+                self.assertEqual(saved[0].read_bytes(), original)
+
+    def test_windows_refusals(self):
+        for kw, why in (({"key": 0x1234}, "chip key 0x1234"), ({"flash_id": 0xEB6015}, "1 MiB")):
+            with self.subTest(**kw):
+                sim, _ = self.pedal(**kw)
+                self.assertIn(why, self.refused(sim, self.windows(sim)))
+        flash = crashed_flash()
+        flash[0x100] ^= 0xFF
+        sim, _ = self.pedal(flash)
+        self.assertIn("head", self.refused(sim, self.windows(sim)))
 
     # ---- the official package
     @unittest.skipUnless(PACKAGE.exists(), "official BlackBox package not found")

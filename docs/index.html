@@ -40,11 +40,16 @@ button:disabled{opacity:.45;cursor:default}
 .note{font-size:13.5px;color:var(--dim);margin:0;max-width:68ch}
 .note strong{color:var(--ink)}
 .warnbox{border-left:3px solid var(--warn);padding:2px 0 2px 12px}
-.msg{font-weight:600;min-height:1.5em}
+.msg{font-weight:600;min-height:1.5em;overflow-wrap:anywhere}
 .msg.ok{color:var(--ok)}.msg.err{color:var(--err)}
 input[type=file]{font:inherit;color:var(--dim);max-width:100%}
 label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13.5px}
 details summary{cursor:pointer;color:var(--dim);font-size:13px}
+.guide{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+.guide summary{color:var(--ink);font-weight:600;font-size:13.5px}
+.guide h3{margin:8px 0 0;font-size:13.5px;color:var(--ink)}
+.guide ol,.guide ul{padding-left:20px;display:flex;flex-direction:column;gap:4px}
+.guide code{overflow-wrap:anywhere}
 pre#log{margin:10px 0 0;background:var(--code);border-radius:10px;padding:12px;font:12px/1.5 "JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 code{font:12.5px "JetBrains Mono",ui-monospace,monospace;background:var(--code);padding:1px 5px;border-radius:5px}
 footer{color:var(--dim);font-size:12.5px;display:flex;flex-direction:column;gap:6px}
@@ -86,6 +91,10 @@ footer a,.note a{color:inherit}
     <p class="note warnbox" data-t="s2warn"></p>
     <p class="note warnbox" id="bbwarn" hidden data-t="bbwarn"></p>
     <p class="note warnbox" id="testchan" hidden data-t="testchan"></p>
+    <div id="newerconfirm" hidden>
+      <p class="note warnbox" id="newerwarn"></p>
+      <label class="chk"><input type="checkbox" id="newerok"><span data-t="newerok"></span></label>
+    </div>
     <div class="row">
       <button class="go" id="install" disabled data-t="install"></button>
       <button class="alt" id="resume" hidden data-t="resume"></button>
@@ -118,7 +127,43 @@ footer a,.note a{color:inherit}
       <summary data-t="rescue"></summary>
       <label class="chk"><input type="checkbox" id="rescueOn"><span data-t="rescueon"></span></label>
       <p class="note" data-t="rescuenote"></p>
-      <p class="note" data-t="rescuemac"></p>
+      <p class="note" data-t="rescueusb"></p>
+      <details class="guide" id="rescueguide">
+        <summary>How to run the rescue on your computer</summary>
+        <p class="note">The first run only checks the pedal and saves a backup. Nothing is written until the second run. Download two things first: the OpenPocket folder (<a href="https://github.com/VinSpee/openpocket/archive/refs/heads/main.zip">openpocket-main.zip</a>, then unzip it) and the official BlackBox firmware file (it ends in <code>.fwsc</code>) from the M-VAVE website. Put the firmware file inside the <code>openpocket-main</code> folder and rename it <code>BlackBox</code> (if your computer shows the <code>.fwsc</code> ending, keep it).</p>
+        <h3 id="rescue-mac">On a Mac</h3>
+        <ol class="note">
+          <li>Once: install Homebrew from <a href="https://brew.sh">brew.sh</a> and follow the "Next steps" it prints. Then, in Terminal, type <code>brew install libusb</code> and press Enter.</li>
+          <li>Unplug the pedal.</li>
+          <li>In Terminal, type <code>cd </code> (with a space), drag the <code>openpocket-main</code> folder onto the Terminal window, and press Enter.</li>
+          <li>Type <code>sudo python3 tools/uboot_rescue.py --package BlackBox.fwsc</code> and press Enter. Type your Mac password (nothing shows while you type).</li>
+          <li>When it says it is waiting for the pedal, plug the pedal straight into the Mac (no hub).</li>
+          <li>The check passed if you see a line that starts with <code>Read-only run finished, nothing was written</code>. Keep the backup it saved in the <code>OpenPocket-rescue</code> folder in your home folder.</li>
+          <li>To restore the pedal, unplug it, type <code>sudo python3 tools/uboot_rescue.py --write --package BlackBox.fwsc</code>, press Enter, and plug the pedal in when it is waiting.</li>
+          <li>When it says <code>Done</code>, unplug the pedal and plug it back in.</li>
+        </ol>
+        <h3 id="rescue-windows">On Windows</h3>
+        <p class="note warnbox">The Windows rescue has not been tested on a real pedal yet. Please report on GitHub whether it works for you.</p>
+        <ol class="note">
+          <li>Once: install Python 3 from <a href="https://www.python.org/downloads/">python.org</a> and tick "Add python.exe to PATH" on its first screen. No driver is needed.</li>
+          <li>Open the <code>openpocket-main</code> folder until you see <code>RESCUE.bat</code>. Click the address bar at the top of the window and copy the location (Ctrl+C).</li>
+          <li>Press the Windows key, type <code>cmd</code>, right-click "Command Prompt" and choose "Run as administrator".</li>
+          <li>Type <code>cd /d "</code>, paste the location (right-click), type <code>"</code> and press Enter.</li>
+          <li>Unplug the pedal. Type <code>RESCUE.bat --package BlackBox.fwsc</code> and press Enter.</li>
+          <li>When it says it is waiting for the pedal, plug the pedal straight into the PC (no hub). If Windows offers to format a drive, click Cancel. Never click Format.</li>
+          <li>The check passed if you see a line that starts with <code>Read-only run finished, nothing was written</code>. Keep the backup it saved in the <code>OpenPocket-rescue</code> folder in your user folder.</li>
+          <li>To restore the pedal, unplug it, type <code>RESCUE.bat --write --package BlackBox.fwsc</code>, press Enter, and plug the pedal in when it is waiting.</li>
+          <li>When it says <code>Done</code>, unplug the pedal and plug it back in.</li>
+        </ol>
+        <h3>If it does not work</h3>
+        <ul class="note">
+          <li><code>REFUSED</code>: a safety check stopped it and nothing was written. The message says why; most often the file is not the official BlackBox firmware.</li>
+          <li>It stops in the middle or says it gave up: run the same line again. It continues where it stopped.</li>
+          <li>The pedal still does not start: <a href="https://github.com/VinSpee/openpocket/issues">open an issue on GitHub</a> with the text from the window, and keep the backup file.</li>
+        </ul>
+        <p class="note">The full guide, with every safety check: <a href="RESCUE.md#quick-start-rescue-a-blackbox-that-will-not-boot">RESCUE.md</a>.</p>
+      </details>
+      <p class="note" data-t="rescuedocs"></p>
       <div class="row"><button class="alt" id="uboot" disabled data-t="uboot"></button></div>
     </details>
     <details>
@@ -134,8 +179,8 @@ footer a,.note a{color:inherit}
 </div>
 
 <script type="module">
-import { Updater, IS_OTA, IS_OPENPOCKET, OUR_LOADER, MODELS } from "./pxota.js";
-import { productOf, logicalImage, checkOfficial } from "./pxpkg.js";
+import { Updater, IS_OTA, IS_OPENPOCKET, OUR_LOADER, MODELS, newerOfficialWarning } from "./pxota.js";
+import { verifyPackage, checkOfficial } from "./pxpkg.js";
 import { BLACKBOX_V21, verifyFactorySounds } from "./pxfactory.js";
 
 const T = {
@@ -147,27 +192,29 @@ const T = {
     pedal: "Pedal", firmware: "Firmware", port: "MIDI port",
     official: "official", opfw: "OpenPocket", loader: "update mode (loader)",
     s2: "Install OpenPocket", s2note: "Available version:",
-    s2warn: "During the install (about 1 to 2 minutes): do not unplug or switch the pedal off, keep this tab open. Nothing is written before the pedal has checked the package. First install over the official firmware: keep your backup (SD card / fm1buddy) at hand.",
+    s2warn: "During the install (about 1 to 2 minutes): do not unplug or switch the pedal off, keep this tab open. Nothing is sent before this page has checked the package against its SHA-256 and the firmware the pedal runs, and nothing is written before the pedal has checked it too. If the install stops, do not switch the pedal off: reconnect the cable and press Resume. First install over the official firmware: keep your backup (SD card / fm1buddy) at hand.",
     install: "Install", resume: "Resume the update",
     st_start: "start", st_verify: "check", st_loader: "loader", st_write: "write", st_reboot: "restart", st_done: "done",
     done: "Done: the pedal now runs ", nexteditor: "Open the preset editor", nextnotes: "What is new in this version", sameok: "OpenPocket is up to date.",
     s3: "Back to the official firmware", s3note: "Pick your pedal's official file (.fwsc), downloaded from Donner / M-VAVE. It is checked here, in your browser, and sent to no server.",
     backoff: "Return to the official firmware", offknown: "Official file verified: ", offunknown: "Well-formed official file, unknown to this page: ",
+    newerok: "I understand: install anyway, over this official firmware.",
     unknownok: "I understand: this file has not been tested with this page. Install it anyway.",
     rescue: "Rescue and advanced options",
     rescuenote: "If the pedal stays in update mode, reconnect it: the Resume button appears. The button below puts a pedal running OpenPocket into the chip's UBOOT mode, for a recovery from the SD card (fm1buddy).",
-    rescuemac: "A pedal that restarts in a loop and cannot be reached by this page can be restored from a Mac, with no extra hardware: download the official BlackBox file (M-VAVE), then run `make rescue` in the OpenPocket folder (read-only check), and `make rescue-write` to restore it. The steps are in docs/RESCUE.md; the SD-card route (fm1buddy, flash/) is the second choice.",
+    rescueusb: "A BlackBox that shows a black screen or restarts in a loop, and that this page cannot reach, can be restored over USB with no extra hardware, from a Mac or a Windows PC. A browser cannot do it: the pedal is then a USB mass-storage device, which browsers keep from web pages on every system. Download the official BlackBox file (M-VAVE) and the OpenPocket folder, then run a read-only check first (it saves a full backup of the pedal's flash and writes nothing), and the restore only once the check has passed.",
+    rescuedocs: "The SD-card route (fm1buddy, flash/) is the second choice.",
     uboot: "Enter UBOOT mode", logt: "Log",
     foot1: "OpenPocket is an independent project, not affiliated with Donner or M-VAVE. Install at your own risk. Source code: GPL-3.0.",
     foot2: "Update protocol and loader from Felucca and felucca-bsp (Hügelton Instruments, GPL-3.0 / MPL-2.0). JieLi AC79 SDK files: Apache-2.0. Inter typeface: SIL OFL 1.1.",
-    e_notfound: "Pedal not found. Check the cable (data), close other MIDI apps, then try again.",
+    e_notfound: "Pedal not found. Check the cable (data), close other MIDI apps (on Windows only one program at a time can use the pedal: M-EFCS, M-UPGRADE, a DAW, another tab with this page), then try again.",
     testchan: "TEST CHANNEL: this installs a test build, not the release. It is for people who agreed to try it, and it is not the version the normal installer page offers. To go back, open this page without ?channel=… and press Install.",
     bbwarn: "M-VAVE BlackBox: v31 is the fix for issue #1 (OpenPocket restarted every 4 s after the pedal was switched off and on), still being tested on the BlackBox. Please report how it goes on GitHub. If your BlackBox restarts in a loop, use the rescue mode below.",
 toeditor: "Preset editor →",
-        rescueon: "Rescue mode, for a pedal that restarts in a loop: tick this, press Connect, then plug the pedal in (or let it restart). The install starts by itself as soon as the pedal answers; it stops the pedal's sound processing at once, so the restarts stop. It installs the official file chosen in step 3 if there is one for this pedal, otherwise OpenPocket.",
-    e_model: "This package is not for this pedal: ", e_lost: "The pedal was disconnected. Plug it back in and press Resume.",
-    e_stopped: "The pedal stopped answering. ", e_noloader: "The update loader did not appear. Replug the cable, then Resume.",
-    e_noreturn: "The pedal did not come back: switch it off and on.", e_mismatch: "Written, but the pedal reports: ",
+        rescueon: "Rescue mode, for a pedal that restarts in a loop: tick this, press Connect, then plug the pedal in (or let it restart). The install starts by itself as soon as the pedal answers; it stops the pedal's sound processing at once, so the restarts stop. It installs the official file chosen in step 3 if there is one for this pedal, otherwise OpenPocket. If the pedal never answers here, use \"How to run the rescue on your computer\" below.",
+    e_model: "This package is not for this pedal: ", e_lost: "The pedal was disconnected. Do not switch it off: plug the cable back in, then press Resume if the page shows update mode, else Install again.",
+    e_stopped: "The pedal stopped answering before the update was finished. Do not switch it off: unplug the cable, plug it back in, then press Resume if the page shows update mode, else Install again.", e_noloader: "The update loader did not appear. Do not switch the pedal off: replug the cable, then press Resume.",
+    e_noreturn: "The update was written and checked, but the pedal did not come back. Switching it off and on is safe now. If it then shows a black screen or restarts in a loop, use the USB rescue (Rescue and advanced options, below).", e_mismatch: "Written, but the pedal reports: ",
     e_foreign: "The pedal is in the update mode of another firmware: ", e_pkg: "OpenPocket package missing on this site: ",
   },
 };
@@ -218,7 +265,11 @@ function showDev(d) {
   $("verify-factory").disabled = busy || !onV21;
   $("factory-uboot").disabled = busy || !onV21;
   $("resume").hidden = !d || !IS_OTA(d.id);
-  $("install").disabled = busy || !d || IS_OTA(d.id) || !manifest;
+  const newer = d && newerOfficialWarning(d.id);
+  $("newerconfirm").hidden = !newer;
+  if (newer) $("newerwarn").textContent = newer; else if (d) $("newerok").checked = false;
+  const unconfirmed = Boolean(newer) && !$("newerok").checked;
+  $("install").disabled = busy || !d || IS_OTA(d.id) || !manifest || unconfirmed;
   $("uboot").disabled = busy || !d || !IS_OPENPOCKET(d.id);
   $("backoff").disabled = busy || !d || IS_OTA(d.id) || !official || official.model !== d.id.model ||
     (!official.known && !$("offok").checked);
@@ -272,9 +323,9 @@ async function packageFor(model) {
   if (!p) throw Object.assign(new Error(model), { code: "pkg", detail: model });
   const r = await fetch(FW + p.file, { cache: "no-store" });
   if (!r.ok) throw Object.assign(new Error(p.file), { code: "pkg", detail: p.file });
-  const bytes = new Uint8Array(await r.arrayBuffer());
-  if (productOf(bytes) !== p.product) throw new Error("package identity mismatch");
-  return { product: p.product, image: logicalImage(bytes) };
+  // the manifest pins every byte (size, SHA-256), then the identity and every CRC: nothing else reaches the pedal
+  const { image } = await verifyPackage(new Uint8Array(await r.arrayBuffer()), p);
+  return { product: p.product, image };
 }
 
 async function run(job, resultMessage) {
@@ -324,7 +375,14 @@ function rescueTry() {
   if (busy || scanning || !rescueArmed()) return;
   rescueTries++;
   return run(async () => {
-    const r = await up.rescue(pick, (s, n) => { progress(s, n); if (s !== "verify" && s !== "write") log("rescue step " + s + (n !== undefined ? " " + n : "")); });
+    let r;
+    try {
+      r = await up.rescue(pick, (s, n) => { progress(s, n); if (s !== "verify" && s !== "write") log("rescue step " + s + (n !== undefined ? " " + n : "")); }, { acceptNewer: $("newerok").checked });
+    } catch (e) {
+      if (e.code === "untested") { $("newerwarn").textContent = e.message; $("newerconfirm").hidden = false; }   // tick the box, then arm the rescue again
+      if (e.code === "untested" || e.code === "pkg") { $("rescueOn").checked = false; pre = null; }   // refused: trying again changes nothing
+      throw e;
+    }
     if (!r) throw Object.assign(new Error("no pedal yet"), { code: "notfound", detail: up.seen() });
     $("rescueOn").checked = false; pre = null;
     return r;
@@ -340,7 +398,7 @@ $("install").onclick = () => run(async () => {
   const d = lastDev;
   const { product, image } = await packageFor(d.id.model);
   log(`install ${product} over ${d.id.text}`);
-  return up.install(image, product, (s, n) => { progress(s, n); if (s !== "verify" && s !== "write") log("step " + s + (n !== undefined ? " " + n : "")); });
+  return up.install(image, product, (s, n) => { progress(s, n); if (s !== "verify" && s !== "write") log("step " + s + (n !== undefined ? " " + n : "")); }, { acceptNewer: $("newerok").checked });
 });
 $("resume").onclick = () => run(async () => {
   const d = lastDev;
@@ -381,6 +439,7 @@ $("offfile").onchange = async (ev) => {
   showDev(lastDev);
 };
 $("offok").onchange = () => showDev(lastDev);
+$("newerok").onchange = () => showDev(lastDev);
 window.addEventListener("beforeunload", (e) => { if (busy) { e.preventDefault(); e.returnValue = ""; } });
 // remember the model, for a resume after a disconnect
 setInterval(() => { if (lastDev && MODELS.includes(lastDev.id.model)) try { localStorage.setItem("op-model", lastDev.id.model); } catch (_) {} }, 2000);

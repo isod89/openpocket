@@ -119,9 +119,9 @@ const commands = {
     if (r.error) fail("Python 3 is needed to serve the installer offline (python.org).");
     return r.status ?? 0;
   },
-  rescue(args) {                               // read-only unless --write; macOS needs root to take the pedal from its own driver
-    if (process.platform === "win32") fail("the rescue runs on macOS or Linux (it needs libusb and root). See docs/RESCUE.md.");
-    const root_ = typeof process.getuid === "function" && process.getuid() === 0;
+  rescue(args) {                               // read-only unless --write; macOS needs root to take the pedal from its own driver,
+                                               // Windows an administrator's Command Prompt (the tool says so; RESCUE.bat)
+    const root_ = process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0);
     const cmd = root_ || args.includes("--check") ? python : ["sudo", ...python];
     if (cmd[0] === "sudo") console.log(`rescue: ${args.includes("--write") ? "WRITE" : "read-only"} run; sudo asks for your password, then the tool waits for the pedal in its UBOOT state`);
     return exec(cmd[0], [...cmd.slice(1), "tools/uboot_rescue.py", ...args]);

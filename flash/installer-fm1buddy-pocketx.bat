@@ -105,7 +105,7 @@ echo   DUMP the Pocket X's original firmware:
 echo    1. Copy  sdcard\wl82loader.bin  to the SD card, put it in the ESP32-S3.
 echo    2. UNPLUG the ESP32-S3 from the PC. Power it some other way.
 echo    3. Plug the Pocket X DIRECTLY into the ESP32-S3 (NO hub).
-echo    4. Ecran -> Settings -> "Recover the FM-1" -> bouton "Dump Pocket X".
+echo    4. Screen ^> Settings ^> "Recover the FM-1" ^> button "Dump Pocket X".
 echo    5. Follow it: pedal off, then on when it asks.
 echo    6. The dump is written to  /backups  on the SD card. That is your backup.
 echo    7. On the PC:  python pocketx_verify_dump.py  YOUR_DUMP.bin

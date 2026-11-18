@@ -1,9 +1,72 @@
-# Rescuing a crash-looping BlackBox from a Mac (no extra hardware)
+# Rescuing a BlackBox over USB from a Mac or Windows (no extra hardware)
 
-Use this when the pedal restarts in a loop and the installer's rescue mode cannot finish. Between crashes the pedal sits
+## Quick start: rescue a BlackBox that will not boot
+
+Use this when the pedal shows a black screen or keeps restarting, and the installer page cannot reach it. You need the
+USB cable and a Mac or a Windows PC. The first run only checks the pedal and saves a backup. Nothing is written until the
+second run.
+
+You need two downloads on either computer:
+
+- The OpenPocket folder: [openpocket-main.zip](https://github.com/VinSpee/openpocket/archive/refs/heads/main.zip). Unzip it.
+- The official BlackBox firmware file (it ends in `.fwsc`) from the M-VAVE website. Put it inside the `openpocket-main`
+  folder and rename it `BlackBox`. If your computer shows the `.fwsc` ending, keep it: the full name is `BlackBox.fwsc`.
+
+### On a Mac
+
+1. Install Homebrew from [brew.sh](https://brew.sh) if you do not have it, and follow the "Next steps" it prints.
+   Then, in Terminal, type `brew install libusb` and press Enter. You only do this once.
+2. Unplug the pedal.
+3. In Terminal, type `cd ` (with a space after it), drag the `openpocket-main` folder onto the Terminal window, and press
+   Enter.
+4. Type `sudo python3 tools/uboot_rescue.py --package BlackBox.fwsc` and press Enter. Type your Mac password when asked
+   (nothing shows while you type). If the Mac offers to install developer tools, click Install, then type the line again.
+5. When it says it is waiting for the pedal, plug the pedal straight into the Mac (no hub). The check starts by itself.
+6. The check passed if you see a line that starts with `Read-only run finished, nothing was written`. A backup of the pedal is
+   now in the `OpenPocket-rescue` folder in your home folder. Keep it.
+7. To restore the pedal, unplug it, then type
+   `sudo python3 tools/uboot_rescue.py --write --package BlackBox.fwsc` and press Enter. Plug the pedal in when it
+   says it is waiting.
+8. When it says `Done`, unplug the pedal and plug it back in. It should start normally.
+
+### On Windows
+
+The Windows rescue has not been tested on a real pedal yet. Please report on GitHub whether it works for you.
+
+1. Install Python 3 from [python.org](https://www.python.org/downloads/). On the first screen of the installer, tick
+   "Add python.exe to PATH". You only do this once. You do not need to install any driver.
+2. Open the `openpocket-main` folder until you see `RESCUE.bat`. Click the address bar at the top of the window and copy
+   the folder's location (Ctrl+C).
+3. Press the Windows key, type `cmd`, right-click "Command Prompt" and choose "Run as administrator". Click Yes.
+4. Type `cd /d "` then paste the location (right-click), type `"` and press Enter.
+5. Unplug the pedal. Type `RESCUE.bat --package BlackBox.fwsc` and press Enter.
+6. When it says it is waiting for the pedal, plug the pedal straight into the PC (no hub). If Windows offers to format a
+   drive, click Cancel. Never click Format.
+7. The check passed if you see a line that starts with `Read-only run finished, nothing was written`. A backup of the pedal is
+   now in the `OpenPocket-rescue` folder in your user folder. Keep it.
+8. To restore the pedal, unplug it, then type `RESCUE.bat --write --package BlackBox.fwsc` and press Enter. Plug the pedal
+   in when it says it is waiting.
+9. When it says `Done`, unplug the pedal and plug it back in. It should start normally.
+
+### If it does not work
+
+- `REFUSED`: a safety check stopped it and nothing was written. The message says why. The most common cause is a
+  firmware file that is not the official BlackBox file.
+- It stops in the middle, or says it gave up: run the same line again. It continues where it stopped.
+- The pedal still does not start: [open an issue on GitHub](https://github.com/VinSpee/openpocket/issues) with the text
+  from the window, and keep the backup file. The SD-card recovery (README.md, "Install") is the other way back.
+
+The rest of this page explains each step and each safety check in detail.
+
+Use this when the pedal restarts in a loop or shows a black screen after an install, and the installer's rescue mode
+cannot finish. Between crashes the pedal sits
 about 44 seconds in the JieLi mask-ROM USB boot state ("UBOOT": USB 4C4A:8057, shown by macOS as `WL80UBOOT1.00`). The
 mask ROM is chip ROM, so it cannot be damaged. `tools/uboot_rescue.py` waits for that state, loads JieLi's RAM loader and
 rewrites the app area of the flash from the official package, then restarts the pedal.
+
+The installer page cannot do this part. In this state the pedal is a USB mass-storage device, and browsers refuse web pages
+access to every mass-storage interface (WebUSB's protected classes), on every system and whatever driver is installed. The
+page can only reach a pedal that answers over MIDI; the rescue below is a command that runs on the computer.
 
 ## One-time setup (macOS)
 
@@ -19,6 +82,14 @@ That is all. The tool is one Python 3 file that calls libusb through `ctypes` (n
   `c32b28e`, the same pin as `flash/installer-fm1buddy-pocketx.bat`) and checked against SHA-256
   `d41da6126760c9d66660bcc0cac8d27d221806c5e369a8036921efe68dca5376` on every run. It is not in this repository. `make clean`
   removes the cache; `--loader FILE` uses a copy you downloaded yourself.
+
+## One-time setup (Windows)
+
+Install Python 3 from [python.org](https://www.python.org/downloads/) and tick "Add python.exe to PATH". Nothing else: no
+libusb, no Zadig, no driver change. Windows keeps its own mass-storage driver on the pedal, and the tool sends the same
+commands through it (SCSI pass-through, the way kagaimiq/jl-uboot-tool reaches these chips on Windows). Windows lets only an
+administrator do that, so the tool runs in a Command Prompt opened as administrator. The files are the same as on a Mac:
+the official package (pass it with `--package`) and `wl82loader.bin`, downloaded and checked as above.
 
 ## The commands
 
@@ -40,6 +111,19 @@ It checks that the pedal answers INQUIRY as `WL82 UBOOT1.00`, loads the loader, 
 the flash id (must be a 1 MiB flash), saves a backup of the whole flash to `~/OpenPocket-rescue/blackbox-<time>.dump.bin`,
 compares the pedal's head `[0, 0x4000)` with the image's, reports how many sectors differ, and sends run-app. Keep this
 backup: it is the only copy of what the pedal held before the rescue.
+
+On Windows, open a Command Prompt as administrator (right-click Start, "Terminal (Admin)"), go to the OpenPocket folder
+and run the same tool through `RESCUE.bat`:
+
+```
+cd /d C:\path\to\openpocket
+RESCUE.bat --package "C:\Users\you\Downloads\BlackBox.fwsc"            (read-only)
+RESCUE.bat --write --package "C:\Users\you\Downloads\BlackBox.fwsc"    (the rescue, after the read-only run passed)
+```
+
+The backup goes to `%USERPROFILE%\OpenPocket-rescue`. Windows may say it found a drive and offer to format it while the
+pedal is in this state: click **Cancel**, never Format. The tool finds the pedal among the disks by asking each one to name
+itself (SCSI INQUIRY, which reads nothing and changes nothing) and only goes on with the one that answers `WL82 UBOOT1.00`.
 
 2. **The rescue**, only after the read-only run has passed:
 
@@ -128,8 +212,10 @@ The two backups' times are consistent with a read-only run followed by the `--wr
 | Symptom | Cause and next step |
 | --- | --- |
 | `libusb not found` | `brew install libusb` (or set `LIBUSB_PATH`). |
+| Windows: `only an administrator` | Open the Command Prompt as administrator and run `RESCUE.bat` there. |
+| Windows: `Python 3 is not installed` | Install it from python.org (tick "Add python.exe to PATH"). If typing `python` opens the Microsoft Store, install from python.org instead; `RESCUE.bat` uses its `py` launcher. |
 | `cannot take the interface from macOS (LIBUSB_ERROR_ACCESS)` | Run the command with `sudo`. |
-| Waits forever | The pedal is not in UBOOT right now. It is there about 44 s out of every 70 s while it loops; check `ioreg -p IOUSB` for `WL80UBOOT1.00`, a data cable and a direct port. |
+| Waits forever | The pedal is not in UBOOT right now. It is there about 44 s out of every 70 s while it loops; check `ioreg -p IOUSB` for `WL80UBOOT1.00` (Windows: a new disk drive in Device Manager), a data cable and a direct port. |
 | `REFUSED` | A safety check stopped it; the message names which. Nothing was written. |
 | `gave up after N tries` | The pedal kept leaving UBOOT before the run could finish. Rerun: it resumes. |
 | Still nothing | The SD-card recovery in `flash/` (fm1buddy on an ESP32-S3) is the other route. |
@@ -138,4 +224,4 @@ The two backups' times are consistent with a read-only run followed by the `--wr
 
 The USB boot protocol is documented by [kagaimiq/jl-uboot-tool](https://github.com/kagaimiq/jl-uboot-tool) (MIT) and
 [konsumer/fm1buddy](https://github.com/konsumer/fm1buddy) (GPL-3.0); `tools/uboot_rescue.py` is a new implementation of the
-same commands for macOS. Tests: `make rescue-check` runs it against a simulated pedal (`tests/uboot_sim.py`), with no hardware.
+same commands for macOS and Windows. Tests: `make rescue-check` runs it against a simulated pedal (`tests/uboot_sim.py`), with no hardware.
